@@ -11,6 +11,13 @@
 //!
 //! `AesXts` (2) only appears on legacy game-update NCAs and is not yet
 //! plumbed through; surfaces as `UnsupportedEncryption(2)`.
+//!
+//! Already-decrypted NCAs are recognised from the raw header and read
+//! without any key: NxEmu's `DNCA` magic, or a plaintext NCA that
+//! keeps the `NCA3` magic (and the FS headers' original encryption
+//! types) while storing the header and every section in the clear.
+//! The latter is told apart from an XTS-encrypted header by the
+//! zeroed padding at 0x340, which ciphertext never leaves.
 
 use std::fs::File;
 use std::sync::Arc;
@@ -20,8 +27,8 @@ use aes::cipher::array::Array;
 use aes::cipher::{BlockCipherDecrypt, KeyInit};
 
 use crate::nintendo::nx::constants::{
-    ENC_AES_CTR, ENC_AES_CTR_EX, ENC_AES_CTR_EX_SKIP_LAYER_HASH, ENC_AES_CTR_SKIP_LAYER_HASH,
-    ENC_NONE, NCA_HEADER_SIZE,
+    DNCA_MAGIC, ENC_AES_CTR, ENC_AES_CTR_EX, ENC_AES_CTR_EX_SKIP_LAYER_HASH,
+    ENC_AES_CTR_SKIP_LAYER_HASH, ENC_NONE, NCA_HEADER_SIZE, NCA3_MAGIC,
 };
 use crate::nintendo::nx::crypto::aes_ctr::apply_ctr;
 use crate::nintendo::nx::crypto::aes_xts::decrypt_nca_header;
@@ -61,7 +68,9 @@ pub struct NcaSection {
 
 /// Opened NCA: its decrypted header plus every present section's
 /// plaintext key, ready for positional decrypted reads via
-/// [`NcaWalker::read_section_plain`].
+/// [`NcaWalker::read_section_plain`]. `plaintext` is set when the NCA
+/// was already decrypted on disk; its sections then report
+/// `ENC_NONE` whatever their FS headers claim.
 pub struct NcaWalker {
     file: Arc<dyn NcaInput>,
     nca_offset: u64,
@@ -69,14 +78,23 @@ pub struct NcaWalker {
     pub header: NcaHeader,
     pub decrypted_header: Box<[u8; NCA_HEADER_SIZE]>,
     pub sections: Vec<NcaSection>,
+    pub plaintext: bool,
+}
+
+/// Plaintext-header test: a plaintext `NCA3` magic with the reserved
+/// bytes at 0x340..0x400 all zero. XTS ciphertext leaves neither. A
+/// `DNCA` magic is unambiguous on its own.
+pub(crate) fn is_plaintext_header(raw: &[u8; NCA_HEADER_SIZE]) -> bool {
+    let magic = &raw[0x200..0x204];
+    magic == DNCA_MAGIC || (magic == NCA3_MAGIC && raw[0x340..0x400].iter().all(|b| *b == 0))
 }
 
 impl NcaWalker {
-    /// Reads and XTS-decrypts the NCA header at `nca_offset`, then
-    /// derives the body key for every present section: from the
-    /// bundled `.tik` titlekey (decrypted with `titlekek_<master_idx>`)
-    /// when the NCA is rights-protected, otherwise from the header's
-    /// encrypted key area.
+    /// Reads the NCA header at `nca_offset`; unless it is already
+    /// plaintext, XTS-decrypts it and derives the body key for every
+    /// present section: from the bundled `.tik` titlekey (decrypted
+    /// with `titlekek_<master_idx>`) when the NCA is rights-protected,
+    /// otherwise from the header's encrypted key area.
     pub fn open(
         file: Arc<dyn NcaInput>,
         nca_offset: u64,
@@ -85,31 +103,37 @@ impl NcaWalker {
     ) -> NxResult<Self> {
         let mut header_buf = Box::new([0u8; NCA_HEADER_SIZE]);
         file.read_exact_at(header_buf.as_mut_slice(), nca_offset)?;
-        let header_key = keys.header_key()?;
-        decrypt_nca_header(&mut header_buf, header_key)?;
+        let plaintext = is_plaintext_header(&header_buf);
+        if !plaintext {
+            decrypt_nca_header(&mut header_buf, keys.header_key()?)?;
+        }
         let header = NcaHeader::parse(&header_buf)?;
 
-        let key_area_kind = header.key_area_kind()?;
-        let master_idx = header.master_key_index();
-        let body = if header.rights_id.iter().any(|b| *b != 0) {
-            // Ticket-protected NCA: ignore the encrypted_key_area and
-            // pull the titlekey from the matching .tik. The encrypted
-            // titlekey is decrypted with `titlekek_<master_idx>` via
-            // a single AES-128-ECB block.
-            let encrypted_title_key = keys.title_key(&header.rights_id)?;
-            let titlekek = keys.titlekek(master_idx)?;
-            let cipher = Aes128::new_from_slice(titlekek)
-                .map_err(|e| NxError::AesError(format!("titlekek init: {e}")))?;
-            let mut block = Array::try_from(&encrypted_title_key[..])
-                .expect("encrypted title key is one AES block");
-            cipher.decrypt_block(&mut block);
-            let mut out = [0u8; 16];
-            out.copy_from_slice(block.as_slice());
-            out
+        let body = if plaintext {
+            [0u8; 16]
         } else {
-            let key_area =
-                decrypt_key_area(&header.encrypted_key_area, key_area_kind, master_idx, keys)?;
-            body_key(&key_area)
+            let key_area_kind = header.key_area_kind()?;
+            let master_idx = header.master_key_index();
+            if header.rights_id.iter().any(|b| *b != 0) {
+                // Ticket-protected NCA: ignore the encrypted_key_area and
+                // pull the titlekey from the matching .tik. The encrypted
+                // titlekey is decrypted with `titlekek_<master_idx>` via
+                // a single AES-128-ECB block.
+                let encrypted_title_key = keys.title_key(&header.rights_id)?;
+                let titlekek = keys.titlekek(master_idx)?;
+                let cipher = Aes128::new_from_slice(titlekek)
+                    .map_err(|e| NxError::AesError(format!("titlekek init: {e}")))?;
+                let mut block = Array::try_from(&encrypted_title_key[..])
+                    .expect("encrypted title key is one AES block");
+                cipher.decrypt_block(&mut block);
+                let mut out = [0u8; 16];
+                out.copy_from_slice(block.as_slice());
+                out
+            } else {
+                let key_area =
+                    decrypt_key_area(&header.encrypted_key_area, key_area_kind, master_idx, keys)?;
+                body_key(&key_area)
+            }
         };
 
         let sections: Vec<NcaSection> = header
@@ -123,7 +147,11 @@ impl NcaWalker {
                     index: i,
                     raw_offset: nca_offset + entry.byte_offset(),
                     raw_size: entry.byte_size(),
-                    encryption_type: fs.encryption_type,
+                    encryption_type: if plaintext {
+                        ENC_NONE
+                    } else {
+                        fs.encryption_type
+                    },
                     key: body,
                     section_ctr_low: fs.section_ctr_low,
                     section_ctr_high: fs.section_ctr_high,
@@ -138,6 +166,7 @@ impl NcaWalker {
             header,
             decrypted_header: header_buf,
             sections,
+            plaintext,
         })
     }
 

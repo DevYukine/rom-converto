@@ -771,7 +771,9 @@ fn render_nx(info: &rom_converto_lib::info::NxInfo) -> String {
             // re-applied on read.
             NxContainerKind::Nsz | NxContainerKind::Xcz => "decrypted (ncz sections)",
             NxContainerKind::Nsp | NxContainerKind::Xci => {
-                if info.tickets.is_empty() {
+                if info.is_decrypted {
+                    "decrypted (plaintext NCAs)"
+                } else if info.tickets.is_empty() {
                     "encrypted (standard keys)"
                 } else {
                     "encrypted (titlekey)"
@@ -2855,6 +2857,18 @@ mod tests {
         };
         let out = render_nx(&info);
         assert!(has_field(&out, "Encryption", "encrypted (titlekey)"));
+
+        let info = rom_converto_lib::info::NxInfo {
+            is_decrypted: true,
+            tickets: vec![rom_converto_lib::nintendo::nx::info::TicketSummary {
+                file_name: "01020304.tik".to_string(),
+                rights_id: "deadbeef".to_string(),
+                master_key_revision: 0,
+            }],
+            ..Default::default()
+        };
+        let out = render_nx(&info);
+        assert!(has_field(&out, "Encryption", "decrypted (plaintext NCAs)"));
     }
 
     #[test]

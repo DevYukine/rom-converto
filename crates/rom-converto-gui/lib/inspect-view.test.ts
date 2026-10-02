@@ -186,6 +186,25 @@ describe("buildInspectView nx", () => {
 		expect(row(v.rom, "Encryption")).toBe("encrypted (titlekey)");
 	});
 
+	it("reports plaintext NCAs as decrypted", () => {
+		const v = view({
+			kind: "nx",
+			container_kind: "nsp",
+			is_compressed: false,
+			is_decrypted: true,
+			distribution: "digital",
+			structure: "scene",
+			physical_bytes: 2048,
+			files: [],
+			nca_names: ["test.nca"],
+			cnmt_nca_names: [],
+			tickets: [{ file_name: "01020304.tik", rights_id: "deadbeef", master_key_revision: 0 }],
+			xci_partitions: null,
+			full: null,
+		});
+		expect(row(v.rom, "Encryption")).toBe("decrypted (plaintext NCAs)");
+	});
+
 	it("reports ncz containers as decrypted", () => {
 		for (const container_kind of ["nsz", "xcz"] as const) {
 			const v = view({

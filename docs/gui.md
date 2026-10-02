@@ -44,6 +44,11 @@ generated XCI gamecard headers are unsigned.
 to `<stem>_split`. Both pages require unpacked NSP/XCI files and `prod.keys`; decompress
 NSZ/XCZ first. Merge defaults to `<first stem> (Merged).nsp` or `.xci`.
 
+**Decrypt Switch NSP/XCI** converts an encrypted NSP or XCI into the DNSP or DXCI that
+[NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and unpacked inputs;
+decompress NSZ/XCZ first. The output is `<name>.dnsp` or `<name>.dxci` and loads only
+in NxEmu.
+
 ### Xbox 360 GoD conversion
 
 **Convert ISO to GoD** takes a disc ISO and writes `<stem>_god` by default. You can

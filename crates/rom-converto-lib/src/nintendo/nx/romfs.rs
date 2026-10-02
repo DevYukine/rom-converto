@@ -13,7 +13,7 @@ use crate::nintendo::nx::error::{NxError, NxResult};
 use byteorder::{LE, ReadBytesExt};
 use std::io::Cursor;
 
-const ROMFS_HEADER_SIZE: u64 = 0x50;
+pub(crate) const ROMFS_HEADER_SIZE: u64 = 0x50;
 const INVALID_OFFSET: u32 = 0xFFFF_FFFF;
 
 /// Fixed-size RomFS header: offsets and sizes of the four metadata

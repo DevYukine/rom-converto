@@ -12,7 +12,7 @@ and `info` extensions in the installed build.
 | GameCube (`dol`) | `.iso`, `.gcm`; legacy `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.rvz`, then `.iso` on decompress | compress, migrate, decompress |
 | Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
 | Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua`; `.wux` or `.wud` | compress, to-wux, to-wud, decrypt NUS to loadiine |
-| Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, or per-title NSPs | compress, decompress, merge, split |
+| Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, per-title NSPs, `.dnsp`/`.dxci` | compress, decompress, decrypt, merge, split |
 | CHD (`chd`) | `.cue` with tracks, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
 | CSO (`cso`) | `.iso` | `.cso` or `.zso` | compress, decompress, convert to CHD |
 | CUE (`cue`) | Multi-file `.cue`/`.bin` | single `.cue`/`.bin`, `.iso`, CSO/ZSO | merge, to-iso, to-cso |
@@ -116,6 +116,21 @@ Merge selects the highest content versions and drops unselected files, so splitt
 is not a lossless reversal. Selected NCA bytes are preserved, but generated XCI headers
 are unsigned. The tool warns that merged output is intended for emulator use.
 
+`nx decrypt` writes the plaintext container that [NxEmu](https://www.nxemu.com/) loads:
+`<name>.dnsp` from an NSP and `<name>.dxci` from an XCI. The layout is unchanged; every
+NCA is stored decrypted with a `DNCA` magic and the gamecard magic becomes `DXCI`. The
+command needs `prod.keys`, and title keys come from the common tickets bundled in the
+container. NCAs with sparse layers, AES-XTS sections, or hash types other than
+hierarchical SHA-256 and integrity are rejected; an XCI `update` partition NCA that
+cannot be decrypted is copied through with a warning. Signatures are no longer valid, so
+the output loads only in NxEmu and other emulators keep using the encrypted NSP/XCI.
+
+NCAs that are already plaintext (`DNCA` magic, or hactool `--plaintext` output with
+its `NCA3` magic) are read as they are by `nx verify` and `nx info`; `nx decrypt`
+accepts hactool plaintext NSPs and rewrites only the NCA headers. Compressing, merging,
+or splitting a decrypted container keeps its NCAs decrypted but does not produce a
+DNSP/DXCI.
+
 ### CHD
 
 CHD mode is chosen from the input: CUE input makes a CD CHD, suitable ISO input is
@@ -161,7 +176,7 @@ rom-converto's compression and disc-conversion targets. Sources checked Septembe
 | Nintendo 3DS | Z3DS (`.zcci`) | [Azahar 2123+](https://github.com/azahar-emu/azahar/releases/tag/2123), using decrypted ROMs. Compressed CIA packages (`.zcia`) are installed instead. |
 | GameCube / Wii | RVZ | [Dolphin](https://github.com/dolphin-emu/dolphin/blob/master/Readme.md). For a real Wii with [USB Loader GX](https://github.com/wiidev/usbloadergx/blob/enhanced/source/usbloader/wbfs/wbfs_fat.cpp), decompress to WBFS or ISO. |
 | Wii U | WUA | [Cemu](https://github.com/cemu-project/Cemu/blob/main/src/Cafe/TitleList/TitleList.cpp). Can bundle the base game, updates, and DLC. |
-| Switch | NSP / XCI for playback | [Eden](https://github.com/eden-emulator/mirror/blob/master/src/core/loader/loader.cpp) loads NSP/XCI. [NSZ / XCZ](https://github.com/nicoboss/nsz/blob/master/docs/usage.md) are compressed storage formats; use `nx decompress` first. |
+| Switch | NSP / XCI for playback | [Eden](https://github.com/eden-emulator/mirror/blob/master/src/core/loader/loader.cpp) loads NSP/XCI. [NxEmu](https://www.nxemu.com/) loads the DNSP/DXCI that `nx decrypt` produces. [NSZ / XCZ](https://github.com/nicoboss/nsz/blob/master/docs/usage.md) are compressed storage formats; use `nx decompress` first. |
 | PlayStation | CHD | [DuckStation](https://github.com/stenzek/duckstation/blob/master/README.md). Convert from CUE/BIN and retain any required SBI file for LibCrypt games. |
 | PlayStation 2 | CHD for emulation; ZSO for hardware | [PCSX2](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VMManager.cpp) reads CHD. Use ZSO with [Open PS2 Loader](https://github.com/ps2homebrew/Open-PS2-Loader/blob/master/README.md) on a real PS2. |
 | PSP | CSO | [PPSSPP and real PSPs with custom firmware](https://www.ppsspp.org/docs/getting-started/dumping-games/). PPSSPP also reads DVD-mode CHD, but CSO works across both targets. |

@@ -7,6 +7,7 @@
 //! useful data so the user knows what is in the file.
 
 use crate::info::Image;
+use crate::nintendo::nx::constants::NCA_HEADER_SIZE;
 use crate::nintendo::nx::container::{
     ContainerKind, ContainerListing, list_container, read_xci_hfs0_offset,
 };
@@ -21,7 +22,8 @@ use crate::nintendo::nx::models::nacp::{Nacp, NacpLanguage};
 use crate::nintendo::nx::models::nca::CONTENT_TYPE_CONTROL;
 use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::romfs::RomfsReader;
-use crate::nintendo::nx::walker::NcaWalker;
+use crate::nintendo::nx::walker::{NcaWalker, is_plaintext_header};
+use crate::util::pread::file_read_exact_at;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
@@ -43,6 +45,13 @@ pub struct NxInfo {
     pub nca_names: Vec<String>,
     pub cnmt_nca_names: Vec<String>,
     pub tickets: Vec<TicketSummary>,
+    /// True when every game NCA in the container carries a plaintext
+    /// header, so the contents can be read without keys. An XCI's
+    /// `update` partition is not counted: `nx decrypt` may leave its
+    /// firmware NCAs encrypted. Compressed containers always report
+    /// false; NCZ payloads keep their NCA encryption on decompress.
+    #[serde(default)]
+    pub is_decrypted: bool,
     /// Present for XCI / XCZ inputs only.
     pub xci_partitions: Option<Vec<XciPartitionSummary>>,
     /// Filled by later tasks when prod.keys resolves.
@@ -362,6 +371,8 @@ pub fn read_info(path: &Path, keys_path: Option<&Path>) -> Result<NxInfo> {
 
     let tickets = read_tickets(path, &listing).unwrap_or_default();
 
+    let is_decrypted = container_is_decrypted(path, &listing);
+
     let xci_partitions = if listing.kind.is_xci() {
         Some(read_xci_partition_layout(path)?)
     } else {
@@ -389,6 +400,7 @@ pub fn read_info(path: &Path, keys_path: Option<&Path>) -> Result<NxInfo> {
         nca_names,
         cnmt_nca_names,
         tickets,
+        is_decrypted,
         xci_partitions,
         full,
     })
@@ -569,6 +581,39 @@ fn is_cnmt_nca_entry(name: &str) -> bool {
 
 fn is_ncz_entry(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".ncz")
+}
+
+/// Whether every game NCA of an uncompressed container carries a
+/// plaintext header, meaning the contents need no keys to read. Each
+/// NCA's 0xC00 header is read raw from the container at the entry's
+/// absolute offset. An XCI's `update` partition is skipped, since
+/// `nx decrypt` copies firmware NCAs it cannot open through unchanged.
+/// NSZ / XCZ always report false, and a missing or unreadable header
+/// counts as encrypted.
+fn container_is_decrypted(path: &Path, listing: &ContainerListing) -> bool {
+    if !matches!(listing.kind, ContainerKind::Nsp | ContainerKind::Xci) {
+        return false;
+    }
+    let mut ncas = listing
+        .entries
+        .iter()
+        .filter(|e| {
+            is_nca_entry(&e.name)
+                && !e
+                    .partition
+                    .is_some_and(|p| p.eq_ignore_ascii_case("update"))
+        })
+        .peekable();
+    if ncas.peek().is_none() {
+        return false;
+    }
+    let Ok(file) = File::open(path) else {
+        return false;
+    };
+    let mut header = [0u8; NCA_HEADER_SIZE];
+    ncas.all(|e| {
+        file_read_exact_at(&file, &mut header, e.abs_offset).is_ok() && is_plaintext_header(&header)
+    })
 }
 
 fn read_control_payload(walker: &NcaWalker) -> Result<NxControl> {

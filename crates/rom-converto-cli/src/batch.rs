@@ -513,7 +513,11 @@ pub async fn nx_verify(
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::verify_container_async;
 
-    let files = collect_or_warn(input_dir, &["nsp", "xci", "nsz", "xcz"], max_depth)?;
+    let files = collect_or_warn(
+        input_dir,
+        &["nsp", "xci", "nsz", "xcz", "dnsp", "dxci"],
+        max_depth,
+    )?;
     if files.is_empty() {
         return Ok(());
     }

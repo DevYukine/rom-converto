@@ -1,8 +1,10 @@
 //! Decrypt-only verify: walks every NCA in a container and confirms
 //! each section's header decrypts and every section reads back
-//! without an I/O or encryption error. This does not check the
-//! FsHeader's hash tree; the result is `serde::Serialize` so the GUI
-//! can render it as a table.
+//! without an I/O or encryption error. Already-decrypted containers
+//! (NxEmu DNSP/DXCI, plaintext `NCA3` files) pass through the same
+//! walk without needing keys. This does not check the FsHeader's
+//! hash tree; the result is `serde::Serialize` so the GUI can render
+//! it as a table.
 
 use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom};
@@ -83,7 +85,7 @@ pub fn verify_container(
         }
         let mut buf = vec![0u8; entry.size as usize];
         file_read_exact_at(&in_file, &mut buf, entry.abs_offset)?;
-        if let Ok(ticket) = Ticket::parse(&buf) {
+        if let Some(ticket) = Ticket::parse(&buf).ok().filter(|t| !t.personalized) {
             keys.title_keys
                 .insert(ticket.rights_id, ticket.encrypted_title_key);
         }
@@ -343,7 +345,15 @@ fn check_cancel(cancel: &CancelToken) -> NxResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nintendo::nx::constants::NCA_HEADER_SIZE;
+    use crate::nintendo::nx::crypto::aes_xts::decrypt_nca_header;
+    use crate::nintendo::nx::decrypt::decrypt_container;
+    use crate::nintendo::nx::models::cnmt::CNMT_CONTENT_TYPE_PROGRAM;
     use crate::nintendo::nx::models::pfs0::{Pfs0LayoutHints, build_header};
+    use crate::nintendo::nx::test_fixtures::{
+        TEST_HEADER_KEY, build_meta_nca, build_test_nsp, build_test_xci, synthetic_keyset,
+    };
+    use crate::util::NoProgress;
 
     #[derive(Default)]
     struct PhaseRecorder {
@@ -393,5 +403,47 @@ mod tests {
                 "Verifying NCA (2/2)".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn decrypted_containers_verify_without_keys() {
+        let nca = build_meta_nca(
+            0x0100_0000_0000_4000,
+            1,
+            CNMT_CONTENT_TYPE_PROGRAM,
+            &[[0x42; 16]],
+        );
+        let name = "0000000000000000000000000000000c.cnmt.nca".to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = dir.path().join("game.nsp");
+        let nsp_bytes = build_test_nsp(&[(name.clone(), nca.clone())]);
+        std::fs::write(&nsp, &nsp_bytes).unwrap();
+        let xci = dir.path().join("game.xci");
+        std::fs::write(&xci, build_test_xci(&[(name, nca.clone())])).unwrap();
+        let dnsp = dir.path().join("game.dnsp");
+        let dxci = dir.path().join("game.dxci");
+        let keys = synthetic_keyset();
+        decrypt_container(&nsp, &dnsp, &keys, &NoProgress, None).unwrap();
+        decrypt_container(&xci, &dxci, &keys, &NoProgress, None).unwrap();
+
+        // A plaintext NCA3: the XTS-decrypted header (still `NCA3`)
+        // over the decrypted sections.
+        let plain = dir.path().join("plain.nsp");
+        let mut bytes = std::fs::read(&dnsp).unwrap();
+        let nca_start = nsp_bytes.len() - nca.len();
+        let mut header = [0u8; NCA_HEADER_SIZE];
+        header.copy_from_slice(&nca[..NCA_HEADER_SIZE]);
+        decrypt_nca_header(&mut header, &TEST_HEADER_KEY).unwrap();
+        bytes[nca_start..nca_start + NCA_HEADER_SIZE].copy_from_slice(&header);
+        std::fs::write(&plain, bytes).unwrap();
+
+        let no_keys = KeySet::default();
+        for (path, kind) in [(&dnsp, "Nsp"), (&dxci, "Xci"), (&plain, "Nsp")] {
+            let result =
+                verify_container(path, &no_keys, &NoProgress, &CancelToken::new()).unwrap();
+            assert_eq!(result.kind, kind);
+            assert!(result.ok, "{}", path.display());
+            assert_eq!(result.ncas.len(), 1);
+        }
     }
 }

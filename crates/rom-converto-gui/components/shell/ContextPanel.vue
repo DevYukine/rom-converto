@@ -77,6 +77,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "wup", name: "Wii U", hint: "NUS titles" },
 		{ id: "ps3", name: "PlayStation 3", hint: "built-in keys" },
 		{ id: "ntr", name: "Nintendo DS", hint: "KEY1 secure area" },
+		{ id: "nx", name: "Switch", hint: "needs prod.keys" },
 	],
 	encrypt: [
 		{ id: "ctr", name: "3DS", hint: ".3ds .cci .cia" },

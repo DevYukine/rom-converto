@@ -47,9 +47,11 @@ export const nx: KindModule<"nx"> = {
 			"Encryption",
 			info.container_kind === "nsz" || info.container_kind === "xcz"
 				? "decrypted (ncz sections)"
-				: info.tickets.length
-					? "encrypted (titlekey)"
-					: "encrypted (standard keys)",
+				: info.is_decrypted
+					? "decrypted (plaintext NCAs)"
+					: info.tickets.length
+						? "encrypted (titlekey)"
+						: "encrypted (standard keys)",
 		);
 		if (full) {
 			const req = full.required_system_version;

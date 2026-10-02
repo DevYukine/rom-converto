@@ -1,4 +1,5 @@
-//! Nintendo Switch (NX) support: NSP/XCI to NSZ/XCZ compression.
+//! Nintendo Switch (NX) support: NSP/XCI to NSZ/XCZ compression and
+//! NSP/XCI to NxEmu DNSP/DXCI decryption.
 //!
 //! Switch is a current-generation console, so no keys are baked into
 //! this crate. Every operation (compress, decompress, verify) requires
@@ -13,6 +14,7 @@ pub mod container;
 /// NCA header and section-data encryption/decryption (AES-XTS, AES-CTR).
 pub mod crypto;
 pub mod decompress;
+pub mod decrypt;
 pub mod derive_paths;
 /// Error type shared by every NX (Switch) operation.
 pub mod error;
@@ -36,8 +38,10 @@ pub mod test_fixtures;
 pub use compress::{NxCompressOptions, compress_container, compress_container_async};
 pub use container::{ContainerKind, detect_container};
 pub use decompress::{decompress_container, decompress_container_async};
+pub use decrypt::{decrypt_container, decrypt_container_async};
 pub use derive_paths::{
-    derive_compressed_path, derive_decompressed_path, derive_merged_path, derive_split_dir,
+    derive_compressed_path, derive_decompressed_path, derive_decrypted_path, derive_merged_path,
+    derive_split_dir,
 };
 pub use error::{NxError, NxResult};
 pub use keys::{KeyAreaKind, KeySet, find_keys_file, load_keyset};

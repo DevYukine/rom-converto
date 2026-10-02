@@ -452,6 +452,14 @@ control: NxControl | null, };
  */
 export type NxInfo = { container_kind: NxContainerKind, is_compressed: boolean, distribution: NxDistribution, structure: NxStructure, physical_bytes: number, files: Array<ContainerFileSummary>, nca_names: Array<string>, cnmt_nca_names: Array<string>, tickets: Array<TicketSummary>, 
 /**
+ * True when every game NCA in the container carries a plaintext
+ * header, so the contents can be read without keys. An XCI's
+ * `update` partition is not counted: `nx decrypt` may leave its
+ * firmware NCAs encrypted. Compressed containers always report
+ * false; NCZ payloads keep their NCA encryption on decompress.
+ */
+is_decrypted: boolean, 
+/**
  * Present for XCI / XCZ inputs only.
  */
 xci_partitions: Array<XciPartitionSummary> | null, 

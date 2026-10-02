@@ -106,6 +106,7 @@ const NX_INFO = {
 	kind: "nx",
 	container_kind: "nsp",
 	is_compressed: false,
+	is_decrypted: false,
 	distribution: "digital",
 	structure: "scene",
 	physical_bytes: 12_400_000_000,

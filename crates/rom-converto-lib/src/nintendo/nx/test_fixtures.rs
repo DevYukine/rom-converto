@@ -2,6 +2,7 @@
 //! tests run without real prod.keys or real game files.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use aes::Aes128;
 use aes::cipher::array::Array;
@@ -19,9 +20,30 @@ use crate::nintendo::nx::models::cnmt::CNMT_CONTENT_TYPE_PROGRAM;
 use crate::nintendo::nx::models::hfs0::{
     self as hfs0_mod, DEFAULT_HASHED_REGION, Hfs0FileSpec, Hfs0LayoutHints, hash_first_chunk,
 };
-use crate::nintendo::nx::models::nca::{CONTENT_TYPE_META, FsHeader, initial_ctr_for_offset};
+use crate::nintendo::nx::models::nca::{
+    CONTENT_TYPE_META, FS_TYPE_PARTITION_FS, FsHeader, HASH_TYPE_HIERARCHICAL_SHA256,
+    initial_ctr_for_offset,
+};
 use crate::nintendo::nx::models::pfs0::{self as pfs0_mod, Pfs0LayoutHints};
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
+
+/// Captures every `warn()` call; every other method is a no-op.
+#[derive(Default)]
+pub struct WarnRecorder {
+    pub warnings: Mutex<Vec<String>>,
+}
+
+impl crate::util::ProgressReporter for WarnRecorder {
+    fn start(&self, _total: u64, _msg: &str) {}
+    fn inc(&self, _delta: u64) {}
+    fn finish(&self) {}
+    fn warn(&self, message: &str) {
+        self.warnings
+            .lock()
+            .expect("warn lock")
+            .push(message.into());
+    }
+}
 
 pub const TEST_HEADER_KEY: [u8; 32] = [
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
@@ -60,10 +82,21 @@ pub fn encrypt_key_area_block(plain_keys: [[u8; 16]; KEY_AREA_KEY_COUNT]) -> [u8
 /// Build a minimal encrypted NCA whose section 0 is AES-CTR encrypted
 /// `plaintext_section`, readable by [`synthetic_keyset`].
 pub fn build_synthetic_nca(plaintext_section: &[u8]) -> Vec<u8> {
+    build_synthetic_nca_with_rights_id(plaintext_section, [0u8; 16])
+}
+
+/// Variant of [`build_synthetic_nca`] carrying `rights_id`. With a
+/// nonzero id and no matching ticket bundled, key derivation fails
+/// with a missing title key.
+pub fn build_synthetic_nca_with_rights_id(
+    plaintext_section: &[u8],
+    rights_id: [u8; 16],
+) -> Vec<u8> {
     let mut header = [0u8; NCA_HEADER_SIZE];
     header[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
     header[0x207] = 0;
     header[0x220] = 1;
+    header[0x230..0x240].copy_from_slice(&rights_id);
 
     let section_start_byte = 0x4000u64;
     let section_size = plaintext_section.len() as u64;
@@ -171,7 +204,13 @@ pub fn build_meta_nca(
     header[entry_off + 4..entry_off + 8].copy_from_slice(&end_sector.to_le_bytes());
 
     let fs0_off = NCA_FS_HEADER_OFFSET;
+    header[fs0_off + 2] = FS_TYPE_PARTITION_FS;
+    header[fs0_off + 3] = HASH_TYPE_HIERARCHICAL_SHA256;
     header[fs0_off + 4] = ENC_AES_CTR;
+    // One hash layer over the whole section, whose data layer (the
+    // PFS0) starts at section offset 0.
+    header[fs0_off + 0x2C..fs0_off + 0x30].copy_from_slice(&2u32.to_le_bytes());
+    header[fs0_off + 0x48..fs0_off + 0x50].copy_from_slice(&(section.len() as u64).to_le_bytes());
     let ctr_low: u32 = 0;
     let ctr_high: u32 = 0;
     header[fs0_off + 0x140..fs0_off + 0x144].copy_from_slice(&ctr_low.to_le_bytes());
@@ -219,40 +258,66 @@ pub fn build_test_nsp(files: &[(String, Vec<u8>)]) -> Vec<u8> {
 /// given NCAs; update/normal partitions are empty stubs. Mirrors the
 /// layout produced by the super-XCI writer so `list_container` relists it.
 pub fn build_test_xci(ncas: &[(String, Vec<u8>)]) -> Vec<u8> {
-    let secure_specs: Vec<Hfs0FileSpec> = ncas
-        .iter()
-        .map(|(name, data)| Hfs0FileSpec {
-            name: name.clone(),
-            size: data.len() as u64,
-            sha256: hash_first_chunk(data, DEFAULT_HASHED_REGION),
-            hashed_region_size: DEFAULT_HASHED_REGION,
-        })
-        .collect();
-    let natural_len = hfs0_mod::build_header(&secure_specs, &Hfs0LayoutHints::default())
-        .unwrap()
-        .bytes
-        .len();
-    let secure_header = hfs0_mod::build_header(
-        &secure_specs,
-        &Hfs0LayoutHints {
-            target_total_header_size: Some(round_up_media_unit(natural_len)),
-            first_file_data_offset: 0,
-        },
-    )
-    .unwrap();
+    build_test_xci_partitions(&[("secure", ncas)])
+}
 
-    let stub = hfs0_mod::build_header(
-        &[],
-        &Hfs0LayoutHints {
-            target_total_header_size: Some(MEDIA_UNIT as usize),
-            first_file_data_offset: 0,
-        },
-    )
-    .unwrap();
+/// Named partition with its member files, for [`build_test_xci_partitions`].
+pub type PartitionFiles<'a> = (&'a str, &'a [(String, Vec<u8>)]);
 
-    let nca_bytes: u64 = ncas.iter().map(|(_, d)| d.len() as u64).sum();
-    let secure_unpadded = secure_header.bytes.len() as u64 + nca_bytes;
-    let secure_total = secure_unpadded.div_ceil(MEDIA_UNIT) * MEDIA_UNIT;
+/// Serialize a minimal but valid XCI where each named partition holds
+/// its given NCAs and the remaining partitions are empty stubs. Mirrors
+/// the layout produced by the super-XCI writer so `list_container`
+/// relists it.
+pub fn build_test_xci_partitions(files_by_partition: &[PartitionFiles<'_>]) -> Vec<u8> {
+    for (name, _) in files_by_partition {
+        assert!(
+            matches!(*name, "update" | "normal" | "secure"),
+            "unknown XCI partition {name}"
+        );
+    }
+    let partition_blob = |name: &str| -> Vec<u8> {
+        let files = files_by_partition
+            .iter()
+            .find(|(p, _)| *p == name)
+            .map(|(_, files)| *files)
+            .unwrap_or(&[]);
+        let specs: Vec<Hfs0FileSpec> = files
+            .iter()
+            .map(|(name, data)| Hfs0FileSpec {
+                name: name.clone(),
+                size: data.len() as u64,
+                sha256: hash_first_chunk(data, DEFAULT_HASHED_REGION),
+                hashed_region_size: DEFAULT_HASHED_REGION,
+            })
+            .collect();
+        let natural_len = hfs0_mod::build_header(&specs, &Hfs0LayoutHints::default())
+            .unwrap()
+            .bytes
+            .len();
+        let header = hfs0_mod::build_header(
+            &specs,
+            &Hfs0LayoutHints {
+                target_total_header_size: Some(round_up_media_unit(natural_len)),
+                first_file_data_offset: 0,
+            },
+        )
+        .unwrap();
+
+        let data_bytes: u64 = files.iter().map(|(_, d)| d.len() as u64).sum();
+        let unpadded = header.bytes.len() as u64 + data_bytes;
+        let total = unpadded.div_ceil(MEDIA_UNIT) * MEDIA_UNIT;
+
+        let mut blob = header.bytes.clone();
+        for (_, data) in files {
+            blob.extend_from_slice(data);
+        }
+        blob.extend_from_slice(&vec![0u8; (total - unpadded) as usize]);
+        blob
+    };
+
+    let update_blob = partition_blob("update");
+    let normal_blob = partition_blob("normal");
+    let secure_blob = partition_blob("secure");
 
     let root_spec = |name: &str, header: &[u8], size: u64| Hfs0FileSpec {
         name: name.into(),
@@ -261,9 +326,9 @@ pub fn build_test_xci(ncas: &[(String, Vec<u8>)]) -> Vec<u8> {
         hashed_region_size: DEFAULT_HASHED_REGION,
     };
     let root_specs = vec![
-        root_spec("update", &stub.bytes, stub.bytes.len() as u64),
-        root_spec("normal", &stub.bytes, stub.bytes.len() as u64),
-        root_spec("secure", &secure_header.bytes, secure_total),
+        root_spec("update", &update_blob, update_blob.len() as u64),
+        root_spec("normal", &normal_blob, normal_blob.len() as u64),
+        root_spec("secure", &secure_blob, secure_blob.len() as u64),
     ];
     let root_header = hfs0_mod::build_header(
         &root_specs,
@@ -274,18 +339,16 @@ pub fn build_test_xci(ncas: &[(String, Vec<u8>)]) -> Vec<u8> {
     )
     .unwrap();
 
-    let secure_offset =
-        XCI_PREFIX_SIZE as u64 + root_header.bytes.len() as u64 + stub.bytes.len() as u64 * 2;
+    let secure_offset = XCI_PREFIX_SIZE as u64
+        + root_header.bytes.len() as u64
+        + update_blob.len() as u64
+        + normal_blob.len() as u64;
 
     let mut out = vec![0u8; XCI_PREFIX_SIZE];
     out.extend_from_slice(&root_header.bytes);
-    out.extend_from_slice(&stub.bytes);
-    out.extend_from_slice(&stub.bytes);
-    out.extend_from_slice(&secure_header.bytes);
-    for (_, data) in ncas {
-        out.extend_from_slice(data);
-    }
-    out.extend_from_slice(&vec![0u8; (secure_total - secure_unpadded) as usize]);
+    out.extend_from_slice(&update_blob);
+    out.extend_from_slice(&normal_blob);
+    out.extend_from_slice(&secure_blob);
 
     let total_size = out.len() as u64;
     let prefix = build_xci_prefix(secure_offset, total_size, &root_header.bytes);

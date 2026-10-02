@@ -3,6 +3,8 @@
 pub const PFS0_MAGIC: [u8; 4] = *b"PFS0";
 pub const HFS0_MAGIC: [u8; 4] = *b"HFS0";
 pub const NCA3_MAGIC: [u8; 4] = *b"NCA3";
+/// Magic NxEmu's decrypted DNSP/DXCI containers carry in place of `NCA3`.
+pub const DNCA_MAGIC: [u8; 4] = *b"DNCA";
 pub const NCZSECTN_MAGIC: [u8; 8] = *b"NCZSECTN";
 pub const NCZBLOCK_MAGIC: [u8; 8] = *b"NCZBLOCK";
 

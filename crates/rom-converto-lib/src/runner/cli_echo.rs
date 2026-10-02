@@ -524,6 +524,18 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "report",
         ],
     ),
+    (
+        "nx decrypt",
+        &[
+            "keys",
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "recursive",
+            "report",
+        ],
+    ),
     ("nx merge", &["format", "keys", "on_conflict"]),
     ("nx split", &["keys", "on_conflict", "output_dir"]),
     ("nx verify", &["keys", "max_depth", "recursive"]),

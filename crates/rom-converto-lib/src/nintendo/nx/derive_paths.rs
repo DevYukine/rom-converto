@@ -24,6 +24,17 @@ pub fn derive_decompressed_path(input: &Path) -> PathBuf {
     input.with_extension(new_ext)
 }
 
+/// Derives the NxEmu decrypted output path for `input`: an `.xci`
+/// extension (case-insensitive) maps to `.dxci`, everything else to
+/// `.dnsp`; NxEmu only scans those two extensions.
+pub fn derive_decrypted_path(input: &Path) -> PathBuf {
+    let new_ext = match input.extension().and_then(|s| s.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case("xci") => "dxci",
+        _ => "dnsp",
+    };
+    input.with_extension(new_ext)
+}
+
 /// Derives the default merge output for `first_input`: its stem plus
 /// ` (Merged)` and the requested container extension, beside the input.
 pub fn derive_merged_path(first_input: &Path, ext: &str) -> PathBuf {
@@ -114,6 +125,18 @@ mod tests {
         assert_eq!(
             derive_decompressed_path(Path::new("noext")),
             PathBuf::from("noext.nsp")
+        );
+    }
+
+    #[test]
+    fn decrypted_defaults_to_nxemu_extensions() {
+        assert_eq!(
+            derive_decrypted_path(Path::new("/roms/game.nsp")),
+            PathBuf::from("/roms/game.dnsp")
+        );
+        assert_eq!(
+            derive_decrypted_path(Path::new("/roms/game.XCI")),
+            PathBuf::from("/roms/game.dxci")
         );
     }
 }

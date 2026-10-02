@@ -115,6 +115,41 @@ pub enum NxError {
 
     #[error("NCZ solid payload previously failed to decode; not retrying")]
     NczSolidDecodeFailed,
+    #[error("NCA {0} is already decrypted (DNCA header)")]
+    AlreadyDecrypted(String),
+
+    #[error("NCA {0} is smaller than an NCA header")]
+    NcaTruncated(String),
+
+    #[error("NCA {0} has overlapping filesystem sections")]
+    OverlappingSections(String),
+
+    #[error("NCA {nca} section {section} has a sparse layer, which cannot be decrypted")]
+    SparseSectionUnsupported { nca: String, section: usize },
+
+    #[error(
+        "NCA {nca} section {section} has an invalid BKTR table ({reason}); the table is corrupt or the key is wrong"
+    )]
+    InvalidBucketTree {
+        nca: String,
+        section: usize,
+        reason: &'static str,
+    },
+
+    #[error("container entries overlap or run past the end of the file")]
+    OverlappingEntries,
+
+    #[error("NCA {nca} section {section} uses hash type {hash_type}, which NxEmu cannot load")]
+    UnsupportedHashType {
+        nca: String,
+        section: usize,
+        hash_type: u8,
+    },
+
+    #[error(
+        "NCA {nca} section {section} did not decrypt to a valid filesystem; the title key or key area key is wrong"
+    )]
+    WrongKey { nca: String, section: usize },
 }
 
 fn format_paths(paths: &[PathBuf]) -> String {

@@ -18,6 +18,7 @@ use rom_converto_lib::util::{CancelToken, ConflictPolicy, FileStatus};
 pub enum NxCommands {
     Compress(NxCompressCommand),
     Decompress(NxDecompressCommand),
+    Decrypt(NxDecryptCommand),
     Verify(NxVerifyCommand),
     Merge(NxMergeCommand),
     Split(NxSplitCommand),
@@ -124,6 +125,48 @@ pub struct NxDecompressCommand {
     pub batch: BatchArgs,
 }
 
+/// Decrypt an NSP or XCI into NxEmu's DNSP or DXCI
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decrypt an NSP or XCI into NxEmu's DNSP or DXCI\n\nEvery NCA is rewritten as plaintext and the container keeps its layout. The output only loads in NxEmu; other emulators use the encrypted NSP/XCI.",
+    after_long_help = "EXAMPLES:\n  Single file:     rom-converto nx decrypt game.nsp\n  Explicit output: rom-converto nx decrypt game.xci game.dxci\n  Whole folder:    rom-converto nx decrypt -R ./roms --output-dir ./nxemu\n"
+)]
+pub struct NxDecryptCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
+    pub keys: Option<PathBuf>,
+
+    /// Input NSP or XCI, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .dnsp, .xci -> .dxci)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path. Defaults to the input path with the extension switched (.nsp -> .dnsp, .xci -> .dxci)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Decrypt every .nsp and .xci found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
 /// Verify hash integrity of every NCA in a Switch container
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
@@ -134,11 +177,11 @@ pub struct NxVerifyCommand {
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input container (NSP / NSZ / XCI / XCZ), or a directory with --recursive
+    /// Input container (NSP / NSZ / XCI / XCZ, or a decrypted DNSP / DXCI), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Verify every .nsp, .xci, .nsz and .xcz found in the INPUT directory and its subdirectories
+    /// Verify every .nsp, .xci, .nsz, .xcz, .dnsp and .dxci found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -206,6 +249,41 @@ pub struct NxSplitCommand {
     pub force: bool,
 }
 
+/// `nx decompress` and `nx decrypt` are the same dispatch up to the
+/// runner op name.
+#[allow(clippy::too_many_arguments)]
+async fn run_nx_transform(
+    ctx: &batch::BatchRun<'_>,
+    operation: &str,
+    eff: &rom_converto_lib::config::NxDefaults,
+    input: PathBuf,
+    output: Option<PathBuf>,
+    keys: Option<PathBuf>,
+    recursive: bool,
+    out: &OutputArgs,
+    batch_args: &BatchArgs,
+    conflict: &ConflictArgs,
+    skip_space_check: bool,
+) -> Result<()> {
+    require_input(&input, recursive)?;
+    let mut options = RunOptions::from(batch::Common {
+        recursive,
+        output_dir: out.output_dir.clone().or_else(|| eff.output_dir.clone()),
+        output_template: out.output_template.clone(),
+        max_depth: batch_args.max_depth,
+        report: batch_args.report.clone().or_else(|| eff.report.clone()),
+        policy: resolve_policy(
+            conflict.on_conflict,
+            conflict.force,
+            config::policy_fallback(&eff.on_conflict)?,
+        ),
+        skip_space_check,
+    });
+    options.keys = keys;
+    batch::run(ctx, operation, input, output, options).await?;
+    Ok(())
+}
+
 /// Runs one `nx` subcommand.
 pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
     let DispatchCtx {
@@ -266,28 +344,34 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             .await?;
         }
         NxCommands::Decompress(cmd) => {
-            let eff = &effective.nx;
-            require_input(&cmd.input, cmd.recursive)?;
-            let mut options = RunOptions::from(batch::Common {
-                recursive: cmd.recursive,
-                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
-                output_template: cmd.out.output_template,
-                max_depth: cmd.batch.max_depth,
-                report: cmd.batch.report.or_else(|| eff.report.clone()),
-                policy: resolve_policy(
-                    cmd.conflict.on_conflict,
-                    cmd.conflict.force,
-                    config::policy_fallback(&eff.on_conflict)?,
-                ),
-                skip_space_check,
-            });
-            options.keys = cmd.keys;
-            batch::run(
+            run_nx_transform(
                 &run,
                 "nx.decompress",
+                &effective.nx,
                 cmd.input,
                 cmd.output_flag.or(cmd.output),
-                options,
+                cmd.keys,
+                cmd.recursive,
+                &cmd.out,
+                &cmd.batch,
+                &cmd.conflict,
+                skip_space_check,
+            )
+            .await?;
+        }
+        NxCommands::Decrypt(cmd) => {
+            run_nx_transform(
+                &run,
+                "nx.decrypt",
+                &effective.nx,
+                cmd.input,
+                cmd.output_flag.or(cmd.output),
+                cmd.keys,
+                cmd.recursive,
+                &cmd.out,
+                &cmd.batch,
+                &cmd.conflict,
+                skip_space_check,
             )
             .await?;
         }
@@ -302,7 +386,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             ensure_input_exists(&cmd.input)?;
             let resolved = rom_converto_lib::util::resolve_input(
                 &cmd.input,
-                &["nsp", "xci", "nca", "nsz", "xcz", "ncz"],
+                &["nsp", "xci", "nca", "nsz", "xcz", "ncz", "dnsp", "dxci"],
             )?;
             let result = verify_container_async(
                 resolved.path().to_path_buf(),

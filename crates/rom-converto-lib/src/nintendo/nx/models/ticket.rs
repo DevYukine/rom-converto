@@ -11,11 +11,14 @@ use crate::nintendo::nx::error::{NxError, NxResult};
 /// decryption: `rights_id` (matches the NCA header's `rights_id` at
 /// offset 0x230), the still-encrypted `encrypted_title_key`, and
 /// `master_key_revision` used to pick the right `titlekek_xx`.
+/// `personalized` tickets wrap the title key with the console's RSA
+/// key instead, so their `encrypted_title_key` is not usable here.
 #[derive(Debug, Clone)]
 pub struct Ticket {
     pub rights_id: [u8; 16],
     pub encrypted_title_key: [u8; 16],
     pub master_key_revision: u8,
+    pub personalized: bool,
 }
 
 /// Largest serialized ticket extent accepted by [`Ticket::parse`].
@@ -55,6 +58,7 @@ impl Ticket {
         }
         let mut encrypted_title_key = [0u8; 16];
         encrypted_title_key.copy_from_slice(&buf[data_off + 0x40..data_off + 0x50]);
+        let personalized = buf[data_off + 0x141] != 0;
         let master_key_revision = buf[data_off + 0x145];
         let mut rights_id = [0u8; 16];
         rights_id.copy_from_slice(&buf[data_off + 0x160..data_off + 0x170]);
@@ -62,6 +66,7 @@ impl Ticket {
             rights_id,
             encrypted_title_key,
             master_key_revision,
+            personalized,
         })
     }
 }

@@ -163,9 +163,9 @@ export const verifyOps: OpDef[] = [
 		title: "Verify Switch files",
 		subtitle: SUBTITLE,
 		dropText: DROP_TEXT,
-		acceptedExts: ["nsp", "nsz", "xci", "xcz", "zip", "7z", "rar", "tar", "tgz", "gz"],
+		acceptedExts: ["nsp", "nsz", "xci", "xcz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"],
 		browseFilters: [
-			{ name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "zip", "7z", "rar", "tar", "tgz", "gz"] },
+			{ name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 		],
 		fields: [
 			{

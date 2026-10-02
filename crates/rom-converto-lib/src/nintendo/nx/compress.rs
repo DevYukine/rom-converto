@@ -561,12 +561,12 @@ fn write_sub_partition(
 }
 
 /// Read the ticket stored at `abs` and fold its title key into `keys`.
-/// A ticket that does not parse is ignored: it carries no key the
-/// rest of the pipeline can use.
+/// A ticket that does not parse, or a personalized one, is ignored: it
+/// carries no key the rest of the pipeline can use.
 fn ingest_ticket(in_file: &Arc<File>, abs: u64, size: u64, keys: &mut KeySet) -> NxResult<()> {
     let mut buf = vec![0u8; size as usize];
     crate::util::pread::file_read_exact_at(in_file, &mut buf, abs)?;
-    if let Ok(ticket) = Ticket::parse(&buf) {
+    if let Some(ticket) = Ticket::parse(&buf).ok().filter(|t| !t.personalized) {
         keys.title_keys
             .insert(ticket.rights_id, ticket.encrypted_title_key);
     }

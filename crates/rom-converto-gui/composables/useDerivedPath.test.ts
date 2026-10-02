@@ -7,6 +7,7 @@ import {
   deriveCuePath,
   deriveDecryptedPath,
   deriveDiscIsoPath,
+  deriveDnspPath,
   deriveEncryptedPath,
   deriveGodDir,
   deriveMergedCuePath,
@@ -102,6 +103,13 @@ describe("plain image inputs keep extension replacement", () => {
   it("derives decrypted/encrypted nds paths", () => {
     expect(deriveDecryptedPath("game.nds")).toBe("game.decrypted.nds");
     expect(deriveEncryptedPath("game.nds")).toBe("game.encrypted.nds");
+  });
+
+  it("derives nx decrypt output names for nsp and xci", () => {
+    expect(deriveDnspPath("game.nsp")).toBe("game.dnsp");
+    expect(deriveDnspPath("game.xci")).toBe("game.dxci");
+    expect(deriveDnspPath("game.xci.zip")).toBe("game.dxci");
+    expect(deriveDnspPath(`${DOTTED}.zip`)).toBe(`${DOTTED}.dnsp`);
   });
 });
 

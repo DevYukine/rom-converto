@@ -15,8 +15,8 @@ use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
-/// Folds every `.tik` inside `listing` into `keys`, ignoring tickets that
-/// cannot be read or parsed.
+/// Folds every common `.tik` inside `listing` into `keys`, ignoring
+/// personalized tickets and tickets that cannot be read or parsed.
 pub(crate) fn merge_inline_tickets(path: &Path, listing: &ContainerListing, keys: &mut KeySet) {
     let Ok(file) = File::open(path) else {
         return;
@@ -34,7 +34,7 @@ pub(crate) fn merge_inline_tickets(path: &Path, listing: &ContainerListing, keys
         if file_read_exact_at(&file, &mut buf, entry.abs_offset).is_err() {
             continue;
         }
-        if let Ok(ticket) = Ticket::parse(&buf) {
+        if let Some(ticket) = Ticket::parse(&buf).ok().filter(|t| !t.personalized) {
             keys.title_keys
                 .insert(ticket.rights_id, ticket.encrypted_title_key);
         }

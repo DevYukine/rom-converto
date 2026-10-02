@@ -168,10 +168,10 @@ pub enum LanguageCode {
 /// Every extension [`detect_console`] accepts. Must stay in sync with it.
 pub const SUPPORTED_INFO_EXTENSIONS: &[&str] = &[
     "chd", "cso", "zso", "dax", "cia", "3ds", "cci", "cxi", "ncch", "zcia", "zcci", "zcxi",
-    "z3dsx", "3dsx", "nsp", "nsz", "xci", "xcz", "wud", "wux", "wua", "gcm", "wbfs", "gcz", "wia",
-    "xiso", "zar", "cue", "iso", "rvz", "nds", "dsi", "pbp", "vpk", "pkg", "nes", "sfc", "smc",
-    "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "32x", "sms", "gg", "vb", "ws",
-    "wsc", "ngp", "ngc", "lnx", "a78", "fds", "gdi", "avi",
+    "z3dsx", "3dsx", "nsp", "nsz", "xci", "xcz", "dnsp", "dxci", "wud", "wux", "wua", "gcm",
+    "wbfs", "gcz", "wia", "xiso", "zar", "cue", "iso", "rvz", "nds", "dsi", "pbp", "vpk", "pkg",
+    "nes", "sfc", "smc", "z64", "n64", "v64", "gb", "gbc", "gba", "md", "gen", "smd", "32x", "sms",
+    "gg", "vb", "ws", "wsc", "ngp", "ngc", "lnx", "a78", "fds", "gdi", "avi",
 ];
 
 /// Options for [`read_info`]: an optional keys file and parent image
@@ -314,7 +314,9 @@ pub fn detect_console(path: &Path) -> Result<DetectedConsole> {
         | Some("zcci") | Some("zcxi") | Some("z3dsx") | Some("3dsx") => {
             return Ok(DetectedConsole::Ctr);
         }
-        Some("nsp") | Some("nsz") | Some("xci") | Some("xcz") => return Ok(DetectedConsole::Nx),
+        Some("nsp") | Some("nsz") | Some("xci") | Some("xcz") | Some("dnsp") | Some("dxci") => {
+            return Ok(DetectedConsole::Nx);
+        }
         Some("wud") | Some("wux") | Some("wua") => return Ok(DetectedConsole::Wup),
         Some("gcm") => return Ok(DetectedConsole::Dol),
         Some("wbfs") => return Ok(DetectedConsole::Rvl),
@@ -650,7 +652,7 @@ mod tests {
 
     #[test]
     fn detect_nx_by_extension() {
-        for ext in ["nsp", "nsz", "xci", "xcz"] {
+        for ext in ["nsp", "nsz", "xci", "xcz", "dnsp", "dxci"] {
             let p = format!("/tmp/x.{}", ext);
             let r = detect_console(Path::new(&p)).unwrap();
             assert_eq!(r, DetectedConsole::Nx, "ext {} should route to Nx", ext);

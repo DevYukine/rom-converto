@@ -285,7 +285,7 @@ pub struct ReportPayload {
 const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
     "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "wud", "wux", "xiso", "zar", "avi",
+    "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar", "avi",
 ];
 
 fn input_size(path: &Path) -> u64 {

@@ -20,8 +20,10 @@ use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::models::hfs0::Hfs0;
 use crate::nintendo::nx::models::pfs0::{Pfs0, Pfs0FileRef};
 
-const XCI_HEAD_MAGIC_OFFSET: u64 = 0x100;
+pub(crate) const XCI_HEAD_MAGIC_OFFSET: u64 = 0x100;
 const XCI_HEAD_MAGIC: [u8; 4] = *b"HEAD";
+/// Gamecard magic NxEmu's decrypted DXCI carries in place of `HEAD`.
+pub const DXCI_MAGIC: [u8; 4] = *b"DXCI";
 const XCI_HFS0_OFFSET_FIELD: u64 = 0x130;
 
 /// The four Switch container formats this crate can read or produce.
@@ -47,7 +49,8 @@ impl ContainerKind {
 
 /// Sniff a file to decide which container it is. Extension is used
 /// only to pick between NSP/NSZ when the magic alone can't tell them
-/// apart (both are PFS0).
+/// apart (both are PFS0). NxEmu's decrypted DNSP/DXCI share the
+/// container layout and detect as NSP/XCI.
 pub fn detect_container(path: &Path) -> NxResult<ContainerKind> {
     let mut file = File::open(path)?;
     let mut head = [0u8; 4];
@@ -57,7 +60,9 @@ pub fn detect_container(path: &Path) -> NxResult<ContainerKind> {
     }
     file.seek(SeekFrom::Start(XCI_HEAD_MAGIC_OFFSET))?;
     let mut head_magic = [0u8; 4];
-    if file.read_exact(&mut head_magic).is_ok() && head_magic == XCI_HEAD_MAGIC {
+    if file.read_exact(&mut head_magic).is_ok()
+        && (head_magic == XCI_HEAD_MAGIC || head_magic == DXCI_MAGIC)
+    {
         let hfs0_off = read_xci_hfs0_offset(&mut file)?;
         file.seek(SeekFrom::Start(hfs0_off))?;
         let mut hfs0_magic = [0u8; 4];

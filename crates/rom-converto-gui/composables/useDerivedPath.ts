@@ -174,6 +174,15 @@ export function deriveNspPath(input: string): string {
   return replaceExt(input, "nsp");
 }
 
+// Mirrors derive_decrypted_path in rom-converto-lib nintendo/nx/derive_paths.rs:
+// NxEmu only scans .dnsp / .dxci, so the cartridge extension keeps a D variant.
+export function deriveDnspPath(input: string): string {
+  input = stripArchiveExt(input);
+  const ext = getExt(input);
+  if (ext === "xci") return replaceExt(input, "dxci");
+  return replaceExt(input, "dnsp");
+}
+
 /// Derive a `.wua` output path from a title input. Strips a disc
 /// image extension, then peels trailing parenthesised tags in the
 /// preservation naming style so `Title (Region) (Langs) (Update)`

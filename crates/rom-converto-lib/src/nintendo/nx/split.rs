@@ -271,10 +271,11 @@ mod tests {
         CNMT_TYPE_ADD_ON_CONTENT, CNMT_TYPE_APPLICATION, CNMT_TYPE_PATCH,
     };
     use crate::nintendo::nx::models::pfs0::Pfs0;
-    use crate::nintendo::nx::test_fixtures::{build_meta_nca, build_test_nsp, synthetic_keyset};
+    use crate::nintendo::nx::test_fixtures::{
+        WarnRecorder, build_meta_nca, build_test_nsp, synthetic_keyset,
+    };
     use crate::util::NoProgress;
     use std::io::{Cursor, Write};
-    use std::sync::Mutex;
     use tempfile::{Builder, NamedTempFile, tempdir};
 
     fn id(byte: u8) -> [u8; 16] {
@@ -427,23 +428,6 @@ mod tests {
         );
     }
 
-    /// Captures every `warn()` call; every other method is a no-op.
-    struct WarnRecorder {
-        warnings: Mutex<Vec<String>>,
-    }
-
-    impl ProgressReporter for WarnRecorder {
-        fn start(&self, _total: u64, _msg: &str) {}
-        fn inc(&self, _delta: u64) {}
-        fn finish(&self) {}
-        fn warn(&self, message: &str) {
-            self.warnings
-                .lock()
-                .expect("warn lock")
-                .push(message.into());
-        }
-    }
-
     #[test]
     fn names_title_with_its_highest_cnmt_version() {
         let title = 0x0100_DDDD_0000_0800;
@@ -481,9 +465,7 @@ mod tests {
             (format!("{}.nca", hex::encode(id(0x99))), vec![0u8; 0x400]),
         ]);
         let dir = tempdir().unwrap();
-        let recorder = WarnRecorder {
-            warnings: Mutex::new(Vec::new()),
-        };
+        let recorder = WarnRecorder::default();
         let out = split_container(
             nsp.path(),
             dir.path(),
@@ -563,9 +545,7 @@ mod tests {
             (format!("{}.nca", hex::encode(id(0x99))), vec![0u8; 0x400]),
         ]);
         let dir = tempdir().unwrap();
-        let recorder = WarnRecorder {
-            warnings: Mutex::new(Vec::new()),
-        };
+        let recorder = WarnRecorder::default();
         let out = split_container_async(
             nsp.path().to_path_buf(),
             dir.path().to_path_buf(),

@@ -275,6 +275,12 @@ mod tests {
                 json!({ "keys": missing_keys }),
                 dir.path().join("game_split"),
             ),
+            (
+                "nx.decrypt",
+                &nsp,
+                json!({ "keys": missing_keys }),
+                dir.path().join("game.dnsp"),
+            ),
         ];
         for (operation, input, options, output) in cases {
             let req = json!({

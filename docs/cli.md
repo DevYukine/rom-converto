@@ -405,9 +405,10 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 |---|---|
 | `compress <INPUT> [-o OUTPUT]` | Compress NSP to NSZ or XCI to XCZ |
 | `decompress <INPUT> [-o OUTPUT]` | Restore NSZ/XCZ to NSP/XCI |
+| `decrypt <INPUT> [-o OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
 | `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
 | `split <INPUT> [--output-dir DIR]` | Write one NSP per title from an NSP or XCI |
-| `verify <INPUT>` | Check NCA hashes, including in compressed containers |
+| `verify <INPUT>` | Check NCA hashes, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -416,12 +417,32 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `-l, --level <LEVEL>` | `compress` | Zstd level 1..=22; default 18 |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
 | `--block-size-exp <EXP>` | `compress` | Block size is `1 << exp` bytes; range 14..=32, default 20 (1 MiB) |
-| `--output-dir <DIR>` | `compress`, `decompress`, `split` | Choose the output directory |
+| `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `split` | Choose the output directory |
 | `--format <nsp\|xci>` | `merge` | Default NSP. XCI output requires every input to be an XCI |
 | `--on-conflict <POLICY>`, `-f, --force` | `merge`, `split` | Default `error`; `-f` means overwrite. The flags conflict |
 
 A valid `prod.keys` is required and is never modified. Merge and split accept only
 uncompressed NSP/XCI inputs; decompress NSZ/XCZ first.
+
+`nx decrypt` converts an encrypted NSP/XCI into the plaintext container that
+[NxEmu](https://www.nxemu.com/) loads: `<name>.dnsp` from an NSP, `<name>.dxci` from an
+XCI. The container layout is unchanged; every NCA is rewritten as plaintext with a
+`DNCA` magic and the gamecard magic becomes `DXCI`. HFS0 hashes are refreshed, and
+tickets and certificates are copied through. Title keys come from the common tickets
+bundled in the container; personalized tickets carry no usable key. NCAs with sparse
+layers, AES-XTS sections, or hash types other than the two NxEmu mounts (hierarchical
+SHA-256 and integrity) are rejected, and NSZ/XCZ inputs must be decompressed first. An
+XCI `update` partition NCA that cannot be decrypted is copied through unchanged with a
+warning, since NxEmu skips update NCAs it cannot open. Output signatures are not valid,
+so it loads only in NxEmu; other emulators keep using the encrypted NSP/XCI.
+
+Already decrypted NCAs are recognised by their plaintext header: NxEmu's `DNCA` magic,
+or hactool `--plaintext` output, which keeps the `NCA3` magic. `nx verify` and `nx info`
+read both as they are, and `nx decrypt` turns an NSP of hactool plaintext NCAs into a
+DNSP by rewriting only the headers. Compressing, merging, or splitting a decrypted
+container keeps its NCAs decrypted, but that output is not a DNSP/DXCI (the names and
+the gamecard magic stay as they are), so run `nx decrypt` on the encrypted original
+instead.
 
 ### Merge and split
 
@@ -453,6 +474,7 @@ replacing planned NSP files while leaving unrelated files in place.
 rom-converto nx merge base.nsp update.nsp dlc.nsp --keys prod.keys -o merged.nsp
 rom-converto nx merge base.xci update.xci --format xci -o merged.xci
 rom-converto nx split merged.nsp --output-dir ./titles
+rom-converto nx decrypt game.nsp --keys prod.keys
 ```
 
 ## ntr (Nintendo DS)

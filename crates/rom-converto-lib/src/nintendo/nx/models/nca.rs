@@ -6,7 +6,7 @@ use byteorder::{LE, ReadBytesExt};
 use std::io::Cursor;
 
 use crate::nintendo::nx::constants::{
-    NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE, NCA_HEADER_SIZE,
+    DNCA_MAGIC, NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_FS_HEADER_STRIDE, NCA_HEADER_SIZE,
     NCA_MAX_SECTIONS, NCA3_MAGIC,
 };
 use crate::nintendo::nx::crypto::derive::{KEY_AREA_OFFSET, KEY_AREA_TOTAL};
@@ -66,8 +66,9 @@ impl FsEntry {
 
 /// Parsed per-section filesystem header: format version, section type
 /// fields (`fs_type`, `hash_type`, `encryption_type`,
-/// `metadata_hash_type`), and the section's initial AES-CTR counter
-/// halves.
+/// `metadata_hash_type`), the section's initial AES-CTR counter
+/// halves, and the layout fields the decrypter needs: the BKTR patch
+/// tables, the sparse-layer generation, and where hashed data starts.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FsHeader {
     pub version: u16,
@@ -77,20 +78,66 @@ pub struct FsHeader {
     pub metadata_hash_type: u8,
     pub section_ctr_low: u32,
     pub section_ctr_high: u32,
+    pub patch: PatchInfo,
+    /// Non-zero when the section carries a sparse layer (gamecard
+    /// NCAs whose RomFS is only partially present on the card).
+    pub sparse_generation: u16,
+    /// True when a compression layer sits above the hash layer, so the
+    /// bytes at `hash_target_offset` are a compressed stream rather
+    /// than the filesystem itself.
+    pub has_compression_layer: bool,
+    /// Section-relative offset of the hash target (data) layer for the
+    /// hierarchical SHA-256/SHA3 and integrity hash types; `None` for
+    /// any other hash type.
+    pub hash_target_offset: Option<u64>,
+}
+
+pub const FS_TYPE_ROMFS: u8 = 0;
+pub const FS_TYPE_PARTITION_FS: u8 = 1;
+
+pub const HASH_TYPE_HIERARCHICAL_SHA256: u8 = 2;
+pub const HASH_TYPE_HIERARCHICAL_INTEGRITY: u8 = 3;
+pub const HASH_TYPE_HIERARCHICAL_SHA3_256: u8 = 5;
+pub const HASH_TYPE_HIERARCHICAL_INTEGRITY_SHA3: u8 = 6;
+
+/// BKTR patch tables of an update NCA section, offsets relative to the
+/// section start. Both tables are absent (all zero) on non-patch
+/// sections. `meta_hash_*` describe the optional integrity layer newer
+/// firmware hashes the tables with.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PatchInfo {
+    pub indirect_offset: u64,
+    pub indirect_size: u64,
+    pub aes_ctr_ex_offset: u64,
+    pub aes_ctr_ex_size: u64,
+    /// Entry count from the AesCtrEx bucket-tree header stored in the
+    /// FS header (`BKTR` magic, version, count).
+    pub aes_ctr_ex_entry_count: u32,
+    pub meta_hash_offset: u64,
+    pub meta_hash_size: u64,
+}
+
+impl PatchInfo {
+    /// True when the patch tables sit under a hashed meta layer, which
+    /// the FS driver reads as one plain AES-CTR run from the indirect
+    /// table to the end of the hash data.
+    pub fn has_meta_hash_layer(&self) -> bool {
+        self.meta_hash_size != 0 && self.indirect_size != 0
+    }
 }
 
 impl NcaHeader {
     /// Parses a fixed `NCA_HEADER_SIZE` plaintext buffer as an NCA3
-    /// header: validates the magic at 0x200, then reads content
-    /// metadata, the `FsEntry`/`FsHeader` tables, and the encrypted key
-    /// area.
+    /// header: validates the magic at 0x200 (`NCA3`, or `DNCA` for an
+    /// NxEmu-decrypted NCA), then reads content metadata, the
+    /// `FsEntry`/`FsHeader` tables, and the encrypted key area.
     ///
     /// # Errors
     ///
     /// Returns [`NxError::InvalidNcaHeader`] if the magic at 0x200
-    /// doesn't match `NCA3_MAGIC`.
+    /// matches neither `NCA3_MAGIC` nor `DNCA_MAGIC`.
     pub fn parse(buf: &[u8; NCA_HEADER_SIZE]) -> NxResult<Self> {
-        if buf[0x200..0x204] != NCA3_MAGIC {
+        if buf[0x200..0x204] != NCA3_MAGIC && buf[0x200..0x204] != DNCA_MAGIC {
             return Err(NxError::InvalidNcaHeader);
         }
         let content_type = buf[0x205];
@@ -169,8 +216,39 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
     let encryption_type = cur.read_u8()?;
     let metadata_hash_type = cur.read_u8()?;
     let _reserved = cur.read_u16::<LE>()?;
+    let hash_target_offset = match hash_type {
+        // HierarchicalSha256Data: layer count at 0x2C, regions at 0x30.
+        HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_SHA3_256 => {
+            let layer_count = u32_le(buf, 0x2C) as usize;
+            (1..=5)
+                .contains(&layer_count)
+                .then(|| u64_le(buf, 0x30 + (layer_count - 1) * 0x10))
+        }
+        // IntegrityMetaInfo: max layers at 0x14, level infos at 0x18;
+        // `max_layers` counts the master hash, so the last level info
+        // (index `max_layers - 2`) is the data layer whose offset the
+        // section hashes.
+        HASH_TYPE_HIERARCHICAL_INTEGRITY | HASH_TYPE_HIERARCHICAL_INTEGRITY_SHA3 => {
+            let max_layers = u32_le(buf, 0x14) as usize;
+            (2..=7)
+                .contains(&max_layers)
+                .then(|| u64_le(buf, 0x18 + (max_layers - 2) * 0x18))
+        }
+        _ => None,
+    };
+    let patch = PatchInfo {
+        indirect_offset: u64_le(buf, 0x100),
+        indirect_size: u64_le(buf, 0x108),
+        aes_ctr_ex_offset: u64_le(buf, 0x120),
+        aes_ctr_ex_size: u64_le(buf, 0x128),
+        aes_ctr_ex_entry_count: u32_le(buf, 0x138),
+        meta_hash_offset: u64_le(buf, 0x1A0),
+        meta_hash_size: u64_le(buf, 0x1A8),
+    };
     let section_ctr_low = u32_le(buf, 0x140);
     let section_ctr_high = u32_le(buf, 0x144);
+    let sparse_generation = u16::from_le_bytes([buf[0x170], buf[0x171]]);
+    let has_compression_layer = u64_le(buf, 0x178) != 0 && u64_le(buf, 0x180) != 0;
     Ok(FsHeader {
         version,
         fs_type,
@@ -179,6 +257,10 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
         metadata_hash_type,
         section_ctr_low,
         section_ctr_high,
+        patch,
+        sparse_generation,
+        has_compression_layer,
+        hash_target_offset,
     })
 }
 

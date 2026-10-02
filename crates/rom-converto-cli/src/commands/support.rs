@@ -22,7 +22,7 @@ pub(crate) const CTR_CRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 pub(crate) const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
     "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "wud", "wux", "xiso", "zar",
+    "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
 ];
 
 /// Default GoD output directory for `input`: its file stem with `_god`

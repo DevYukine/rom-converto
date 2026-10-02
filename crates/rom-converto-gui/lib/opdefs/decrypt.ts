@@ -1,9 +1,11 @@
-import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { NX_KEYS_TOOLTIP, commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
 import { useNtrDecryptStore } from "~/stores/ntr-decrypt";
-import { basename, deriveDecryptedPath, withOutputDir } from "~/composables/useDerivedPath";
+import { useNxDecryptStore } from "~/stores/nx-decrypt";
+import { basename, deriveDecryptedPath, deriveDnspPath, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -246,4 +248,71 @@ const ntr: OpDef = {
 	chips: () => "",
 };
 
-export const decryptOps: OpDef[] = [ctr, wup, ps3, ntr];
+const nx: OpDef = {
+	op: "decrypt",
+	console: "nx",
+	opLabel: "Decrypt",
+	storeId: "nx-decrypt",
+	useStore: useNxDecryptStore,
+	command: "cmd_run",
+	resultKind: "convert",
+	title: "Decrypt for NxEmu",
+	subtitle: "Writes DNSP / DXCI files with every NCA in plaintext.",
+	dropText: "Drop .nsp or .xci files or folders",
+	acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "NSP/XCI", extensions: ["nsp", "xci"] }],
+	fields: [
+		{
+			kind: "file",
+			key: "keys",
+			label: "prod.keys",
+			tooltip: NX_KEYS_TOOLTIP,
+			filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
+			display: nxKeysDisplay,
+			color: nxKeysColor,
+		},
+		...recursiveFields(),
+	],
+	note: "Needs prod.keys. Bundled tickets supply title keys. NSZ / XCZ must be decompressed first.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (s) => s.outputDir || "same as source",
+			value: (s) => s.outputDir,
+			set: (s, v) => { s.outputDir = v; },
+			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
+		},
+		{
+			kind: "template",
+			label: "Template",
+			display: (s) => s.outputTemplate || "",
+			set: (s, v) => { s.outputTemplate = v; },
+			tooltip:
+				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
+		},
+		{
+			kind: "report",
+			label: "Run report",
+			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
+			set: (s, v) => { s.reportFile = v; },
+			tooltip:
+				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
+		},
+	],
+	actionNote: "Output only loads in NxEmu; other emulators keep using the encrypted NSP / XCI.",
+	deriveOutput: deriveDnspPath,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"nx.decrypt",
+			item.path,
+			templateIsActive(store) ? null : withOutputDir(deriveDnspPath(item.path), store.outputDir || ""),
+			{ keys: store.keys || null, ...commonOptions(store) },
+			false,
+			taskId,
+			store.reportFile || null,
+		),
+	chips: (store) => (store.keys ? "keys" : ""),
+};
+
+export const decryptOps: OpDef[] = [ctr, wup, ps3, ntr, nx];
