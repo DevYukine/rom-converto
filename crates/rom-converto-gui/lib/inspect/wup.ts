@@ -17,7 +17,7 @@ export const wup: KindModule<"wup"> = {
 		const meta = info.meta;
 		add(rom, "Title", englishFirst(meta?.long_names.entries, (e) => e[0])?.[1] || info.title_id_hex);
 		add(rom, "Title ID", info.title_id_hex);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.title_type);
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.title_type);
 		add(rom, "Encryption", wupEncryption(info.source_kind));
 		add(
 			rom,
@@ -34,7 +34,7 @@ export const wup: KindModule<"wup"> = {
 			);
 			add(
 				rom,
-				"Age Ratings",
+				"Age ratings",
 				Object.entries(meta.age_ratings)
 					.sort(([a], [b]) => a.localeCompare(b))
 					.map(([org, age]) => `${ageRatingDisplayName(org)} ${age}+`)
@@ -42,21 +42,21 @@ export const wup: KindModule<"wup"> = {
 			);
 		}
 		add(rom, "Size", formatBytes(info.total_content_size));
-		if (meta) add(rom, "Product Code", meta.product_code);
+		if (meta) add(rom, "Product code", meta.product_code);
 		if (info.content_count > 0) add(rom, "Contents", String(info.content_count));
-		add(rom, "OS Version", info.os_version);
+		add(rom, "OS version", info.os_version);
 		if (meta) {
 			add(rom, "Mastered", meta.mastering_date);
-			if (meta.save_size) add(rom, "Save Size", formatBytes(meta.save_size));
+			if (meta.save_size) add(rom, "Save size", formatBytes(meta.save_size));
 		}
-		add(rom, "SDK Version", info.sdk_version);
-		add(rom, "Access Rights", `0x${hex(info.access_rights, 8)}`);
+		add(rom, "SDK version", info.sdk_version);
+		add(rom, "Access rights", `0x${hex(info.access_rights, 8)}`);
 		add(rom, "Group ID", `0x${hex(info.group_id, 4)}`);
 		if (meta) {
-			if (meta.app_size) add(rom, "App Size", formatBytes(meta.app_size));
+			if (meta.app_size) add(rom, "App size", formatBytes(meta.app_size));
 			add(
 				rom,
-				"Boss Storage",
+				"Boss storage",
 				[meta.boss_size, meta.common_boss_size, meta.account_boss_size]
 					.filter((n): n is number => !!n)
 					.map((n) => formatBytes(n))
@@ -79,13 +79,13 @@ export const wup: KindModule<"wup"> = {
 			}
 		}
 		if (info.disc_partitions.length) {
-			innerTitle = "Disc Partitions";
+			innerTitle = "Disc partitions";
 			innerFiles = info.disc_partitions.map((p) => ({
 				name: p.name,
 				detail: `${p.kind} · sector ${p.start_sector}`,
 			}));
 		} else {
-			innerTitle = "Bundled Titles";
+			innerTitle = "Bundled titles";
 			innerFiles = info.bundled_titles.map((b) => ({
 				name: b.title_type,
 				detail: `${b.title_id_hex} · v${b.title_version}`,
@@ -95,7 +95,7 @@ export const wup: KindModule<"wup"> = {
 	},
 	title: (info) => englishFirst(info.meta?.long_names?.entries, (e) => e[0])?.[1] || info.title_id_hex,
 	size: (info) => info.total_content_size,
-	console: () => "WII U",
+	console: () => "Wii U",
 	format: (info) => info.source_kind.toUpperCase(),
 	meta: (info) => [
 		englishFirst(info.meta?.publishers?.entries, (e) => e[0])?.[1],

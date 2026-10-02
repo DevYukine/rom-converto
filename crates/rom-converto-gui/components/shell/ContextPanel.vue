@@ -67,7 +67,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "dol", name: "GameCube", hint: "" },
 		{ id: "rvl", name: "Wii", hint: "" },
 		{ id: "wup", name: "Wii U", hint: "" },
-		{ id: "nx", name: "Switch", hint: "NSP/XCI/NSZ" },
+		{ id: "nx", name: "Switch", hint: "" },
 		{ id: "chd", name: "CD / DVD (CHD)", hint: "" },
 		{ id: "cso", name: "PSP / PS2", hint: "" },
 		{ id: "xenon", name: "Xbox 360", hint: "" },
@@ -86,7 +86,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 	convert: [
 		{ id: "ctr", name: "3DS", hint: "CIA ↔ CCI" },
 		{ id: "wup", name: "Wii U", hint: "WUD ↔ WUX" },
-		{ id: "cso", name: "PSP / PS2", hint: "ISO → CHD" },
+		{ id: "cso", name: "PSP / PS2", hint: "CSO → CHD" },
 		{ id: "chd", name: "CD / DVD", hint: "CHD → CSO/ZSO" },
 		{ id: "chd-migrate", name: "CHD (old)", hint: "v1-v4 → v5" },
 		{ id: "cue", name: "CD (CUE/BIN)", hint: "→ ISO/CSO/ZSO" },
@@ -122,6 +122,17 @@ const rows = computed<ConsoleRow[]>(() => {
 	return [...listed, ...extra];
 });
 const activeConsole = computed(() => route.path.split("/")[2] ?? "");
+const rowsEl = ref<HTMLElement | null>(null);
+
+async function scrollActiveRow() {
+	await nextTick();
+	rowsEl.value?.querySelector(".row.active")?.scrollIntoView({ block: "nearest" });
+}
+
+onMounted(() => {
+	scrollActiveRow();
+});
+watch(() => route.path, scrollActiveRow);
 
 function pick(id: string) {
 	ui.setLastConsole(props.op, id);
@@ -134,17 +145,18 @@ function pick(id: string) {
 		<div class="title">{{ TITLES[op] }}</div>
 		<p class="subtitle">{{ SUBTITLES[op] }}</p>
 
-		<div class="rows">
+		<div ref="rowsEl" class="rows">
 			<button
 				v-for="row in rows"
 				:key="row.id"
 				type="button"
 				class="row"
 				:class="{ active: activeConsole === row.id }"
+				:title="row.name"
 				@click="pick(row.id)"
 			>
 				<span class="name">{{ row.name }}</span>
-				<span class="hint">{{ row.hint }}</span>
+				<span class="hint" :title="row.hint">{{ row.hint }}</span>
 			</button>
 		</div>
 
@@ -162,41 +174,55 @@ function pick(id: string) {
 .panel {
 	display: flex;
 	flex-direction: column;
-	width: 230px;
+	width: clamp(212px, 17vw, 240px);
 	flex-shrink: 0;
 	min-height: 0;
-	overflow-y: auto;
+	overflow-y: hidden;
 	overflow-x: hidden;
 	background: var(--bg3);
 	border-right: 1px solid var(--a10);
 	padding: 16px 10px 12px;
 }
 .title {
-	font-size: 15px;
+	flex: none;
+	font-size: var(--fs-lg);
 	font-weight: 700;
 	color: var(--t0);
 }
 .subtitle {
+	flex: none;
 	margin: 6px 0 12px;
-	font-size: 11px;
+	font-size: var(--fs-sm);
 	color: var(--t4);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 .rows {
 	display: flex;
 	flex-direction: column;
+	flex: 0 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding-inline: 3px;
+	margin-inline: -3px;
+	scrollbar-width: thin;
 	gap: 2px;
 }
 .row {
 	display: flex;
-	align-items: center;
-	gap: 8px;
+	flex-wrap: wrap;
+	flex: none;
+	align-items: baseline;
+	justify-content: space-between;
+	column-gap: 8px;
+	row-gap: 0;
+	min-height: 32px;
 	padding: 7px 10px;
 	border: none;
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	background: transparent;
 	color: var(--t3);
-	font-size: 12px;
+	font-size: var(--fs-md);
 	font-weight: 400;
 	cursor: pointer;
 	text-align: left;
@@ -210,23 +236,54 @@ function pick(id: string) {
 	font-weight: 600;
 }
 .name {
-	flex: 1;
+	flex: 0 1 auto;
+	min-width: 0;
+	line-height: var(--lh-body);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 .hint {
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	flex: 0 0 auto;
+	margin-left: auto;
+	line-height: var(--lh-body);
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	color: var(--t5);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 .row.active .hint {
 	color: var(--blue);
 }
+.hint:empty {
+	display: none;
+}
 .note {
 	margin-top: 8px;
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
 	color: var(--t6);
-	line-height: 1.4;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 .spacer {
 	flex: 1;
+}
+@media (max-height: 719px) {
+	.panel {
+		padding-top: 12px;
+	}
+	.subtitle {
+		display: none;
+	}
+	.rows {
+		margin-top: 8px;
+	}
+	.row {
+		min-height: 28px;
+		padding-top: 4px;
+		padding-bottom: 4px;
+	}
 }
 </style>

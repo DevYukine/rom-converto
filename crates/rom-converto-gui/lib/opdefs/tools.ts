@@ -15,7 +15,7 @@ import {
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
 
 // hash.algos is a string[]; the Options card only renders toggle/kv/slider/etc.
 // fields, so each algorithm gets a synthetic boolean accessor backed by the
@@ -114,7 +114,7 @@ const hash: OpDef = {
 			kind: "number",
 			key: "maxDepth",
 			label: "Max depth",
-			placeholder: "unlimited",
+			placeholder: "Unlimited",
 			visible: (store) => !!store.recursive,
 			tooltip: "How many folder levels deep the scan goes. Leave blank for unlimited.",
 		},
@@ -180,7 +180,7 @@ const playlist: OpDef = {
 			kind: "number",
 			key: "maxDepth",
 			label: "Max depth",
-			placeholder: "unlimited",
+			placeholder: "Unlimited",
 			tooltip: "How many folder levels deep the scan goes. Leave blank for unlimited.",
 		},
 	],
@@ -189,7 +189,8 @@ const playlist: OpDef = {
 		{
 			kind: "directory",
 			label: "Output directory",
-			display: (store) => store.outputDir || "(next to input)",
+			display: (store) => store.outputDir || "",
+			placeholder: "Same as source",
 			value: (store) => store.outputDir,
 			set: (store, value) => {
 				store.outputDir = value;
@@ -242,17 +243,19 @@ const merge: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (store) => (store.output ? dirName(store.output) : "(next to input)"),
+			display: (store) => (store.output ? dirName(store.output) : ""),
+			placeholder: "Same as source",
 			set: (store, value) => {
 				const base = store.output ? basename(store.output) : "merged.cue";
-				store.output = withOutputDir(base, value);
+				store.output = value ? withOutputDir(base, value) : "";
 			},
 			tooltip: "Directory the merged .cue and .bin pair is written into.",
 		},
 		{
 			kind: "text",
 			label: "File",
-			display: (store) => (store.output ? basename(store.output) : "(auto)"),
+			display: (store) => (store.output ? basename(store.output) : ""),
+			placeholder: "Automatic",
 			tooltip: "Filename for the merged .cue file, the .bin is named to match.",
 		},
 	],
@@ -328,17 +331,19 @@ const cdn2cia: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (store) => (store.output ? dirName(store.output) : "(next to input)"),
+			display: (store) => (store.output ? dirName(store.output) : ""),
+			placeholder: "Same as source",
 			set: (store, value) => {
 				const base = store.output ? basename(store.output) : "output.cia";
-				store.output = withOutputDir(base, value);
+				store.output = value ? withOutputDir(base, value) : "";
 			},
 			tooltip: "Directory the CIA file is written into.",
 		},
 		{
 			kind: "save",
 			label: "File",
-			display: (store) => (store.output ? basename(store.output) : "(auto)"),
+			display: (store) => (store.output ? basename(store.output) : ""),
+			placeholder: "Automatic",
 			set: (store, value) => {
 				store.output = value;
 			},
@@ -394,10 +399,11 @@ const ticket: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (store) => (store.output ? dirName(store.output) : "(next to input)"),
+			display: (store) => (store.output ? dirName(store.output) : ""),
+			placeholder: "Input folder",
 			set: (store, value) => {
 				const base = store.output ? basename(store.output) : "ticket.tik";
-				store.output = withOutputDir(base, value);
+				store.output = value ? withOutputDir(base, value) : "";
 			},
 			tooltip: "Directory the ticket file is written into.",
 		},
@@ -463,6 +469,7 @@ const nxMerge: OpDef = {
 			tooltip: NX_KEYS_TOOLTIP,
 			filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
 			display: nxKeysDisplay,
+			placeholder: NX_KEYS_AUTO,
 			color: nxKeysColor,
 		},
 	],
@@ -472,17 +479,19 @@ const nxMerge: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (store) => (store.output ? dirName(store.output) : "(next to input)"),
+			display: (store) => (store.output ? dirName(store.output) : ""),
+			placeholder: "Same as source",
 			set: (store, value) => {
 				const base = store.output ? basename(store.output) : `merged.${store.format}`;
-				store.output = withOutputDir(base, value);
+				store.output = value ? withOutputDir(base, value) : "";
 			},
 			tooltip: "Directory the merged container is written into.",
 		},
 		{
 			kind: "save",
 			label: "File",
-			display: (store) => (store.output ? basename(store.output) : "(auto)"),
+			display: (store) => (store.output ? basename(store.output) : ""),
+			placeholder: "Automatic",
 			set: (store, value) => {
 				store.output = value;
 			},
@@ -546,6 +555,7 @@ const nxSplit: OpDef = {
 			tooltip: NX_KEYS_TOOLTIP,
 			filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
 			display: nxKeysDisplay,
+			placeholder: NX_KEYS_AUTO,
 			color: nxKeysColor,
 		},
 	],
@@ -553,7 +563,8 @@ const nxSplit: OpDef = {
 		{
 			kind: "directory",
 			label: "Output directory",
-			display: (store) => store.outputDir || "same as source",
+			display: (store) => store.outputDir || "",
+			placeholder: "Same as source",
 			value: (store) => store.outputDir,
 			set: (store, value) => {
 				store.outputDir = value;

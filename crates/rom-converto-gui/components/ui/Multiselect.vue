@@ -50,6 +50,7 @@ function toggle(value: string) {
 				:aria-pressed="isSelected(option.value)"
 				class="rc-multiselect__chip"
 				:class="{ 'rc-multiselect__chip--active': isSelected(option.value) }"
+				:title="option.label"
 				@click="toggle(option.value)"
 			>
 				<span v-if="max && isSelected(option.value)" class="rc-multiselect__badge">{{ orderOf(option.value) + 1 }}</span>
@@ -64,7 +65,10 @@ function toggle(value: string) {
 .rc-multiselect-wrap {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+}
+
+.rc-multiselect-wrap > :deep(.rc-field-label) {
+	margin-bottom: 6px;
 }
 
 .rc-multiselect {
@@ -78,12 +82,14 @@ function toggle(value: string) {
 	align-items: center;
 	gap: 5px;
 	border: 1px solid var(--a14);
-	border-radius: 999px;
+	height: 26px;
+	border-radius: var(--r-sm);
 	background: transparent;
 	color: var(--t4);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 400;
-	padding: 4px 12px;
+	padding: 0 12px;
+	white-space: nowrap;
 	cursor: pointer;
 }
 
@@ -105,16 +111,18 @@ function toggle(value: string) {
 	width: 14px;
 	height: 14px;
 	border-radius: 50%;
-	background: var(--blue);
-	color: var(--bg2);
-	font-size: 9px;
+	background: var(--fill);
+	color: #fff;
+	font-size: var(--fs-xs);
 	font-weight: 700;
 	line-height: 1;
 }
 
 .rc-multiselect__placeholder {
-	margin: 0;
-	font-size: 10.5px;
+	margin: 4px 0 0;
+	font-size: var(--fs-sm);
 	color: var(--t5);
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 </style>

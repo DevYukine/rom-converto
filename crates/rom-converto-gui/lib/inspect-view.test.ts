@@ -54,7 +54,7 @@ describe("buildInspectView ctr", () => {
 			ncsd_partitions: [],
 			cia_contents: [],
 		});
-		expect(row(v.rom, "Content Type")).toBe("System");
+		expect(row(v.rom, "Content type")).toBe("System");
 	});
 
 	it("falls back to CIA contents and flags encrypted entries", () => {
@@ -105,7 +105,7 @@ describe("buildInspectView dol", () => {
 			fst_file_count: 8,
 			fst_dir_count: 3,
 		});
-		expect(v.innerTitle).toBe("Disc Files");
+		expect(v.innerTitle).toBe("Disc files");
 		expect(v.innerFiles).toEqual([
 			{ name: "opening.bnr", detail: "1.0 KiB" },
 			{ name: "audio", detail: "dir" },
@@ -311,7 +311,7 @@ describe("buildInspectView ntr", () => {
 		});
 		expect(row(v.rom, "Encryption")).toBe("decrypted");
 		expect(row(v.rom, "Header CRC16")).toBe("0xABCD (valid)");
-		expect(v.innerTitle).toBe("ARM Binaries");
+		expect(v.innerTitle).toBe("ARM binaries");
 		expect(v.innerFiles).toEqual([
 			{ name: "ARM9", detail: "256 KiB · entry 0x02000000" },
 			{ name: "ARM7", detail: "192 KiB · entry 0x02380000" },
@@ -465,7 +465,7 @@ describe("buildInspectView retro", () => {
 		expect(row(v.rom, "Title")).toBe("TST");
 		expect(row(v.rom, "System")).toBe("Famicom Disk System");
 		expect(row(v.rom, "Sides")).toBe("2");
-		expect(row(v.rom, "Manufacture Date")).toBe("1986-04-01");
+		expect(row(v.rom, "Manufacture date")).toBe("1986-04-01");
 	});
 
 	it("reports the Sega Saturn IP header", () => {
@@ -490,7 +490,7 @@ describe("buildInspectView retro", () => {
 		});
 		expect(row(v.rom, "Title")).toBe("TEST GAME");
 		expect(row(v.rom, "System")).toBe("Sega Saturn");
-		expect(row(v.rom, "Product Number")).toBe("T-0001G");
+		expect(row(v.rom, "Product number")).toBe("T-0001G");
 		expect(row(v.rom, "Region")).toBe("Japan, Asia NTSC, North America, Europe");
 	});
 
@@ -543,7 +543,7 @@ describe("buildInspectView retro", () => {
 		expect(row(v.rom, "Title")).toBe("TEST GAME");
 		expect(row(v.rom, "System")).toBe("Dreamcast");
 		expect(row(v.rom, "Maker")).toBe("TEST PUBLISHER");
-		expect(row(v.rom, "GDI Tracks")).toBe("4");
+		expect(row(v.rom, "GDI tracks")).toBe("4");
 	});
 });
 
@@ -562,7 +562,7 @@ describe("buildInspectView psp", () => {
 			icon: null,
 			background: null,
 		});
-		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(row(v.rom, "Content type")).toBe("Game");
 		expect(v.contentType).toBe("Game");
 	});
 });
@@ -613,7 +613,7 @@ describe("buildInspectView vpk", () => {
 			total_size: 1024 * 1024,
 		});
 		expect(row(v.rom, "Title")).toBe("TEST VITA GAME");
-		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(row(v.rom, "Content type")).toBe("Game");
 		expect(row(v.rom, "Files")).toBe("42");
 	});
 
@@ -631,7 +631,7 @@ describe("buildInspectView vpk", () => {
 			file_count: 3,
 			total_size: 1024,
 		});
-		expect(row(v.rom, "Content Type")).toBe("Update");
+		expect(row(v.rom, "Content type")).toBe("Update");
 	});
 
 	it("falls back to the raw category code when neither content_kind nor category_label is known", () => {
@@ -648,7 +648,7 @@ describe("buildInspectView vpk", () => {
 			file_count: 3,
 			total_size: 1024,
 		});
-		expect(row(v.rom, "Content Type")).toBe("gdc");
+		expect(row(v.rom, "Content type")).toBe("gdc");
 	});
 });
 
@@ -673,7 +673,7 @@ describe("buildInspectView pkg", () => {
 			package_flags: null,
 			meta_ids: [],
 		});
-		expect(row(v.rom, "Content Type")).toBe("Game");
+		expect(row(v.rom, "Content type")).toBe("Game");
 		expect(row(v.rom, "Data")).toBe("1.0 KiB @ 0x00001000");
 	});
 });

@@ -13,6 +13,16 @@ const emit = defineEmits<{ close: [] }>();
 
 const root = ref<HTMLElement | null>(null);
 let trigger: HTMLElement | null = null;
+// A drag that starts inside the dialog and ends on the backdrop must not close it.
+let overlayPressed = false;
+
+function onOverlayDown(e: MouseEvent) {
+	overlayPressed = e.target === e.currentTarget;
+}
+
+function onOverlayClick() {
+	if (overlayPressed) emit("close");
+}
 
 const FOCUSABLE =
 	'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -47,8 +57,10 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
 	trigger = document.activeElement as HTMLElement | null;
-	const els = focusables();
-	(els[0] ?? root.value)?.focus();
+	const bodyControl = root.value?.querySelector<HTMLElement>(`.rc-body :is(${FOCUSABLE})`);
+	const footerButton = root.value?.querySelector<HTMLElement>(".rc-footer .rc-btn--primary:not([disabled])")
+		?? root.value?.querySelector<HTMLElement>(".rc-footer button:not([disabled])");
+	(bodyControl ?? footerButton ?? root.value)?.focus();
 });
 
 onBeforeUnmount(() => {
@@ -57,31 +69,32 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-	<div class="rc-overlay" @click="emit('close')">
-		<div
-			ref="root"
-			class="rc-modal"
-			:style="{ width: `${width}px` }"
-			role="dialog"
-			aria-modal="true"
-			:aria-label="title"
-			tabindex="-1"
-			@click.stop
-			@keydown="onKeydown"
-		>
-			<div class="rc-header">
-				<span class="rc-title">{{ title }}</span>
-				<slot name="header-extra" />
-				<button type="button" class="rc-close" aria-label="Close" @click="emit('close')">✕</button>
-			</div>
-			<div class="rc-body">
-				<slot />
-			</div>
-			<div v-if="$slots.footer" class="rc-footer">
-				<slot name="footer" />
+	<Teleport to="body">
+		<div class="rc-overlay" @mousedown="onOverlayDown" @click.self="onOverlayClick">
+			<div
+				ref="root"
+				class="rc-modal"
+				:style="{ width: `min(${width}px, calc(100vw - 32px))` }"
+				role="dialog"
+				aria-modal="true"
+				:aria-label="title"
+				tabindex="-1"
+				@keydown="onKeydown"
+			>
+				<div class="rc-header">
+					<span class="rc-title">{{ title }}</span>
+					<slot name="header-extra" />
+					<button type="button" class="rc-close" aria-label="Close" @click="emit('close')">✕</button>
+				</div>
+				<div class="rc-body">
+					<slot />
+				</div>
+				<div v-if="$slots.footer" class="rc-footer">
+					<slot name="footer" />
+				</div>
 			</div>
 		</div>
-	</div>
+	</Teleport>
 </template>
 
 <style scoped>
@@ -93,14 +106,16 @@ onBeforeUnmount(() => {
 	display: flex;
 	align-items: center;
 	justify-content: center;
+	padding: 24px 16px;
 }
 
 .rc-modal {
 	background: var(--card);
 	border: 1px solid var(--a16);
-	border-radius: 12px;
+	border-radius: var(--r-lg);
 	box-shadow: 0 24px 80px var(--shC);
-	max-height: 80vh;
+	max-height: calc(100vh - 48px);
+	min-width: 0;
 	display: flex;
 	flex-direction: column;
 }
@@ -108,26 +123,33 @@ onBeforeUnmount(() => {
 .rc-header {
 	display: flex;
 	align-items: center;
+	flex: none;
 	gap: 10px;
 	padding: 12px 16px;
 	border-bottom: 1px solid var(--a10);
 }
 
 .rc-title {
-	font-size: 13.5px;
-	font-weight: 700;
+	min-width: 0;
+	font-size: var(--fs-lg);
+	font-weight: 600;
 	color: var(--t0);
-	white-space: nowrap;
+	text-wrap: balance;
+	overflow-wrap: anywhere;
 }
 
 .rc-close {
+	flex: none;
 	margin-left: auto;
 	background: none;
 	border: none;
+	border-radius: var(--r-sm);
 	color: var(--t5);
-	font-size: 13px;
+	font-size: var(--fs-md);
 	cursor: pointer;
-	padding: 2px 4px;
+	width: var(--ctl-h);
+	height: var(--ctl-h);
+	white-space: nowrap;
 }
 
 .rc-close:hover {
@@ -135,15 +157,26 @@ onBeforeUnmount(() => {
 }
 
 .rc-body {
+	min-height: 0;
 	padding: 16px;
+	font-size: var(--fs-md);
+	line-height: var(--lh-body);
 	overflow-y: auto;
+	overflow-wrap: anywhere;
 }
 
 .rc-footer {
 	display: flex;
+	flex: none;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 10px;
 	padding: 12px 16px;
 	border-top: 1px solid var(--a10);
+}
+
+.rc-footer :deep(button) {
+	flex: none;
+	white-space: nowrap;
 }
 </style>

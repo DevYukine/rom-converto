@@ -1,7 +1,5 @@
 <script setup lang="ts">
-defineProps<{
-	title: string;
-}>();
+defineProps<{ title: string }>();
 </script>
 
 <template>
@@ -19,9 +17,10 @@ defineProps<{
 <style scoped>
 .rc-config-card {
 	border: 1px solid var(--a10);
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	background: var(--card);
-	padding: 12px 14px;
+	padding: 14px 16px;
+	min-width: 0;
 }
 
 .rc-config-card__head {
@@ -33,16 +32,15 @@ defineProps<{
 }
 
 .rc-config-card__title {
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
-	color: var(--t4);
+	min-width: 0;
+	font-size: var(--fs-lg);
+	font-weight: 600;
+	color: var(--t1);
+	white-space: nowrap;
 }
 
 .rc-config-card__body {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
 }
 </style>

@@ -27,10 +27,13 @@ defineEmits<{
 
 <style scoped>
 .rc-btn {
-	border-radius: 9px;
-	padding: 10px 22px;
-	font-size: 13px;
-	font-weight: 700;
+	height: 32px;
+	flex: none;
+	border-radius: var(--r-md);
+	padding: 0 16px;
+	font-size: var(--fs-md);
+	font-weight: 600;
+	white-space: nowrap;
 	cursor: pointer;
 	border: none;
 }
@@ -40,31 +43,32 @@ defineEmits<{
 }
 
 .rc-btn--primary {
-	background: #2f6fd0;
+	background: var(--fill);
 	color: #fff;
 }
 
 .rc-btn--primary:disabled {
-	background: var(--btnDim);
+	background: var(--a08);
+	color: var(--t5);
 }
 
 .rc-btn--primary:not(:disabled):hover {
-	background: #3b82f6;
+	background: var(--fill-hover);
 }
 
 .rc-btn--destructive {
-	background: #d43a3e;
+	background: var(--fill-danger);
 	color: #fff;
 }
 
 .rc-btn--destructive:not(:disabled):hover {
-	background: #e04a4e;
+	filter: brightness(1.08);
 }
 
 .rc-btn--outlined {
 	background: transparent;
 	border: 1px solid var(--a18);
-	color: var(--t3);
+	color: var(--t2);
 }
 
 .rc-btn--outlined:not(:disabled):hover {
@@ -72,6 +76,7 @@ defineEmits<{
 }
 
 .rc-btn--outlined:disabled {
-	opacity: 0.5;
+	color: var(--t5);
+	border-color: var(--a10);
 }
 </style>

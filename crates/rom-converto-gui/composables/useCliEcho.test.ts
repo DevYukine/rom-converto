@@ -8,44 +8,44 @@ beforeEach(() => setWindowsQuoting(false));
 describe("buildCliCommand", () => {
   it("orders global flags dry-run, then skip-space-check, ahead of the op path", () => {
     const payload = runArgs("hash", "game.iso", null, { skip_space_check: true, algo: "crc32" }, true, "t1");
-    expect(buildCliCommand(payload)).toBe("> rom-converto --dry-run --skip-space-check hash game.iso --algo crc32");
+    expect(buildCliCommand(payload)).toBe("rom-converto --dry-run --skip-space-check hash game.iso --algo crc32");
   });
 
   it("joins a list-kind flag with commas", () => {
     const payload = runArgs("chd.compress", "game.iso", "game.chd", { codecs: ["cdlz", "cdzl"] }, false, "t2");
-    expect(buildCliCommand(payload)).toBe("> rom-converto chd compress game.iso game.chd --codecs cdlz,cdzl");
+    expect(buildCliCommand(payload)).toBe("rom-converto chd compress game.iso game.chd --codecs cdlz,cdzl");
   });
 
   it("emits options.inputs as positional args instead of the single input", () => {
     const payload = runArgs("nx.merge", "a.nsp", "merged.nsp", { inputs: ["a.nsp", "b.nsp"] }, false, "t3");
-    expect(buildCliCommand(payload)).toBe("> rom-converto nx merge a.nsp b.nsp --output merged.nsp");
+    expect(buildCliCommand(payload)).toBe("rom-converto nx merge a.nsp b.nsp --output merged.nsp");
   });
 
   it("routes an output_dir-kind op's output through --output-dir", () => {
     const payload = runArgs("nx.split", "merged.nsp", "out", {}, false, "t3b");
-    expect(buildCliCommand(payload)).toBe("> rom-converto nx split merged.nsp --output-dir out");
+    expect(buildCliCommand(payload)).toBe("rom-converto nx split merged.nsp --output-dir out");
   });
 
   it("routes an output_flag-kind op's output through --output", () => {
     const payload = runArgs("wup.compress", null, "out.wua", { level: 6, inputs: ["a.wud"] }, false, "t3c");
-    expect(buildCliCommand(payload)).toBe("> rom-converto wup compress a.wud --output out.wua --level 6");
+    expect(buildCliCommand(payload)).toBe("rom-converto wup compress a.wud --output out.wua --level 6");
   });
 
   it("drops on_conflict when it's the overwrite default, keeps other values", () => {
     const overwrite = runArgs("chd.compress", "a.iso", "a.chd", { on_conflict: "overwrite" }, false, "t4");
     const rename = runArgs("chd.compress", "a.iso", "a.chd", { on_conflict: "rename" }, false, "t5");
-    expect(buildCliCommand(overwrite)).toBe("> rom-converto chd compress a.iso a.chd");
-    expect(buildCliCommand(rename)).toBe("> rom-converto chd compress a.iso a.chd --on-conflict rename");
+    expect(buildCliCommand(overwrite)).toBe("rom-converto chd compress a.iso a.chd");
+    expect(buildCliCommand(rename)).toBe("rom-converto chd compress a.iso a.chd --on-conflict rename");
   });
 
   it("suppresses the positional output when an output template is set", () => {
     const payload = runArgs("chd.compress", "a.iso", "a.chd", { output_template: "{title}.chd" }, false, "t6");
-    expect(buildCliCommand(payload)).toBe("> rom-converto chd compress a.iso --output-template '{title}.chd'");
+    expect(buildCliCommand(payload)).toBe("rom-converto chd compress a.iso --output-template '{title}.chd'");
   });
 
   it("emits a bool-kind flag only when true", () => {
     const payload = runArgs("dol.verify", "a.dol", null, { full: false }, false, "t7");
-    expect(buildCliCommand(payload)).toBe("> rom-converto dol verify a.dol");
+    expect(buildCliCommand(payload)).toBe("rom-converto dol verify a.dol");
   });
 
   it("single-quotes values with shell metacharacters, not only spaces", () => {
@@ -58,7 +58,7 @@ describe("buildCliCommand", () => {
       "t8",
     );
     expect(buildCliCommand(payload)).toBe(
-      "> rom-converto --skip-space-check nx merge a.xci --output merged.xci --format xci --keys 'C:\\Program Files\\keys\\prod.keys'",
+      "rom-converto --skip-space-check nx merge a.xci --output merged.xci --format xci --keys 'C:\\Program Files\\keys\\prod.keys'",
     );
   });
 
@@ -72,13 +72,13 @@ describe("buildCliCommand", () => {
       "t12",
     );
     expect(buildCliCommand(payload)).toBe(
-      "> rom-converto organize ./library --filter-regex '(USA|Europe)' --filter-regex 'Rev A' --output-dir ./sorted --patch a.ips --patch b.bps",
+      "rom-converto organize ./library --filter-regex '(USA|Europe)' --filter-regex 'Rev A' --output-dir ./sorted --patch a.ips --patch b.bps",
     );
   });
 
   it("echoes the bare --remove-headers for an empty list and the = form for values", () => {
     const all = runArgs("organize", "./library", null, { output_dir: "./sorted", remove_headers: [] }, false, "t13");
-    expect(buildCliCommand(all)).toBe("> rom-converto organize ./library --output-dir ./sorted --remove-headers");
+    expect(buildCliCommand(all)).toBe("rom-converto organize ./library --output-dir ./sorted --remove-headers");
     const listed = runArgs(
       "organize",
       "./library",
@@ -87,12 +87,12 @@ describe("buildCliCommand", () => {
       false,
       "t13b",
     );
-    expect(buildCliCommand(listed)).toBe("> rom-converto organize ./library --output-dir ./sorted --remove-headers=nes,fds");
+    expect(buildCliCommand(listed)).toBe("rom-converto organize ./library --output-dir ./sorted --remove-headers=nes,fds");
   });
 
   it("echoes organize's explicit on-conflict even when it is overwrite", () => {
     const payload = runArgs("organize", "./library", null, { output_dir: "./sorted", on_conflict: "overwrite" }, false, "t14");
-    expect(buildCliCommand(payload)).toBe("> rom-converto organize ./library --on-conflict overwrite --output-dir ./sorted");
+    expect(buildCliCommand(payload)).toBe("rom-converto organize ./library --on-conflict overwrite --output-dir ./sorted");
   });
 
   it("emits the = form for values that start with a dash", () => {
@@ -104,15 +104,15 @@ describe("buildCliCommand", () => {
       false,
       "t15",
     );
-    expect(buildCliCommand(repeated)).toBe("> rom-converto organize ./library --filter-regex=-Beta --output-dir ./sorted");
+    expect(buildCliCommand(repeated)).toBe("rom-converto organize ./library --filter-regex=-Beta --output-dir ./sorted");
     const single = runArgs("organize", "./library", null, { output_dir: "./sorted", zip_exclude: "-*.bad" }, false, "t16");
-    expect(buildCliCommand(single)).toBe("> rom-converto organize ./library --output-dir ./sorted --zip-exclude='-*.bad'");
+    expect(buildCliCommand(single)).toBe("rom-converto organize ./library --output-dir ./sorted --zip-exclude='-*.bad'");
   });
 
   it("emits --report from reportFile, not from the options", () => {
     const payload = runArgs("chd.compress", "game.iso", "game.chd", {}, true, "t9", "report.json");
     expect(buildCliCommand(payload)).toBe(
-      "> rom-converto --dry-run chd compress game.iso game.chd --report report.json",
+      "rom-converto --dry-run chd compress game.iso game.chd --report report.json",
     );
   });
 
@@ -131,7 +131,7 @@ describe("buildCliCommand", () => {
       false,
       "t10",
     );
-    expect(buildCliCommand(payload)).toBe("> rom-converto wup compress a.wud b.app --output out.wua --level 6");
+    expect(buildCliCommand(payload)).toBe("rom-converto wup compress a.wud b.app --output out.wua --level 6");
   });
 
   it("returns an empty string for a payload without a request", () => {

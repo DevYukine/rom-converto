@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { useUpdatesStore } from "~/stores/updates";
+import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 
 const updates = useUpdatesStore();
 
@@ -46,12 +47,12 @@ function openNotes() {
 
 			<div v-else class="actions">
 				<template v-if="state.phase === 'error'">
-					<button type="button" class="primary" :disabled="blocked" @click="updates.retry()">Try again</button>
-					<button type="button" class="outlined" @click="updates.later()">Dismiss</button>
+					<PrimaryButton :disabled="blocked" @click="updates.retry()">Try again</PrimaryButton>
+					<PrimaryButton variant="outlined" @click="updates.later()">Dismiss</PrimaryButton>
 				</template>
 				<template v-else>
-					<button type="button" class="primary" :disabled="blocked" @click="updates.install()">Install and restart</button>
-					<button type="button" class="outlined" @click="updates.later()">Later</button>
+					<PrimaryButton :disabled="blocked" @click="updates.install()">Install and restart</PrimaryButton>
+					<PrimaryButton variant="outlined" @click="updates.later()">Later</PrimaryButton>
 					<button type="button" class="link skip" @click="updates.skip()">Skip this version</button>
 				</template>
 			</div>
@@ -63,17 +64,19 @@ function openNotes() {
 <style scoped>
 .toast {
 	position: fixed;
-	right: 14px;
-	bottom: 58px;
+	right: 16px;
+	bottom: calc(var(--queuebar-h) + 16px);
 	z-index: 55;
-	width: 300px;
+	width: min(340px, calc(100vw - 32px));
+	max-height: calc(100vh - var(--titlebar-h) - var(--queuebar-h) - 32px);
+	overflow-y: auto;
 	padding: 12px 14px;
 	background: var(--pop2);
 	border: 1px solid var(--a16);
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	box-shadow: 0 12px 36px var(--shC);
 	color: var(--t1);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 }
 .head {
 	display: flex;
@@ -83,6 +86,9 @@ function openNotes() {
 }
 .title {
 	flex: 1;
+	min-width: 0;
+	font-size: var(--fs-md);
+	text-wrap: balance;
 	font-weight: 600;
 	color: var(--t0);
 }
@@ -91,7 +97,7 @@ function openNotes() {
 	border: none;
 	color: var(--t4);
 	cursor: pointer;
-	font-size: 11px;
+	font-size: var(--fs-xs);
 	padding: 2px 4px;
 }
 .close:hover {
@@ -100,7 +106,8 @@ function openNotes() {
 .body {
 	margin: 6px 0 0;
 	color: var(--t2);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 	word-break: break-word;
 }
 .link {
@@ -110,12 +117,14 @@ function openNotes() {
 	color: var(--blue);
 	cursor: pointer;
 	font-size: inherit;
+	white-space: nowrap;
 }
 .link:hover {
 	text-decoration: underline;
 }
 .actions {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px;
 	margin-top: 10px;
@@ -124,44 +133,17 @@ function openNotes() {
 	margin-left: auto;
 	color: var(--t4);
 }
-.primary {
-	background: #2f6fd0;
-	color: #fff;
-	border: none;
-	border-radius: 7px;
-	padding: 5px 12px;
-	font-size: 12px;
-	font-weight: 600;
-	cursor: pointer;
-}
-.primary:not(:disabled):hover {
-	background: #3b82f6;
-}
-.primary:disabled {
-	background: var(--btnDim);
-	cursor: not-allowed;
-}
-.outlined {
-	background: none;
-	border: 1px solid var(--a18);
-	color: var(--t3);
-	border-radius: 7px;
-	padding: 5px 12px;
-	font-size: 12px;
-	cursor: pointer;
-}
-.outlined:hover {
-	border-color: var(--a40);
-}
 .caption {
 	margin: 6px 0 0;
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 	color: var(--t5);
 }
 .bar {
 	margin-top: 10px;
 	height: 4px;
-	border-radius: 2px;
+	border-radius: var(--r-sm);
 	background: var(--a10);
 	overflow: hidden;
 }

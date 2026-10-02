@@ -33,7 +33,8 @@ const ctr: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the encrypted file is written. Leave empty to write it next to the source file.",
@@ -78,7 +79,8 @@ const ntr: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the encrypted file is written. Leave empty to write it next to the source file.",

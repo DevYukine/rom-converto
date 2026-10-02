@@ -2,6 +2,7 @@
 import { useQueueStore } from "~/stores/queue";
 
 const queue = useQueueStore();
+const countsId = useId();
 </script>
 
 <template>
@@ -9,7 +10,9 @@ const queue = useQueueStore();
 		class="qbar"
 		tabindex="0"
 		role="button"
-		aria-label="Toggle queue drawer"
+		aria-label="Global queue"
+		:aria-describedby="countsId"
+		:aria-expanded="queue.drawerOpen"
 		@click="queue.drawerOpen = !queue.drawerOpen"
 		@keydown.enter="queue.drawerOpen = !queue.drawerOpen"
 		@keydown.space.prevent="queue.drawerOpen = !queue.drawerOpen"
@@ -20,11 +23,11 @@ const queue = useQueueStore();
 			</svg>
 		</span>
 		<span class="label">Global queue</span>
-		<span class="counts" aria-live="polite">
-			<b class="c-run">{{ queue.counts.running }} running</b> ·
-			{{ queue.counts.queued }} queued ·
-			<b class="c-done">{{ queue.counts.done }} done</b> ·
-			<b class="c-fail">{{ queue.counts.failed }} failed</b>
+		<span :id="countsId" class="counts">
+			<b class="c-run" :class="{ zero: !queue.counts.running }">{{ queue.counts.running }} running</b> ·
+			<span :class="{ zero: !queue.counts.queued }">{{ queue.counts.queued }} queued</span> ·
+			<b class="c-done" :class="{ zero: !queue.counts.done }">{{ queue.counts.done }} done</b> ·
+			<b class="c-fail" :class="{ zero: !queue.counts.failed }">{{ queue.counts.failed }} failed</b>
 		</span>
 		<span class="bar"><span class="fill" :style="{ width: queue.avgRunningPct + '%' }" /></span>
 		<span class="speed">{{ queue.statusText }}</span>
@@ -37,34 +40,37 @@ const queue = useQueueStore();
 	display: flex;
 	align-items: center;
 	gap: 16px;
-	height: 46px;
+	height: var(--queuebar-h);
+	flex: none;
 	padding: 0 18px;
 	background: var(--bg2);
 	border-top: 1px solid var(--a10);
 	cursor: pointer;
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
 }
 .qbar:hover {
 	background: var(--bg2h);
 }
 .chev {
 	display: flex;
+	flex: none;
 	align-items: center;
 	justify-content: center;
-	width: 26px;
-	height: 26px;
+	width: var(--ctl-h);
+	height: var(--ctl-h);
 	border: 1px solid var(--a20);
-	border-radius: 7px;
+	border-radius: var(--r-sm);
 	background: var(--a07);
 	color: var(--t3);
 }
 .label {
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 700;
 	color: var(--t0);
 }
 .counts {
 	color: var(--t4);
+	white-space: nowrap;
 }
 .c-run {
 	color: var(--blue);
@@ -75,25 +81,39 @@ const queue = useQueueStore();
 .c-fail {
 	color: var(--red);
 }
+.counts .zero {
+	color: var(--t5);
+}
 .bar {
 	flex: 1;
+	min-width: 24px;
 	height: 6px;
-	border-radius: 3px;
+	border-radius: var(--r-sm);
 	background: var(--a10);
 	overflow: hidden;
 }
 .fill {
 	display: block;
 	height: 100%;
-	background: #3b82f6;
+	background: var(--fill);
 	transition: width 0.4s;
 }
 .speed {
-	font-family: ui-monospace, monospace;
+	font-family: var(--font-mono);
 	color: var(--t3);
+	white-space: nowrap;
 }
 .saved {
-	font-family: ui-monospace, monospace;
+	font-family: var(--font-mono);
 	color: var(--green);
+	white-space: nowrap;
+}
+@media (max-width: 899px) {
+	.label {
+		display: none;
+	}
+	.qbar {
+		gap: 12px;
+	}
 }
 </style>

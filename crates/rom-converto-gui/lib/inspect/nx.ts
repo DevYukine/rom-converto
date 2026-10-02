@@ -8,7 +8,7 @@ export const nx: KindModule<"nx"> = {
 		const rom: InspectField[] = [];
 		add(container, "Container", info.container_kind.toUpperCase());
 		add(container, "Compression", info.is_compressed ? "zstd" : "none");
-		add(container, "Compressed Size", formatBytes(info.physical_bytes));
+		add(container, "Compressed size", formatBytes(info.physical_bytes));
 		add(container, "Distribution", enumDisplayName(info.distribution));
 		add(container, "Structure", enumDisplayName(info.structure));
 		add(container, "NCAs", `${info.nca_names.length} (${info.cnmt_nca_names.length} meta)`);
@@ -16,7 +16,7 @@ export const nx: KindModule<"nx"> = {
 		if (info.xci_partitions?.length) {
 			add(
 				container,
-				"XCI Partitions",
+				"XCI partitions",
 				info.xci_partitions.map((p) => `${p.name} (${p.file_count} files, ${formatBytes(p.total_size)})`).join("; "),
 			);
 		}
@@ -26,7 +26,7 @@ export const nx: KindModule<"nx"> = {
 		add(rom, "Title", title?.name || info.container_kind.toUpperCase());
 		if (full) {
 			add(rom, "Title ID", full.application_title_id_hex);
-			add(rom, "Content Type", contentTypeDisplayName(full.title_kind));
+			add(rom, "Content type", contentTypeDisplayName(full.title_kind));
 			add(
 				rom,
 				"Version",
@@ -36,10 +36,10 @@ export const nx: KindModule<"nx"> = {
 		if (ctrl) add(rom, "Languages", ctrl.supported_languages.map((l) => languageDisplayName(l)).join(", "));
 		add(rom, "Publisher", title?.publisher);
 		if (ctrl) {
-			add(rom, "Age Ratings", ctrl.age_ratings.map((r) => `${ageRatingDisplayName(r.organization)} ${r.age}+`).join(", "));
+			add(rom, "Age ratings", ctrl.age_ratings.map((r) => `${ageRatingDisplayName(r.organization)} ${r.age}+`).join(", "));
 		}
 		add(rom, "Size", formatBytes(full?.total_content_size ?? info.physical_bytes));
-		add(rom, "Base Title", full?.base_application_id_hex);
+		add(rom, "Base title", full?.base_application_id_hex);
 		add(rom, "Contents", full?.content_count);
 		// NCZ crypto sections are stored decrypted; the AES-CTR is re-applied on read.
 		add(
@@ -55,20 +55,20 @@ export const nx: KindModule<"nx"> = {
 		);
 		if (full) {
 			const req = full.required_system_version;
-			if (req > 0) add(rom, "Required System", `${(req >> 26) & 0x3f}.${(req >> 20) & 0x3f}.${(req >> 16) & 0xf}`);
+			if (req > 0) add(rom, "Required system", `${(req >> 26) & 0x3f}.${(req >> 20) & 0x3f}.${(req >> 16) & 0xf}`);
 			add(rom, "Storage ID", full.storage_id);
 		}
 		if (ctrl) {
 			add(rom, "Attributes", ctrl.attributes.join(", "));
-			add(rom, "Startup Account", ctrl.startup_user_account_name);
+			add(rom, "Startup account", ctrl.startup_user_account_name);
 			add(rom, "Screenshot", ctrl.screenshot === 0 ? "Allowed" : "Blocked");
-			add(rom, "Video Capture", ctrl.video_capture_name);
-			add(rom, "Screen Orientation", ctrl.screen_orientation_name);
-			add(rom, "Parental Control", ctrl.parental_control_flags.join(", "));
-			add(rom, "Add-on Policy", ctrl.addon_install_policy_name);
+			add(rom, "Video capture", ctrl.video_capture_name);
+			add(rom, "Screen orientation", ctrl.screen_orientation_name);
+			add(rom, "Parental control", ctrl.parental_control_flags.join(", "));
+			add(rom, "Add-on policy", ctrl.addon_install_policy_name);
 			add(
 				rom,
-				"Save Data",
+				"Save data",
 				[
 					ctrl.user_account_save && `${formatBytes(ctrl.user_account_save)} user`,
 					ctrl.device_save && `${formatBytes(ctrl.device_save)} device`,
@@ -89,7 +89,7 @@ export const nx: KindModule<"nx"> = {
 		return {
 			container,
 			rom,
-			innerTitle: "NCA Files",
+			innerTitle: "NCA files",
 			innerFiles: info.files.map((f) => ({
 				name: f.name,
 				detail: f.partition ? `${formatBytes(f.size)} · ${f.partition}` : formatBytes(f.size),
@@ -99,7 +99,7 @@ export const nx: KindModule<"nx"> = {
 	title: (info) =>
 		englishFirst(info.full?.control?.titles, (t) => t.language)?.name || info.container_kind.toUpperCase(),
 	size: (info) => info.physical_bytes,
-	console: () => "SWITCH",
+	console: () => "Switch",
 	format: (info) => info.container_kind.toUpperCase(),
 	meta(info) {
 		const ctrl = info.full?.control;

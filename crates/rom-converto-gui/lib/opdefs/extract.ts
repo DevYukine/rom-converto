@@ -1,5 +1,6 @@
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
+	NX_KEYS_AUTO,
 	NX_KEYS_TOOLTIP,
 	commonOptions,
 	directoryOutputRows,
@@ -35,7 +36,8 @@ function outputRows(): OutputRow[] {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where extracted files are written. Leave empty to write each output next to its source file.",
@@ -44,6 +46,7 @@ function outputRows(): OutputRow[] {
 			kind: "template",
 			label: "Template",
 			display: (s) => s.outputTemplate || "",
+			placeholder: "None",
 			set: (s, v) => { s.outputTemplate = v; },
 			tooltip:
 				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
@@ -57,7 +60,8 @@ function outputRowsWithReport(): OutputRow[] {
 		{
 			kind: "report",
 			label: "Run report",
-			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
+			display: (s) => (s.reportFile ? basename(s.reportFile) : ""),
+			placeholder: "None",
 			set: (s, v) => { s.reportFile = v; },
 			tooltip:
 				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
@@ -206,6 +210,7 @@ const nx: OpDef = {
 			tooltip: NX_KEYS_TOOLTIP,
 			filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
 			display: nxKeysDisplay,
+			placeholder: NX_KEYS_AUTO,
 			color: nxKeysColor,
 		},
 		...recursiveFields(),
@@ -246,7 +251,8 @@ const chd: OpDef = {
 			key: "parent",
 			label: "Parent CHD",
 			filters: [{ name: "CHD", extensions: ["chd"] }],
-			display: (s) => (s.parent ? basename(s.parent) : "none"),
+			display: (s) => (s.parent ? basename(s.parent) : ""),
+			placeholder: "None",
 			tooltip:
 				"Some CHDs are delta files that only store the differences against a base image. Pick that base CHD here so the full data can be rebuilt.",
 		},
@@ -327,7 +333,7 @@ const xbox: OpDef = {
 	resultKind: "convert",
 	title: "Extract XISO",
 	subtitle: "Walks the disc's file tree and writes every file to a folder.",
-	dropText: "Drop an .xiso or .iso file",
+	dropText: "Drop .xiso or .iso files or folders",
 	acceptedExts: ["xiso", "iso", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "XISO", extensions: ["xiso", "iso"] }],
 	fields: recursiveFields(),
@@ -356,7 +362,7 @@ const xenon: OpDef = {
 	resultKind: "convert",
 	title: "Extract ZArchive",
 	subtitle: "Writes every file in the archive to a folder.",
-	dropText: "Drop a .zar file",
+	dropText: "Drop .zar files or folders",
 	acceptedExts: ["zar", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "ZArchive", extensions: ["zar"] }],
 	fields: recursiveFields(),
@@ -385,7 +391,7 @@ const psp: OpDef = {
 	resultKind: "convert",
 	title: "Extract EBOOT.PBP",
 	subtitle: "Writes every segment (SFO, icons, DATA.PSAR, ...) to a folder.",
-	dropText: "Drop an EBOOT.PBP file",
+	dropText: "Drop EBOOT.PBP files or folders",
 	acceptedExts: ["pbp", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "PBP", extensions: ["pbp"] }],
 	fields: recursiveFields(),
@@ -415,7 +421,7 @@ const vita: OpDef = {
 	resultKind: "convert",
 	title: "Extract PKG",
 	subtitle: "Decrypts the item table and writes every file to a folder.",
-	dropText: "Drop a .pkg file",
+	dropText: "Drop .pkg files or folders",
 	acceptedExts: ["pkg", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "PKG", extensions: ["pkg"] }],
 	fields: recursiveFields(),

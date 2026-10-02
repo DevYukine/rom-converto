@@ -23,22 +23,22 @@ export const chd: KindModule<"chd"> = {
 		const hashes: InspectField[] = [];
 		add(container, "Container", `CHD v${info.version}`);
 		add(container, "Compression", info.compressors.join(", ") || "none");
-		add(container, "Compressed Size", formatBytes(info.physical_bytes));
-		add(container, "Logical Size", formatBytes(info.logical_bytes));
+		add(container, "Compressed size", formatBytes(info.physical_bytes));
+		add(container, "Logical size", formatBytes(info.logical_bytes));
 		add(container, "Ratio", `${info.compression_ratio.toFixed(1)}%`);
 		add(container, "Hunk", `${formatBytes(info.hunk_bytes)} × ${info.hunk_count}`);
 		add(container, "Unit", formatBytes(info.unit_bytes));
 		if (info.dvd) add(container, "DVD", `${info.dvd.total_sectors} sectors · ${info.dvd.layer_class}`);
 		if (info.hard_disk) {
 			const hd = info.hard_disk;
-			add(container, "Hard Disk", `${hd.cylinders}/${hd.heads}/${hd.sectors} · ${hd.sector_bytes} B/sector`);
+			add(container, "Hard disk", `${hd.cylinders}/${hd.heads}/${hd.sectors} · ${hd.sector_bytes} B/sector`);
 		}
 		if (info.ld) {
 			add(container, "LD FPS", info.ld.fps);
-			add(container, "LD Field Size", `${info.ld.width}x${info.ld.height}`);
-			add(container, "LD Interlaced", info.ld.interlaced ? "yes" : "no");
-			add(container, "LD Audio", `${info.ld.channels} ch · ${info.ld.sample_rate} Hz`);
-			add(container, "LD Frames", info.ld.frame_count);
+			add(container, "LD field size", `${info.ld.width}x${info.ld.height}`);
+			add(container, "LD interlaced", info.ld.interlaced ? "yes" : "no");
+			add(container, "LD audio", `${info.ld.channels} ch · ${info.ld.sample_rate} Hz`);
+			add(container, "LD frames", info.ld.frame_count);
 			if (info.ld.vbi) add(container, "LD VBI", ldVbiSummary(info.ld.vbi));
 		}
 		add(container, "Metadata", info.metadata_tags.map((t) => t.tag).join(", "));
@@ -82,7 +82,7 @@ export const chd: KindModule<"chd"> = {
 		if (info.content?.kind === "psp") return "UMD";
 		if (info.ld) return "LaserDisc";
 		if (info.dvd) return "DVD";
-		if (info.hard_disk) return "Hard Disk";
+		if (info.hard_disk) return "Hard disk";
 		return info.tracks.length ? "CD" : null;
 	},
 	meta: (info) =>

@@ -172,12 +172,17 @@ async function dryRun() {
 <style scoped>
 .rc-actions {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 12px;
+	gap: 10px 12px;
 }
 
 .rc-actions__note {
-	font-size: 11.5px;
-	color: var(--t4);
+	flex: 1 1 260px;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	color: var(--t5);
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 </style>

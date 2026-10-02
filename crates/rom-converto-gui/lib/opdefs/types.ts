@@ -11,11 +11,14 @@ export interface StagedItem {
 	name: string;
 	size: number;
 	outExt: string;
+	// Staged as a folder (an op with a folder picker whose directory held no eligible files).
+	dir?: boolean;
 }
 
 export type FieldKind =
 	| "slider"
 	| "segmented"
+	| "select"
 	| "toggle"
 	| "kv"
 	| "number"
@@ -29,6 +32,7 @@ interface FieldBase {
 	kind: FieldKind;
 	key: string;
 	label: string;
+	section?: string;
 	hint?: string;
 	tooltip?: string;
 	visible?: (store: OpStore) => boolean;
@@ -46,6 +50,11 @@ export interface SegmentedField extends FieldBase {
 	options: { label: string; value: string }[];
 	// Runs after the user picks a segment (not on programmatic writes).
 	onSet?: (store: OpStore) => void;
+}
+
+export interface SelectField extends FieldBase {
+	kind: "select";
+	options: { label: string; value: string | number }[];
 }
 
 export interface ToggleField extends FieldBase {
@@ -80,6 +89,8 @@ export interface TextField extends FieldBase {
 export interface FileField extends FieldBase {
 	kind: "file";
 	filters?: { name: string; extensions: string[] }[];
+	placeholder?: string;
+	directory?: boolean;
 	display: (store: OpStore) => string;
 	// Overrides the clickable-blue value color, e.g. found/missing state.
 	color?: (store: OpStore) => KvColor | undefined;
@@ -97,6 +108,7 @@ export interface MultiselectField extends FieldBase {
 export type FieldDef =
 	| SliderField
 	| SegmentedField
+	| SelectField
 	| ToggleField
 	| KvField
 	| NumberField
@@ -108,15 +120,16 @@ export interface OutputRow {
 	kind: "directory" | "template" | "text" | "report" | "save";
 	label: string;
 	display: (store: OpStore) => string;
+	placeholder?: string;
+	// kind "directory" only: an empty value is invalid, so the picker offers
+	// no row that clears back to the placeholder.
+	required?: boolean;
 	// kind "directory" only: the stored path (empty when unset), which the
 	// picker compares against its entries to mark the selection.
 	value?: (store: OpStore) => string;
 	set?: (store: OpStore, value: string) => void;
 	color?: "t3" | "blue" | "green" | "yellow";
 	tooltip?: string;
-	// kind "directory" only: a picker without the output presets, titled and
-	// with a clear entry labelled for what an empty value means here.
-	picker?: { title: string; clearLabel: string };
 	// kind "save" only: save-dialog filters and suggested filename.
 	filters?: { name: string; extensions: string[] }[];
 	defaultPath?: string;
@@ -132,11 +145,12 @@ export interface OpDef {
 	resultKind: ResultKind;
 
 	title: string;
+	// Heading of the main options card; "Options" when unset.
+	optionsTitle?: string;
 	subtitle: string;
 	dropText: string;
 	acceptedExts: string[];
 	browseFilters?: { name: string; extensions: string[] }[];
-	defaultOutputDir?: string;
 	singleInput?: boolean;
 	// Input is a directory; DropZone offers a folder-picker instead of a file dialog.
 	browseDirectory?: boolean;
@@ -181,7 +195,8 @@ export function directoryOutputRows(tooltip: string): OutputRow[] {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip,
@@ -266,7 +281,7 @@ export function opProgressKey(def: OpDef, store: OpStore): string | undefined {
 }
 
 // Mirrors default_candidate_paths() in rom-converto-lib nintendo/nx/keys.rs.
-export const NX_KEYS_AUTO = "auto (~/.switch/prod.keys)";
+export const NX_KEYS_AUTO = "Automatic (~/.switch/prod.keys)";
 export const NX_KEYS_TOOLTIP =
 	"Path to prod.keys, used to decrypt Switch content. When unset, the app looks in ~/.switch (the same location nsz uses), then next to the rom-converto executable.";
 

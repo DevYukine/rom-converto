@@ -1,4 +1,4 @@
-import { NX_KEYS_TOOLTIP, commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
@@ -50,7 +50,8 @@ const ctr: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
@@ -95,13 +96,6 @@ const wup: OpDef = {
 	fields: [
 		{
 			kind: "kv",
-			key: "output",
-			label: "Output",
-			display: () => "meta/code/content tree",
-			tooltip: "The decrypted title is written as a loadiine style folder tree that Cemu can load directly.",
-		},
-		{
-			kind: "kv",
 			key: "titleKey",
 			label: "Title key",
 			display: () => "derived when no ticket",
@@ -113,7 +107,8 @@ const wup: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.output || "<input>_decrypted",
+			display: (s) => s.output || "",
+			placeholder: "<input>_decrypted",
 			value: (s) => s.output,
 			set: (s, v) => { s.output = v; },
 			tooltip: "Where the decrypted folder tree is written. Created if missing. Leave empty to use the input name with a _decrypted suffix.",
@@ -158,7 +153,8 @@ const ps3: OpDef = {
 			key: "key",
 			label: "Disc key (.dkey)",
 			filters: [{ name: "Disc key", extensions: ["dkey"] }],
-			display: (s) => (s.key ? `${basename(s.key)} ✓` : "sibling .dkey"),
+			display: (s) => (s.key ? `${basename(s.key)} ✓` : ""),
+			placeholder: "Automatic (database, then sibling .dkey)",
 			tooltip: "The disc's 16-byte data key. When left empty, it is looked up in the built-in database by the disc's title ID, then a sibling <input>.dkey next to the ISO.",
 		},
 		{
@@ -175,7 +171,8 @@ const ps3: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
@@ -222,7 +219,8 @@ const ntr: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
@@ -269,6 +267,7 @@ const nx: OpDef = {
 			tooltip: NX_KEYS_TOOLTIP,
 			filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
 			display: nxKeysDisplay,
+			placeholder: NX_KEYS_AUTO,
 			color: nxKeysColor,
 		},
 		...recursiveFields(),
@@ -278,7 +277,8 @@ const nx: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the decrypted file is written. Leave empty to write it next to the source file.",
@@ -287,6 +287,7 @@ const nx: OpDef = {
 			kind: "template",
 			label: "Template",
 			display: (s) => s.outputTemplate || "",
+			placeholder: "None",
 			set: (s, v) => { s.outputTemplate = v; },
 			tooltip:
 				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
@@ -294,7 +295,8 @@ const nx: OpDef = {
 		{
 			kind: "report",
 			label: "Run report",
-			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
+			display: (s) => (s.reportFile ? basename(s.reportFile) : ""),
+			placeholder: "None",
 			set: (s, v) => { s.reportFile = v; },
 			tooltip:
 				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",

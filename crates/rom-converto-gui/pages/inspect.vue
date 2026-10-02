@@ -126,7 +126,7 @@ function runQuick(kind: "compress" | "verify") {
 </script>
 
 <template>
-	<div class="rc-inspect">
+	<div class="rc-inspect rc-page">
 		<div class="rc-inspect__header">
 			<h1>Inspect ROM</h1>
 			<p>Reads metadata instantly. Nothing enters the queue and nothing is written.</p>
@@ -143,8 +143,13 @@ function runQuick(kind: "compress" | "verify") {
 				label="Keys (optional)"
 				tooltip="prod.keys for Switch containers, an optional master key override for Wii U discs. Other consoles do not need it."
 			/>
-			<span class="rc-inspect__keys-path">{{ keysPath || "not set" }}</span>
-			<button type="button" @click="browseKeys">Browse</button>
+			<button type="button" class="rc-picker" :title="keysPath || 'Browse keys'" aria-label="Browse keys" @click="browseKeys">
+					<span v-if="keysPath" class="rc-picker__value rc-inspect__keys-path">{{ keysPath }}</span>
+				<span v-else class="rc-inspect__keys-placeholder">Not set</span>
+				<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+					<path d="M3 7h6l2 2h10v10H3z" />
+				</svg>
+			</button>
 		</div>
 
 		<p v-if="loading" class="rc-inspect__status">Reading metadata…</p>
@@ -166,61 +171,69 @@ function runQuick(kind: "compress" | "verify") {
 
 <style scoped>
 .rc-inspect {
+	width: 100%;
 	max-width: 900px;
 	margin: 0 auto;
-	padding: 20px 26px;
+	padding: 24px 28px 32px;
 	display: flex;
 	flex-direction: column;
-	gap: 12px;
+	gap: 16px;
 }
 
 .rc-inspect__header h1 {
-	font-size: 18px;
+	font-size: var(--fs-xl);
 	font-weight: 700;
 	color: var(--t0);
+	line-height: 1.25;
+	text-wrap: balance;
 }
 
 .rc-inspect__header p {
 	margin-top: 4px;
-	font-size: 11.5px;
+	font-size: var(--fs-md);
+	line-height: var(--lh-body);
 	color: var(--t4);
+	text-wrap: pretty;
 }
 
 .rc-inspect__keys {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 8px;
-	font-size: 11.5px;
-	color: var(--t4);
+	gap: 10px 16px;
+	min-height: 32px;
+	padding: 6px 0;
+}
+
+.rc-inspect__keys > :deep(.rc-field-label) {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.rc-inspect__keys .rc-picker {
+	flex: 0 1 60%;
+	min-width: 160px;
+	margin-left: auto;
 }
 
 .rc-inspect__keys-path {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-family: ui-monospace, monospace;
+	font-family: var(--font-mono);
 	color: var(--t3);
 }
 
-.rc-inspect__keys button {
-	border: 1px solid var(--a25);
-	border-radius: 6px;
-	padding: 4px 12px;
-	font-size: 11px;
-	color: var(--t0);
-	font-weight: 500;
-	background: transparent;
-	cursor: pointer;
+.rc-inspect__keys-placeholder {
+	color: var(--t6);
 }
 
 .rc-inspect__status {
-	font-size: 12px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t4);
+	text-wrap: pretty;
+	overflow-wrap: anywhere;
 }
 
 .rc-inspect__status--error {
-	color: #d43a3e;
+	color: var(--red);
 }
 </style>

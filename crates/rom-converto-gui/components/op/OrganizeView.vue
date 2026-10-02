@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { basename } from "~/composables/useDerivedPath";
 import { openContextMenu } from "~/composables/useContextMenu";
@@ -29,16 +29,28 @@ const fileProgress = useProgress(`${progressKey}-file`);
 
 void store.ensureRowListener();
 
-const ROW_HEIGHT = 46;
+const resultsElement = ref<HTMLElement | null>(null);
+const stacked = ref(false);
+let resultsObserver: ResizeObserver | null = null;
+watch(resultsElement, (el) => {
+	resultsObserver?.disconnect();
+	if (!el) return;
+	const container = el.closest<HTMLElement>(".rc-results")!;
+	resultsObserver = new ResizeObserver(([entry]) => {
+		stacked.value = entry!.contentRect.width < 960;
+	});
+	resultsObserver.observe(container);
+}, { flush: "post" });
+onBeforeUnmount(() => resultsObserver?.disconnect());
 
 const CHIPS = [
-	{ status: "ok", label: "Ok", color: "green" },
-	{ status: "skipped", label: "Skipped", color: "yellow" },
+	{ status: "ok", label: "OK", color: "green" },
+	{ status: "skipped", label: "Skipped", color: "neutral" },
 	{ status: "failed", label: "Failed", color: "red" },
 ] as const;
 
 const TAG: Record<string, { tag: string; label: string }> = {
-	ok: { tag: "PASSED", label: "Ok" },
+	ok: { tag: "PASSED", label: "OK" },
 	skipped: { tag: "UNKNOWN", label: "Skipped" },
 	failed: { tag: "FAILED", label: "Failed" },
 };
@@ -92,9 +104,8 @@ const visibleRows = computed(() => {
 });
 
 const summary = computed(() => {
-	const text = `${counts.value.ok ?? 0} ok · ${counts.value.skipped ?? 0} skipped · ${counts.value.failed ?? 0} failed`;
 	const playlists = plan.value?.playlists.length ?? 0;
-	return playlists ? `${text} · ${playlists} playlists` : text;
+	return playlists ? `${playlists} playlist${playlists === 1 ? "" : "s"}` : "";
 });
 
 // Each run starts from an empty stream; staging alone must not drop the
@@ -118,6 +129,39 @@ function detail(r: OrganizeRow): { text: string; tone: "red" | "muted" } | null 
 	if (r.status === "failed") return { text: r.detail, tone: "red" };
 	if (r.status === "skipped") return { text: r.detail, tone: "muted" };
 	return null;
+}
+
+function rowHeight(row: OrganizeRow): number {
+	return detail(row) ? 60 : 44;
+}
+
+const ACTION_LABELS: Record<string, string> = {
+	compress: "Compress", zip: "Zip", copy: "Copy", move: "Move",
+	link: "Link", clean: "Clean", playlist: "Playlist", skip: "",
+};
+const SUFFIX_LABELS: Record<string, string> = {
+	migrate: "Migrate", convert: "Convert", decrypt: "Decrypt", compress: "Compress",
+};
+
+function actionLabel(action: string): string {
+	return ACTION_LABELS[action] ?? SUFFIX_LABELS[action.slice(action.lastIndexOf(".") + 1)] ?? action;
+}
+
+function consoleLabel(row: OrganizeRow): string {
+	return row.action === "clean" || row.action === "playlist" ? "" : row.console || "Unknown";
+}
+
+function directory(path: string, root: string): string {
+	const relative = relativePath(path, root);
+	return relative.slice(0, relative.length - basename(path).length);
+}
+
+// The tail keeps the extension and disc number visible when the middle is truncated.
+const NAME_TAIL = 14;
+
+function splitName(path: string): [string, string] {
+	const name = basename(path);
+	return [name.slice(0, -NAME_TAIL), name.slice(-NAME_TAIL)];
 }
 
 const detailRow = ref<OrganizeRow | null>(null);
@@ -153,297 +197,232 @@ function contextItems(r: OrganizeRow) {
 
 	<div v-for="w in progress.warnings.value" :key="w" role="note" class="rc-warning">{{ w }}</div>
 
-	<ConfigCard v-if="sourceRows.length" title="Results">
-		<div class="rc-chips">
-			<FilterChip
-				label="All"
-				:count="sourceRows.length"
-				:active="statusFilter === 'all'"
-				@click="statusFilter = 'all'"
-			/>
-			<FilterChip
-				v-for="chip in CHIPS"
-				:key="chip.status"
-				:label="chip.label"
-				:count="counts[chip.status] ?? 0"
-				:color="chip.color"
-				:active="statusFilter === chip.status"
-				:class="{ 'rc-chip--empty': !(counts[chip.status] ?? 0) }"
-				@click="toggleFilter(chip.status)"
-			/>
-		</div>
-
-		<div class="rc-results__head">
-			<span class="rc-results__showing">
-				<template v-if="summary">{{ summary }} · </template>Showing
-				<strong>{{ statusFilter === "all" ? "all files" : (TAG[statusFilter]?.label ?? statusFilter) }}</strong>
-				<template v-if="query"> matching “{{ query }}”</template>
-				<template v-if="visibleRows.length !== sourceRows.length"> ({{ visibleRows.length.toLocaleString() }})</template>
-			</span>
+	<ConfigCard v-if="sourceRows.length" title="Results" class="rc-results">
+		<div ref="resultsElement" class="rc-organize">
+		<div class="rc-results__toolbar">
+			<div class="rc-results__chips">
+				<FilterChip
+					label="All"
+					:count="sourceRows.length"
+					:active="statusFilter === 'all'"
+					@click="statusFilter = 'all'"
+				/>
+				<FilterChip
+					v-for="chip in CHIPS"
+					:key="chip.status"
+					:label="chip.label"
+					:count="counts[chip.status] ?? 0"
+					:color="chip.color"
+					:active="statusFilter === chip.status"
+					:class="{ 'rc-results__chip--empty': !(counts[chip.status] ?? 0) }"
+					@click="toggleFilter(chip.status)"
+				/>
+			</div>
 			<input
 				v-model="query"
 				type="search"
-				class="rc-results__search"
+				class="rc-input rc-results__search"
 				placeholder="Filter by name"
 				aria-label="Filter results by name"
 			>
 		</div>
 
+		<p class="rc-results__summary">
+			<template v-if="summary">{{ summary }} · </template>Showing
+			<strong>{{ statusFilter === "all" ? "all files" : (TAG[statusFilter]?.label ?? statusFilter) }}</strong>
+			<template v-if="query"> matching “{{ query }}”</template>
+			<template v-if="visibleRows.length !== sourceRows.length"> ({{ visibleRows.length.toLocaleString() }})</template>
+		</p>
+
 		<div v-if="!visibleRows.length" class="rc-results__none">Nothing matches this filter.</div>
-		<VirtualList v-else :items="visibleRows" :row-height="ROW_HEIGHT" :key-of="(r) => r.input">
-			<template #default="{ item: r }">
-				<div class="rc-row" @contextmenu="openContextMenu($event, contextItems(r))">
-					<StatusTag :status="TAG[r.status]?.tag ?? r.status" :label="TAG[r.status]?.label" />
-					<div class="rc-row__text">
-						<span class="rc-row__path">
-							<span class="rc-row__console">{{ r.console || "-" }}</span>
-							<span class="rc-row__action">{{ r.action }}</span>
-							<span class="rc-row__name" :title="r.input">{{ relativePath(r.input, libraryRoot) }}</span>
-							<span class="rc-row__arrow">→</span>
+		<template v-else>
+			<div class="rc-results__columns" aria-hidden="true">
+				<span>Status</span>
+				<span class="rc-columns__stack">File</span>
+				<span class="rc-columns__wide">Console</span>
+				<span class="rc-columns__wide">Action</span>
+				<span class="rc-columns__wide">Source</span>
+				<span class="rc-columns__wide" />
+				<span class="rc-columns__wide">Destination</span>
+				<span class="rc-results__actions" />
+			</div>
+			<VirtualList :items="visibleRows" :row-height="stacked ? 64 : rowHeight" :key-of="(r, index) => `${index}:${r.input}`">
+				<template #default="{ item: r }">
+					<div class="rc-results__row" :class="{ 'rc-results__row--fail': r.status === 'failed', 'rc-results__row--multiline': !!detail(r) }" @contextmenu="openContextMenu($event, contextItems(r))">
+						<StatusTag :status="TAG[r.status]?.tag ?? r.status" :label="TAG[r.status]?.label" />
+						<div class="rc-results__text">
+							<div class="rc-row__meta">
+								<span class="rc-row__console" :class="{ 'rc-row__console--unknown': !r.console }" :title="consoleLabel(r)">{{ consoleLabel(r) }}</span>
+								<span class="rc-row__action" :title="r.action">{{ actionLabel(r.action) }}</span>
+							</div>
+							<div class="rc-row__path" :class="{ 'rc-row__path--source-only': !r.output }">
+								<span class="rc-results__name rc-row__source" :title="r.input">
+									<span class="rc-row__directory">{{ directory(r.input, libraryRoot) }}</span><span class="rc-row__basename"><span class="rc-row__basename-start">{{ splitName(r.input)[0] }}</span><span class="rc-row__basename-end">{{ splitName(r.input)[1] }}</span></span>
+								</span>
+								<span class="rc-results__arrow">{{ r.output ? "→" : "" }}</span>
+								<span class="rc-results__name rc-row__destination" :title="r.output ?? undefined">
+									<template v-if="r.output"><span class="rc-row__directory">{{ directory(r.output, outputRoot) }}</span><span class="rc-row__basename"><span class="rc-row__basename-start">{{ splitName(r.output)[0] }}</span><span class="rc-row__basename-end">{{ splitName(r.output)[1] }}</span></span></template>
+								</span>
+							</div>
 							<span
-								v-if="r.output"
-								class="rc-row__name"
-								:title="r.output"
-							>{{ relativePath(r.output, outputRoot) }}</span>
-							<span v-else class="rc-row__arrow">-</span>
-						</span>
-						<span
-							v-if="detail(r)"
-							class="rc-row__detail"
-							:class="`rc-row__detail--${detail(r)!.tone}`"
-						>{{ detail(r)!.text }}</span>
+								v-if="detail(r)"
+								class="rc-results__detail"
+								:class="`rc-results__detail--${detail(r)!.tone}`"
+								:title="detail(r)!.text"
+							>{{ detail(r)!.text }}</span>
+						</div>
+						<div class="rc-results__actions">
+							<button v-if="r.status === 'failed'" type="button" class="rc-results__link" @click="detailRow = r">Details</button>
+						</div>
 					</div>
-					<button v-if="r.status === 'failed'" type="button" class="rc-link" @click="detailRow = r">Details</button>
-				</div>
-			</template>
-		</VirtualList>
+				</template>
+			</VirtualList>
+		</template>
+		</div>
 	</ConfigCard>
 
 	<DetailModal
 		v-if="detailRow"
 		:title="basename(detailRow.input)"
 		:lines="[detailRow.detail ?? 'No additional detail.']"
+		tone="error"
 		@close="detailRow = null"
 	/>
 </template>
 
 <style scoped>
-.rc-progress {
-	display: flex;
-	flex-direction: column;
-	gap: 7px;
-	padding: 10px 14px;
-	border: 1px solid var(--a10);
-	border-radius: 10px;
-	background: var(--card);
+.rc-organize .rc-results__columns,
+.rc-organize .rc-results__row {
+	grid-template-columns: 96px minmax(128px, 0.7fr) 88px minmax(0, 1.5fr) 16px minmax(0, 1.5fr) auto;
 }
 
-.rc-progress__row {
-	display: flex;
-	align-items: baseline;
-	gap: 10px;
-	font-size: 11.5px;
+.rc-columns__stack {
+	display: none;
 }
 
-.rc-progress__phase {
-	font-weight: 600;
-	color: var(--t1);
-}
-
-.rc-progress__count {
-	font-family: ui-monospace, monospace;
-	color: var(--t3);
-}
-
-.rc-progress__track {
-	position: relative;
-	height: 4px;
-	border-radius: 3px;
-	background: var(--a10);
-	overflow: hidden;
-}
-
-.rc-progress__fill {
+.rc-organize .rc-results__row {
 	height: 100%;
-	background: #2f6fd0;
-	transition: width 0.15s linear;
+	padding-top: 0;
+	padding-bottom: 0;
 }
 
-.rc-progress__track--busy .rc-progress__fill {
-	position: absolute;
-	width: 30%;
-	animation: rc-busy 1.2s ease-in-out infinite;
-}
-
-@keyframes rc-busy {
-	from {
-		left: -30%;
-	}
-
-	to {
-		left: 100%;
-	}
-}
-
-.rc-progress__file {
-	display: flex;
-	gap: 8px;
-	font-family: ui-monospace, monospace;
-	font-size: 10.5px;
-	color: var(--t5);
-}
-
-.rc-progress__file-name {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-progress__file-pct {
-	margin-left: auto;
-}
-
-.rc-warning {
-	border: 1px solid rgba(210, 153, 34, 0.4);
-	border-radius: 10px;
-	background: rgba(210, 153, 34, 0.1);
-	padding: 10px 14px;
-	font-size: 12px;
-	line-height: 1.5;
-	color: var(--yellow);
-}
-
-.rc-chips {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	padding-bottom: 4px;
-}
-
-.rc-chip--empty {
-	opacity: 0.55;
-}
-
-.rc-results__head {
-	display: flex;
+.rc-organize .rc-results__text {
+	display: grid;
+	grid-template-columns: subgrid;
+	grid-column: 2 / 7;
 	align-items: center;
-	gap: 12px;
-	padding: 6px 0;
-	border-top: 1px solid var(--a06);
-	font-size: 11.5px;
-	color: var(--t4);
+	row-gap: 2px;
 }
 
-.rc-results__showing {
-	flex: 1;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-results__search {
-	width: 180px;
-	background: var(--bg2);
-	border: 1px solid var(--a14);
-	border-radius: 6px;
-	padding: 4px 8px;
-	color: var(--t1);
-	font-size: 11px;
-}
-
-.rc-results__search:focus {
-	outline: none;
-	border-color: var(--a30);
-}
-
-.rc-results__none {
-	padding: 14px;
-	font-size: 11.5px;
-	color: var(--t5);
-	text-align: center;
-}
-
-.rc-row {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	height: 100%;
-	padding: 0;
-	border-top: 1px solid var(--a06);
-	box-sizing: border-box;
-	user-select: text;
-}
-
-.rc-row:hover {
-	background: var(--a03);
-}
-
-.rc-row__text {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 0;
-	flex: 1;
-}
-
+.rc-row__meta,
 .rc-row__path {
-	display: flex;
-	align-items: baseline;
-	gap: 6px;
-	min-width: 0;
+	display: contents;
 }
 
-.rc-row__console {
-	flex-shrink: 0;
-	font-size: 11px;
+.rc-row__console,
+.rc-row__action {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--fs-sm);
 	color: var(--t3);
 }
 
-.rc-row__action {
-	flex-shrink: 0;
-	font-family: ui-monospace, monospace;
-	font-size: 10.5px;
-	color: var(--blue);
+.rc-row__console--unknown {
+	color: var(--t6);
 }
 
-.rc-row__name {
-	color: var(--t0);
-	font-size: 12px;
+.rc-organize .rc-results__name {
+	display: flex;
+	font-size: var(--fs-sm);
+	font-family: var(--font-mono);
+}
+
+.rc-row__directory {
+	flex: 0 1 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-row__arrow {
-	flex-shrink: 0;
 	color: var(--t5);
-	font-size: 11px;
 }
 
-.rc-row__detail {
-	font-size: 11px;
+.rc-row__basename {
+	display: flex;
+	flex: none;
+	max-width: 100%;
+	min-width: 0;
+}
+
+.rc-row__basename-start {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
-.rc-row__detail--red {
-	color: var(--red);
+.rc-row__basename-end {
+	flex: none;
 }
 
-.rc-row__detail--muted {
-	color: var(--t4);
+.rc-organize .rc-results__detail {
+	grid-column: 3 / -1;
 }
 
-.rc-link {
-	border: none;
-	background: none;
-	color: var(--blue);
-	font-size: 11.5px;
-	cursor: pointer;
-	padding: 0;
-	white-space: nowrap;
+.rc-organize .rc-results__row--multiline .rc-row__console,
+.rc-organize .rc-results__row--multiline .rc-row__action {
+	grid-row: 1 / span 2;
+}
+
+@container results (width < 960px) {
+	.rc-organize .rc-results__columns,
+	.rc-organize .rc-results__row {
+		grid-template-columns: 96px minmax(0, 1fr) auto;
+	}
+
+	.rc-columns__wide {
+		display: none;
+	}
+
+	.rc-columns__stack {
+		display: block;
+	}
+
+	.rc-organize .rc-results__text {
+		grid-column: 2;
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.rc-row__meta {
+		display: flex;
+		align-items: baseline;
+		gap: 6px;
+		min-width: 0;
+	}
+
+	.rc-row__console:not(:empty) + .rc-row__action:not(:empty)::before {
+		content: "·";
+		margin-right: 6px;
+		color: var(--t5);
+	}
+
+	.rc-row__path {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr);
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.rc-row__path--source-only .rc-row__source {
+		grid-column: 1 / -1;
+	}
+
+	.rc-row__path--source-only .rc-results__arrow,
+	.rc-row__path--source-only .rc-row__destination {
+		display: none;
+	}
+
+	.rc-organize .rc-results__detail {
+		grid-column: 1 / -1;
+	}
 }
 </style>

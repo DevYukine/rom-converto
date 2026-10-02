@@ -605,8 +605,7 @@ mod tests {
             // The echo may lead with global flags (skip_space_check), so the
             // harness splices the subcommand and everything after it.
             let words = echo_argv(echo);
-            assert_eq!(words[0], ">");
-            assert_eq!(words[1], "rom-converto");
+            assert_eq!(words[0], "rom-converto");
             let subcommand = words
                 .iter()
                 .position(|word| word == "organize")

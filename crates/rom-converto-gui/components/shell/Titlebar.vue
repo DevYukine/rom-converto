@@ -47,7 +47,7 @@ function close() {
 			</button>
 			<button
 				type="button"
-				class="control"
+				class="control control--close"
 				aria-label="Close window"
 				@click="close"
 			>
@@ -62,7 +62,8 @@ function close() {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	height: 36px;
+	height: var(--titlebar-h);
+	flex: none;
 	padding: 0 12px 0 14px;
 	background: var(--bg2);
 	border-bottom: 1px solid var(--a10);
@@ -75,40 +76,48 @@ function close() {
 }
 
 .icon {
-	width: 24px;
-	height: 24px;
+	width: 20px;
+	height: 20px;
 	object-fit: cover;
 }
 
 .name {
-	font-size: 12px;
+	font-size: var(--fs-md);
 	font-weight: 600;
 	color: var(--t1);
 }
 
 .version {
-	font-family: ui-monospace, monospace;
-	font-size: 10.5px;
-	color: var(--t5);
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	color: var(--t6);
 }
 
 .controls {
 	display: flex;
 	align-items: center;
-	gap: 14px;
+	gap: 2px;
 }
 
 .control {
+	width: 32px;
+	height: var(--ctl-h);
+	border-radius: var(--r-sm);
 	background: none;
 	border: none;
 	padding: 0;
 	color: var(--t5);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	line-height: 1;
 	cursor: pointer;
 }
 
 .control:hover {
+	background: var(--a08);
 	color: var(--t1);
+}
+.control--close:hover {
+	background: var(--fill-danger);
+	color: #fff;
 }
 </style>

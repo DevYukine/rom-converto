@@ -71,7 +71,12 @@ const TAG: Record<string, { tag: string; label: string }> = {
 	failed: { tag: "FAILED", label: "Failed" },
 };
 
-const { counts, visibleRows, toggleFilter } = useResultRows(results, (r) => r.verdict, statusFilter);
+const { counts, visibleRows: statusRows, toggleFilter } = useResultRows(results, (r) => r.verdict, statusFilter);
+const query = ref("");
+const visibleRows = computed(() => {
+	const q = query.value.trim().toLowerCase();
+	return q ? statusRows.value.filter((r) => r.path.toLowerCase().includes(q) || r.game_name?.toLowerCase().includes(q)) : statusRows.value;
+});
 
 function detail(r: DatMatchData): { text: string; tone: "green" | "red" | "muted" } | null {
 	if (r.verdict === "failed") return { text: r.error ?? "Hash differs from the database entry.", tone: "red" };
@@ -94,37 +99,51 @@ function contextItems(r: DatMatchData) {
 </script>
 
 <template>
-	<ConfigCard v-if="results.length" title="Results">
-		<div class="rc-chips">
-			<FilterChip label="All" :count="results.length" :active="statusFilter === 'all'" @click="statusFilter = 'all'" />
-			<FilterChip
-				v-for="chip in CHIPS"
-				:key="chip.verdict"
-				:label="chip.label"
-				:count="counts[chip.verdict] ?? 0"
-				:color="chip.color"
-				:active="statusFilter === chip.verdict"
-				@click="toggleFilter(chip.verdict)"
-			/>
+	<ConfigCard v-if="results.length" title="Results" class="rc-results">
+		<div class="rc-results__toolbar">
+			<div class="rc-results__chips">
+				<FilterChip label="All" :count="results.length" :active="statusFilter === 'all'" @click="statusFilter = 'all'" />
+				<FilterChip
+					v-for="chip in CHIPS"
+					:key="chip.verdict"
+					:label="chip.label"
+					:count="counts[chip.verdict] ?? 0"
+					:color="chip.color"
+					:active="statusFilter === chip.verdict"
+					:class="{ 'rc-results__chip--empty': !(counts[chip.verdict] ?? 0) }"
+					@click="toggleFilter(chip.verdict)"
+				/>
+			</div>
+			<input v-model="query" type="search" class="rc-input rc-results__search" placeholder="Filter by name" aria-label="Filter results by name">
 		</div>
+		<p class="rc-results__summary">{{ visibleRows.length }} of {{ results.length }} {{ results.length === 1 ? "file" : "files" }}</p>
+		<div class="rc-results__columns" aria-hidden="true">
+			<span>Status</span>
+			<span>Name</span>
+			<span class="rc-results__actions" />
+		</div>
+		<div v-if="!visibleRows.length" class="rc-results__none">Nothing matches this filter.</div>
 
 		<div
 			v-for="r in visibleRows"
 			:key="r.path"
-			class="rc-row"
-			:class="{ 'rc-row--fail': r.verdict === 'failed' }"
+			class="rc-results__row"
+			:class="{ 'rc-results__row--fail': r.verdict === 'failed', 'rc-results__row--multiline': !!detail(r) }"
 			@contextmenu="openContextMenu($event, contextItems(r))"
 		>
 			<StatusTag :status="TAG[r.verdict]?.tag ?? r.verdict" :label="TAG[r.verdict]?.label" />
-			<div class="rc-row__text">
-				<span class="rc-row__name">{{ basename(r.path) }}</span>
+			<div class="rc-results__text">
+				<span class="rc-results__name" :title="r.path">{{ basename(r.path) }}</span>
 				<span
 					v-if="detail(r)"
-					class="rc-row__detail"
-					:class="`rc-row__detail--${detail(r)!.tone}`"
+					class="rc-results__detail"
+					:class="`rc-results__detail--${detail(r)!.tone}`"
+					:title="detail(r)!.text"
 				>{{ detail(r)!.text }}</span>
 			</div>
-			<button v-if="r.verdict === 'failed'" type="button" class="rc-link" @click="detailRow = r">Details</button>
+			<div class="rc-results__actions">
+				<button v-if="r.verdict === 'failed'" type="button" class="rc-results__link" @click="detailRow = r">Details</button>
+			</div>
 		</div>
 	</ConfigCard>
 
@@ -132,73 +151,8 @@ function contextItems(r: DatMatchData) {
 		v-if="detailRow"
 		:title="basename(detailRow.path)"
 		:lines="detailLines(detailRow)"
+		tone="error"
 		@close="detailRow = null"
 	/>
 </template>
 
-<style scoped>
-.rc-chips {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	padding-bottom: 4px;
-}
-
-.rc-row {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	padding: 8px 0;
-	border-top: 1px solid var(--a06);
-	user-select: text;
-}
-
-.rc-row--fail {
-	background: rgba(212, 58, 62, 0.06);
-}
-
-.rc-row__text {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 0;
-	flex: 1;
-}
-
-.rc-row__name {
-	color: var(--t0);
-	font-size: 12px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-row__detail {
-	font-size: 11px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-row__detail--green {
-	color: var(--green);
-}
-
-.rc-row__detail--red {
-	color: var(--red);
-}
-
-.rc-row__detail--muted {
-	color: var(--t4);
-}
-
-.rc-link {
-	border: none;
-	background: none;
-	color: var(--blue);
-	font-size: 11.5px;
-	cursor: pointer;
-	padding: 0;
-	white-space: nowrap;
-}
-</style>

@@ -31,12 +31,16 @@ export function useStaging(def: OpDef) {
 		// a directory: their commands open the path as a regular file.
 		const folderInput = !!(def.browseDirectory || def.browseAlsoDirectory);
 		const files: string[] = [];
+		const dirs = new Set<string>();
 		for (const p of paths) {
 			const scanned = await scan.expand(p, recursive ? maxDepth : 1);
 			let expanded: string[];
 			if (scanned === null) expanded = [p];
 			else if (scanned.length > 0) expanded = scanned;
-			else expanded = folderInput ? [p] : [];
+			else if (folderInput) {
+				expanded = [p];
+				dirs.add(p);
+			} else expanded = [];
 			for (const f of expanded) if (!files.includes(f)) files.push(f);
 		}
 		const added: StagedItem[] = [];
@@ -49,11 +53,14 @@ export function useStaging(def: OpDef) {
 				name: basename(path),
 				size: 0,
 				outExt: def.deriveOutput ? extOf(def.deriveOutput(path, store)) : "",
+				dir: dirs.has(path),
 			};
 			staged.value.push(item);
-			added.push(item);
+			// `item` is the raw object; only the proxy in `staged.value` is reactive.
+			const entry = staged.value[staged.value.length - 1]!;
+			added.push(entry);
 			void fileSize(path).then((n) => {
-				item.size = n;
+				entry.size = n;
 			});
 		}
 		if (!added.length || !def.onStaged) return;

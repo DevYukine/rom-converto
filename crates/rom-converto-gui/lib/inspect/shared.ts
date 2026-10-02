@@ -74,20 +74,20 @@ export function discContentRom(content: DiscContent): InspectField[] {
 	if (content.kind === "psx") {
 		add(rom, "Title", content.volume_id);
 		add(rom, "Title ID", content.title_id);
-		add(rom, "Content Type", "Game");
+		add(rom, "Content type", "Game");
 		add(rom, "Version", content.version);
 		add(rom, "Size", formatBytes(content.size_bytes));
 		add(rom, "Media", content.media);
-		add(rom, "Boot Executable", content.boot_executable);
-		add(rom, "Total Sectors", content.total_sectors);
+		add(rom, "Boot executable", content.boot_executable);
+		add(rom, "Total sectors", content.total_sectors);
 	} else {
 		add(rom, "Title", content.title);
 		add(rom, "Title ID", content.title_id);
-		add(rom, "Content Type", content.content_kind ? contentTypeDisplayName(content.content_kind) : "Game");
+		add(rom, "Content type", content.content_kind ? contentTypeDisplayName(content.content_kind) : "Game");
 		add(rom, "Version", content.version);
 		add(rom, "Size", formatBytes(content.size_bytes));
 		add(rom, "Firmware", content.firmware);
-		add(rom, "Total Sectors", content.total_sectors);
+		add(rom, "Total sectors", content.total_sectors);
 	}
 	return rom;
 }

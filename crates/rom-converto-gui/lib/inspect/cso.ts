@@ -5,12 +5,12 @@ export const cso: KindModule<"cso"> = {
 	build(info): InspectBuild {
 		const container: InspectField[] = [];
 		add(container, "Container", `${info.format} v${info.version}`);
-		add(container, "Compressed Size", formatBytes(info.physical_bytes));
-		add(container, "Logical Size", formatBytes(info.uncompressed_size));
+		add(container, "Compressed size", formatBytes(info.physical_bytes));
+		add(container, "Logical size", formatBytes(info.uncompressed_size));
 		add(container, "Ratio", `${info.compression_ratio.toFixed(1)}%`);
-		add(container, "Block Size", formatBytes(info.block_size));
+		add(container, "Block size", formatBytes(info.block_size));
 		add(container, "Blocks", `${info.block_count} (${info.raw_block_count} raw)`);
-		add(container, "Index Shift", info.index_shift);
+		add(container, "Index shift", info.index_shift);
 		return { container, rom: info.content ? discContentRom(info.content) : [] };
 	},
 	title(info) {

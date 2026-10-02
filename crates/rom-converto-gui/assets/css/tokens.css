@@ -1,14 +1,43 @@
 /* Theme tokens. Dark is the default (:root); light overrides under [data-theme="light"]. */
 
+/* Theme-independent scale. Font sizes come from this ramp; the only text
+   below --fs-xs is the numeric badge on the rail's Alerts icon. */
+:root {
+	--fs-xs: 11px;
+	--fs-sm: 12px;
+	--fs-md: 13px;
+	--fs-lg: 14px;
+	--fs-xl: 20px;
+	--lh-body: 1.45;
+	--font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+	--ctl-h: 28px;
+	--r-sm: 6px;
+	--r-md: 8px;
+	--r-lg: 10px;
+	/* White 13px text on --fill keeps at least 4.5:1 contrast. */
+	--fill: #2f6fd0;
+	--fill-hover: #2a62b8;
+	--fill-danger: #d43a3e;
+	--tint-blue: rgba(69, 147, 248, 0.15);
+	--tint-green: rgba(63, 185, 80, 0.15);
+	--tint-yellow: rgba(210, 153, 34, 0.15);
+	--tint-red: rgba(212, 58, 62, 0.15);
+	--tint-red-faint: rgba(212, 58, 62, 0.06);
+	--tint-purple: rgba(163, 113, 247, 0.16);
+}
+
 :root {
 	--bg: #131316;
 	--bg2: #0c0c0e;
 	--bg2h: #101014;
 	--bg3: #101013;
+	/* Editable field surface: recessed in dark, white in light so fields
+	   never read as disabled against a white card. */
+	--field: #0c0c0e;
+	--field-hover: #101014;
 	--card: #1b1b1f;
 	--pop: #202024;
 	--pop2: #26262b;
-	--btnDim: #3a3a40;
 	--check1: #26262b;
 	--check2: #222227;
 	--t0: #ffffff;
@@ -30,7 +59,6 @@
 	--shC: rgba(0, 0, 0, .55);
 	--a03: rgba(255, 255, 255, .03);
 	--a04: rgba(255, 255, 255, .04);
-	--a05: rgba(255, 255, 255, .05);
 	--a06: rgba(255, 255, 255, .06);
 	--a07: rgba(255, 255, 255, .07);
 	--a08: rgba(255, 255, 255, .08);
@@ -44,7 +72,6 @@
 	--a22: rgba(255, 255, 255, .22);
 	--a25: rgba(255, 255, 255, .25);
 	--a30: rgba(255, 255, 255, .3);
-	--a35: rgba(255, 255, 255, .35);
 	--a40: rgba(255, 255, 255, .4);
 }
 
@@ -53,17 +80,18 @@
 	--bg2: #e7e7ec;
 	--bg2h: #dfdfe5;
 	--bg3: #ececf0;
+	--field: #ffffff;
+	--field-hover: #f7f7f9;
 	--card: #ffffff;
 	--pop: #ffffff;
 	--pop2: #ffffff;
-	--btnDim: #b9bac3;
 	--check1: #e3e3e9;
 	--check2: #d9d9e0;
 	--t0: #17181c;
 	--t1: #212228;
 	--t2: #33343c;
 	--t3: #52535e;
-	--t4: #696a76;
+	--t4: #5f606b;
 	--t5: #6f707d;
 	--t6: #747581;
 	--t7: #b4b5bd;
@@ -78,7 +106,6 @@
 	--shC: rgba(20, 24, 40, .2);
 	--a03: rgba(10, 12, 30, .04);
 	--a04: rgba(10, 12, 30, .05);
-	--a05: rgba(10, 12, 30, .06);
 	--a06: rgba(10, 12, 30, .07);
 	/* a07/a08 alpha are inverted vs dark theme (a07 > a08); kept verbatim from the source. */
 	--a07: rgba(10, 12, 30, .08);
@@ -93,6 +120,5 @@
 	--a22: rgba(10, 12, 30, .28);
 	--a25: rgba(10, 12, 30, .3);
 	--a30: rgba(10, 12, 30, .35);
-	--a35: rgba(10, 12, 30, .4);
 	--a40: rgba(10, 12, 30, .45);
 }

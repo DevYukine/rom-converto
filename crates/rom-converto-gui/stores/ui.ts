@@ -1,10 +1,11 @@
 import { defineStore } from "pinia";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { currentMonitor, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { isTauri } from "~/lib/ipc";
 import { useNotifyPrefs } from "~/composables/useNotifyPrefs";
 
 type Theme = "system" | "light" | "dark";
-type Scale = 0.9 | 1.0 | 1.15 | 1.3;
+type Scale = 0.9 | 1.0 | 1.15 | 1.3 | 1.5 | 2.0;
 
 const STORAGE_KEY = "rom-converto:ui";
 
@@ -15,6 +16,7 @@ interface Persisted {
 	taskbarProgress: boolean;
 	defaultOnConflict: string;
 	lastConsolePerOp: Record<string, string>;
+	recentOutputDirs: string[];
 }
 
 const DEFAULTS: Persisted = {
@@ -24,12 +26,25 @@ const DEFAULTS: Persisted = {
 	taskbarProgress: true,
 	defaultOnConflict: "overwrite",
 	lastConsolePerOp: {},
+	recentOutputDirs: [],
 };
+
+const RECENT_DIRS_MAX = 5;
+
+function recentDirs(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const dirs = value.filter((dir): dir is string => typeof dir === "string" && dir.length > 0);
+	return [...new Set(dirs)].slice(0, RECENT_DIRS_MAX);
+}
 
 function readPersisted(): Persisted {
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
-		if (raw) return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Persisted>) };
+		if (raw) {
+			const p = { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Persisted>) };
+			p.recentOutputDirs = recentDirs(p.recentOutputDirs);
+			return p;
+		}
 	} catch {
 		// localStorage unavailable or corrupt; fall through to defaults.
 	}
@@ -44,6 +59,7 @@ export const useUiStore = defineStore("ui", () => {
 	const taskbarProgress = ref(p.taskbarProgress);
 	const defaultOnConflict = ref(p.defaultOnConflict);
 	const lastConsolePerOp = ref<Record<string, string>>(p.lastConsolePerOp);
+	const recentOutputDirs = ref<string[]>(p.recentOutputDirs);
 
 	// Completion sound persists under its own key via the shared composable.
 	const { soundEnabled } = useNotifyPrefs();
@@ -68,10 +84,18 @@ export const useUiStore = defineStore("ui", () => {
 		root.style.colorScheme = resolvedTheme.value;
 	}
 
+	// The window minimum is in logical pixels, so it grows with the zoom to keep
+	// the CSS viewport at least 800x440, capped at the monitor's work area so a
+	// large scale on a small screen never leaves the window unshrinkable.
 	async function applyScale() {
 		if (isTauri) {
 			try {
 				await getCurrentWebview().setZoom(scale.value);
+				const monitor = await currentMonitor();
+				const area = monitor?.workArea.size.toLogical(monitor.scaleFactor);
+				const width = Math.min(800 * scale.value, area?.width ?? Infinity);
+				const height = Math.min(440 * scale.value, area?.height ?? Infinity);
+				await getCurrentWindow().setMinSize(new LogicalSize(width, height));
 			} catch {
 				// Zoom permission missing or webview unavailable; leave scale unchanged.
 			}
@@ -91,6 +115,7 @@ export const useUiStore = defineStore("ui", () => {
 					taskbarProgress: taskbarProgress.value,
 					defaultOnConflict: defaultOnConflict.value,
 					lastConsolePerOp: lastConsolePerOp.value,
+					recentOutputDirs: recentOutputDirs.value,
 				} satisfies Persisted),
 			);
 		} catch {
@@ -102,10 +127,15 @@ export const useUiStore = defineStore("ui", () => {
 		lastConsolePerOp.value = { ...lastConsolePerOp.value, [op]: console };
 	}
 
+	function rememberOutputDir(dir: string) {
+		if (!dir) return;
+		recentOutputDirs.value = recentDirs([dir, ...recentOutputDirs.value]);
+	}
+
 	watch(resolvedTheme, applyTheme, { immediate: true });
 	watch(scale, applyScale, { immediate: true });
 	watch(
-		[theme, scale, startImmediately, taskbarProgress, defaultOnConflict, lastConsolePerOp],
+		[theme, scale, startImmediately, taskbarProgress, defaultOnConflict, lastConsolePerOp, recentOutputDirs],
 		persist,
 		{ deep: true },
 	);
@@ -118,7 +148,9 @@ export const useUiStore = defineStore("ui", () => {
 		defaultOnConflict,
 		soundEnabled,
 		lastConsolePerOp,
+		recentOutputDirs,
 		resolvedTheme,
 		setLastConsole,
+		rememberOutputDir,
 	};
 });

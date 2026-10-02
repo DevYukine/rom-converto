@@ -1,23 +1,29 @@
 <script setup lang="ts">
 import ModalShell from "~/components/modals/ModalShell.vue";
+import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 
-defineProps<{
-	title: string;
-	lines: string[];
-}>();
+withDefaults(
+	defineProps<{
+		title: string;
+		lines: string[];
+		tone?: "error" | "plain";
+	}>(),
+	{ tone: "plain" },
+);
 
 const emit = defineEmits<{ close: [] }>();
 </script>
 
 <template>
-	<ModalShell :title="title" :width="560" @close="emit('close')">
+	<ModalShell :title="title" :width="480" @close="emit('close')">
 		<div class="rc-lines">
-			<p v-for="(line, i) in lines" :key="i" class="rc-line">{{ line }}</p>
+			<p v-for="(line, i) in lines" :key="i" class="rc-line" :class="{ 'rc-line--error': tone === 'error' }">{{ line }}</p>
 		</div>
 
 		<template #footer>
-			<div class="rc-spacer" />
-			<button type="button" class="rc-outlined" @click="emit('close')">Close</button>
+			<div class="rc-footer-actions">
+				<PrimaryButton variant="outlined" @click="emit('close')">Close</PrimaryButton>
+			</div>
 		</template>
 	</ModalShell>
 </template>
@@ -31,27 +37,18 @@ const emit = defineEmits<{ close: [] }>();
 
 .rc-line {
 	margin: 0;
-	font-family: ui-monospace, monospace;
-	font-size: 12px;
-	line-height: 1.5;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	overflow-wrap: anywhere;
 	color: var(--t3);
 }
 
-.rc-spacer {
-	flex: 1;
+.rc-line--error {
+	color: var(--red);
 }
 
-.rc-outlined {
-	background: none;
-	border: 1px solid var(--a18);
-	color: var(--t3);
-	border-radius: 8px;
-	padding: 6px 16px;
-	font-size: 12.5px;
-	cursor: pointer;
-}
-
-.rc-outlined:hover {
-	border-color: var(--a40);
+.rc-footer-actions {
+	margin-left: auto;
 }
 </style>

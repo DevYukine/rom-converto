@@ -57,7 +57,7 @@ function go(op: string) {
 </script>
 
 <template>
-	<nav class="rail">
+	<nav class="rail" :style="{ '--rail-items': NAV.length + 2 }">
 		<button
 			v-for="item in NAV"
 			:key="item.op"
@@ -65,6 +65,7 @@ function go(op: string) {
 			class="item"
 			:class="{ active: currentOp === item.op }"
 			:aria-label="item.label"
+			:title="item.label"
 			@click="go(item.op)"
 		>
 			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -80,6 +81,7 @@ function go(op: string) {
 			class="item"
 			:class="{ active: alertsOpen }"
 			aria-label="Alerts"
+			title="Alerts"
 			@click="emit('toggleAlerts')"
 		>
 			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -94,6 +96,7 @@ function go(op: string) {
 			class="item"
 			:class="{ active: currentOp === 'settings' }"
 			aria-label="Settings"
+			title="Settings"
 			@click="router.push('/settings')"
 		>
 			<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -109,12 +112,14 @@ function go(op: string) {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	width: 72px;
-	padding: 12px 0;
+	width: var(--rail-w);
+	flex: none;
+	padding: 8px 0;
 	background: var(--bg2);
 	border-right: 1px solid var(--a10);
 	gap: 4px;
 	overflow-y: auto;
+	scrollbar-width: thin;
 }
 .item {
 	position: relative;
@@ -122,14 +127,17 @@ function go(op: string) {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
+	justify-content: center;
 	gap: 4px;
 	width: 60px;
-	padding: 8px 0;
+	/* 68px fixed: 16px rail padding plus a 4px gap per item; the spacer is an extra child, so gaps equal items */
+	height: clamp(44px, calc((100vh - var(--titlebar-h) - var(--queuebar-h) - (16px + 4px * var(--rail-items))) / var(--rail-items)), 52px);
+	padding: 0;
 	border: none;
-	border-radius: 9px;
+	border-radius: var(--r-md);
 	background: transparent;
 	color: var(--t4);
-	font-size: 10.5px;
+	font-size: var(--fs-xs);
 	font-weight: 400;
 	cursor: pointer;
 }
@@ -143,6 +151,7 @@ function go(op: string) {
 }
 .label {
 	line-height: 1;
+	white-space: nowrap;
 }
 .spacer {
 	flex: 1;
@@ -154,13 +163,34 @@ function go(op: string) {
 	min-width: 15px;
 	height: 15px;
 	padding: 0 3px;
-	border-radius: 8px;
-	background: #d43a3e;
+	border-radius: var(--r-md);
+	background: var(--fill-danger);
 	color: #fff;
-	font-size: 9px;
+	font-size: 10px;
 	font-weight: 700;
 	display: flex;
 	align-items: center;
 	justify-content: center;
+}
+@media (max-height: 719px) {
+	.rail {
+		padding: 6px 0;
+		gap: 2px;
+	}
+	.item {
+		width: 40px;
+		/* 46px fixed: 12px rail padding, the 8px spacer minimum, and a 2px gap per item */
+		height: clamp(24px, calc((100vh - var(--titlebar-h) - var(--queuebar-h) - (20px + 2px * var(--rail-items))) / var(--rail-items)), 36px);
+	}
+	.label {
+		display: none;
+	}
+	.spacer {
+		min-height: 8px;
+	}
+	.badge {
+		top: 1px;
+		right: 1px;
+	}
 }
 </style>

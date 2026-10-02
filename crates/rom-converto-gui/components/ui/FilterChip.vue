@@ -15,9 +15,9 @@ const emit = defineEmits<{
 
 const PALETTE: Record<string, { bg: string; text: string; ring: string }> = {
 	neutral: { bg: "var(--a10)", text: "var(--t3)", ring: "var(--t5)" },
-	green: { bg: "rgba(63,185,80,.15)", text: "var(--green)", ring: "var(--green)" },
-	yellow: { bg: "rgba(210,153,34,.15)", text: "var(--yellow)", ring: "var(--yellow)" },
-	red: { bg: "rgba(212,58,62,.15)", text: "var(--red)", ring: "var(--red)" },
+	green: { bg: "var(--tint-green)", text: "var(--green)", ring: "var(--green)" },
+	yellow: { bg: "var(--tint-yellow)", text: "var(--yellow)", ring: "var(--yellow)" },
+	red: { bg: "var(--tint-red)", text: "var(--red)", ring: "var(--red)" },
 };
 
 const FALLBACK = { bg: "var(--a10)", text: "var(--t3)", ring: "var(--t5)" };
@@ -38,10 +38,13 @@ const colors = computed(() => PALETTE[props.color] ?? FALLBACK);
 
 <style scoped>
 .rc-filter-chip {
+	flex: none;
+	height: 26px;
 	border: none;
-	border-radius: 16px;
-	padding: 5px 13px;
-	font-size: 11.5px;
+	border-radius: var(--r-sm);
+	padding: 0 12px;
+	font-size: var(--fs-sm);
+	white-space: nowrap;
 	cursor: pointer;
 }
 

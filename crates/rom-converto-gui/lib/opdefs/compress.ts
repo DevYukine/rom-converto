@@ -19,6 +19,7 @@ import { useWupCompressStore } from "~/stores/wup-compress";
 import { useXenonCompressStore } from "~/stores/xenon-compress";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import {
+	NX_KEYS_AUTO,
 	NX_KEYS_TOOLTIP,
 	commonOptions,
 	recursiveFields,
@@ -40,11 +41,10 @@ function outPath(store: OpStore, derived: string): string | null {
 	return withOutputDir(derived, outDir(store)) || null;
 }
 
-const CHUNK_SIZES = [32768, 65536, 131072, 262144, 524288, 1048576, 2097152];
 const CHUNK_LABELS: Record<number, string> = {
 	32768: "32 KiB",
 	65536: "64 KiB",
-	131072: "128 KiB (Dolphin default)",
+	131072: "128 KiB (default)",
 	262144: "256 KiB",
 	524288: "512 KiB",
 	1048576: "1 MiB",
@@ -55,11 +55,6 @@ function chunkLabel(bytes: number): string {
 	return CHUNK_LABELS[bytes] ?? `${bytes} B`;
 }
 
-function cycleChunk(store: OpStore): void {
-	const i = CHUNK_SIZES.indexOf(store.chunkSize);
-	store.chunkSize = CHUNK_SIZES[(i + 1) % CHUNK_SIZES.length];
-}
-
 function pow2Label(exp: number): string {
 	const bytes = 2 ** exp;
 	return bytes >= 1048576 ? `${bytes / 1048576} MiB` : `${bytes / 1024} KiB`;
@@ -67,14 +62,15 @@ function pow2Label(exp: number): string {
 
 // Shared Output-card rows. `template`/`report` opt in per console since not
 // every compress store carries those fields.
-function outputRows(defaultDir: string, opts: { template?: boolean; report?: "field" | "static" }): OutputRow[] {
+function outputRows(opts: { template?: boolean; report?: "field" | "static" }): OutputRow[] {
 	const rows: OutputRow[] = [
 		{
 			kind: "directory",
 			label: "Directory",
 			color: "blue",
 			tooltip: "Write output into this directory using the derived filename. Created automatically if missing.",
-			display: (s) => s.outputDir || defaultDir,
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			set: (s, v) => {
 				s.outputDir = v;
 			},
@@ -87,7 +83,8 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 			color: "blue",
 			tooltip:
 				"Output path template applied per file. Available tokens are {title}, {titleId}, {region}, {console}, {serial}, {ext} and {basename}. A missing token falls back to the input's file name.",
-			display: (s) => s.outputTemplate || "{console}/{title}.{ext}",
+			display: (s) => s.outputTemplate || "",
+			placeholder: "None",
 			set: (s, v) => {
 				s.outputTemplate = v;
 			},
@@ -99,7 +96,8 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 			label: "Run report",
 			tooltip:
 				"Write a run report to this file. The format is inferred from the extension (.csv, .json, .html or .htm); anything else defaults to JSON.",
-			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
+			display: (s) => (s.reportFile ? basename(s.reportFile) : ""),
+			placeholder: "None",
 			set: (s, v) => {
 				s.reportFile = v;
 			},
@@ -109,7 +107,8 @@ function outputRows(defaultDir: string, opts: { template?: boolean; report?: "fi
 			kind: "text",
 			label: "Run report",
 			tooltip: "Run reports aren't available for this command.",
-			display: () => "none",
+			display: () => "",
+			placeholder: "None",
 		});
 	}
 	return rows;
@@ -127,10 +126,10 @@ export const CHD_CODEC_OPTIONS = [
 	{ value: "flac", label: "FLAC" },
 ];
 export const CHD_DVD_CODEC_OPTIONS = CHD_CODEC_OPTIONS.filter((o) => !o.value.startsWith("cd"));
-export const CHD_CODEC_PLACEHOLDER = "auto (cdlz, cdzl, cdfl for CD / lzma, zlib, huff, flac for DVD)";
+export const CHD_CODEC_PLACEHOLDER = "Automatic (cdlz, cdzl, cdfl for CD / lzma, zlib, huff, flac for DVD)";
 export const CHD_DVD_ZSTD_HINT =
 	"Consider adding Zstandard (zstd) for DVD images: better compression and faster decode, but rejected by AetherSX2/NetherSX2.";
-export const CHD_LEVEL_HINT = "1-22; zstd uses it directly, zlib/lzma cap at 9; auto = zstd 19, lzma 8, zlib 9";
+export const CHD_LEVEL_HINT = "1-22; zstd uses it directly, zlib/lzma cap at 9. Automatic picks zstd 19, lzma 8, and zlib 9.";
 
 const discFields = (hint: string) => [
 	{
@@ -143,13 +142,12 @@ const discFields = (hint: string) => [
 		tooltip: "Negative levels are allowed for extra speed at the cost of ratio. Defaults to 22, archive quality.",
 	},
 	{
-		kind: "kv" as const,
+		kind: "select" as const,
 		key: "chunkSize",
 		label: "Chunk size",
 		tooltip:
 			"RVZ chunk size, a power of two between 32 KiB and 2 MiB. Defaults to 128 KiB, matching Dolphin's RVZ default. Chunks above 1 MiB can stutter on weaker hardware.",
-		display: (s: OpStore) => chunkLabel(s.chunkSize),
-		onClick: cycleChunk,
+		options: Object.entries(CHUNK_LABELS).map(([value, label]) => ({ value: Number(value), label })),
 	},
 	...recursiveFields(),
 ];
@@ -164,11 +162,11 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to NSZ / XCZ",
+		optionsTitle: "Compression",
 		subtitle: "Output is nsz-compatible. Requires prod.keys.",
 		dropText: "Drop NSP or XCI files or folders. Archives (.zip, .7z, .rar) work too",
 		acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "Switch", extensions: ["nsp", "xci", ...ARCHIVE_EXTS] }],
-		defaultOutputDir: "~/roms/switch/compressed",
 		fields: [
 			{
 				kind: "slider",
@@ -211,15 +209,16 @@ export const compressOps: OpDef[] = [
 				tooltip: NX_KEYS_TOOLTIP,
 				filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
 				display: nxKeysDisplay,
+				placeholder: NX_KEYS_AUTO,
 				color: nxKeysColor,
 			},
 			...recursiveFields(),
 		],
-		outputRows: outputRows("~/roms/switch/compressed", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Verify after conversion",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		// The reference compressor defaults to block mode for XCI; honor that
 		// unless the user picked a mode.
 		onStaged: (store, items) => {
@@ -255,17 +254,17 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to RVZ",
+		optionsTitle: "Compression",
 		subtitle: "Output is byte-identical to Dolphin at matching settings.",
 		dropText: "Drop .iso, .gcm, .gcz or NKit files or folders",
 		acceptedExts: ["iso", "gcm", "gcz", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "GameCube", extensions: ["iso", "gcm", "gcz", ...ARCHIVE_EXTS] }],
-		defaultOutputDir: "~/roms/gamecube/compressed",
 		fields: discFields("1 is fastest, 22 is max ratio. Dolphin's documented suggestion is 5."),
-		outputRows: outputRows("~/roms/gamecube/compressed", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Verify after conversion",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input) => deriveRvzPath(input),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -289,17 +288,17 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to RVZ",
+		optionsTitle: "Compression",
 		subtitle: "Output is byte-identical to Dolphin at matching settings.",
 		dropText: "Drop .iso, .wbfs, .wia or .gcz files or folders",
 		acceptedExts: ["iso", "wbfs", "wia", "gcz", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "Wii", extensions: ["iso", "wbfs", "wia", "gcz", ...ARCHIVE_EXTS] }],
-		defaultOutputDir: "~/roms/wii/compressed",
 		fields: discFields("1 is fastest, 22 is max ratio. Dolphin's documented suggestion is 5."),
-		outputRows: outputRows("~/roms/wii/compressed", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Verify after conversion",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input) => deriveRvzPath(input),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -323,11 +322,11 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to Z3DS",
+		optionsTitle: "Compression",
 		subtitle: "Output loads in Azahar.",
 		dropText: "Drop .3ds, .cci or .cia files or folders",
 		acceptedExts: ["cia", "cci", "3ds", "cxi", "3dsx", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "3DS", extensions: ["cia", "cci", "3ds", "cxi", "3dsx", ...ARCHIVE_EXTS] }],
-		defaultOutputDir: "~/roms/3ds/compressed",
 		fields: [
 			{
 				kind: "slider",
@@ -337,7 +336,7 @@ export const compressOps: OpDef[] = [
 				max: 22,
 				hint: "0 uses the library default. 1 is fastest, 22 is max ratio.",
 				tooltip: "How much effort zstd spends shrinking the ROM. Higher produces smaller output at the cost of compression time.",
-				formatValue: (v) => (v === 0 ? "default (0)" : String(v)),
+				formatValue: (v) => (v === 0 ? "Default (0)" : String(v)),
 			},
 			{
 				kind: "toggle",
@@ -351,9 +350,9 @@ export const compressOps: OpDef[] = [
 			},
 			...recursiveFields(),
 		],
-		outputRows: outputRows("~/roms/3ds/compressed", { template: true, report: "static" }),
+		outputRows: outputRows({ template: true, report: "static" }),
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input) => deriveCompressedPath(input),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -376,12 +375,12 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to CHD",
+		optionsTitle: "Compression",
 		subtitle: "Output matches chdman createcd/createdvd/createld.",
 		dropText: "Drop .cue+.bin pairs, .iso or .avi files or folders",
 		acceptedExts: ["cue", "iso", "avi", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "Disc image", extensions: ["cue", "iso", "avi", ...ARCHIVE_EXTS] }],
 		browseAlsoDirectory: true,
-		defaultOutputDir: "~/roms/chd",
 		fields: [
 			{
 				kind: "segmented",
@@ -401,7 +400,7 @@ export const compressOps: OpDef[] = [
 				kind: "number",
 				key: "hunkSize",
 				label: "Hunk size",
-				placeholder: "auto",
+				placeholder: "Automatic",
 				visible: (s) => s.mode !== "ld",
 				tooltip:
 					"DVD hunk size in bytes, a multiple of 2048. Defaults to 4096, or 2048 for detected PSP images since PPSSPP reads 2048-byte blocks. Not used in LD mode.",
@@ -433,7 +432,7 @@ export const compressOps: OpDef[] = [
 				kind: "number",
 				key: "level",
 				label: "Level",
-				placeholder: "auto",
+				placeholder: "Automatic",
 				hint: CHD_LEVEL_HINT,
 				visible: (s) => s.mode !== "ld",
 				tooltip:
@@ -441,11 +440,11 @@ export const compressOps: OpDef[] = [
 			},
 			...recursiveFields(),
 		],
-		outputRows: outputRows("~/roms/chd", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Verify after conversion",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input) => deriveChdPath(input),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -476,11 +475,11 @@ export const compressOps: OpDef[] = [
 		command: "cmd_run",
 		resultKind: "convert",
 		title: "Compress to CSO / ZSO",
+		optionsTitle: "Compression",
 		subtitle: "Output is maxcso-compatible.",
 		dropText: "Drop .iso files or folders",
 		acceptedExts: ["iso", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "ISO", extensions: ["iso", ...ARCHIVE_EXTS] }],
-		defaultOutputDir: "~/roms/psp/compressed",
 		fields: [
 			{
 				kind: "segmented",
@@ -497,17 +496,17 @@ export const compressOps: OpDef[] = [
 				kind: "number",
 				key: "blockSize",
 				label: "Block size",
-				placeholder: "default",
+				placeholder: "Default",
 				tooltip:
 					"Block size in bytes, a power of two. Defaults to 2048, or 16384 for inputs of 2 GiB and beyond, matching maxcso.",
 			},
 			...recursiveFields(),
 		],
-		outputRows: outputRows("~/roms/psp/compressed", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Verify after conversion",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input, store) => deriveCsoPath(input, store.format),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -540,13 +539,12 @@ export const compressOps: OpDef[] = [
 		acceptedExts: ["iso", ...ARCHIVE_EXTS],
 		browseFilters: [{ name: "Xbox 360", extensions: ["iso"] }],
 		browseAlsoDirectory: true,
-		defaultOutputDir: "~/roms/xbox360/compressed",
 		fields: [...recursiveFields()],
-		outputRows: outputRows("~/roms/xbox360/compressed", { template: true, report: "field" }),
+		outputRows: outputRows({ template: true, report: "field" }),
 		showVerify: true,
 		verifyLabel: "Compute output hash",
 		actionNote:
-			"Jobs start automatically. Parameters can't be changed after queuing. Remove and re-add instead.",
+			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
 		deriveOutput: (input) => deriveZarPath(input),
 		buildArgs: (store, item, taskId) =>
 			runArgs(
@@ -578,7 +576,6 @@ export const compressOps: OpDef[] = [
 			"Drop NUS or loadiine title folders, or .wud / .wux disc images. Base, update and DLC are detected by title ID. Disc master keys are optional: the built-in key database is used if none is set",
 		acceptedExts: ["wud", "wux"],
 		browseFilters: [{ name: "Disc image", extensions: ["wud", "wux"] }],
-		defaultOutputDir: "~/roms/wiiu/bundled",
 		progressKey: "wup-compress",
 		fields: [],
 		outputRows: [],

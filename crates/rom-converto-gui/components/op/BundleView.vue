@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { invoke, isTauri, open, save } from "~/lib/ipc";
-import { registerDropZone, unregisterDropZone } from "~/composables/useDragDrop";
+import { computed, ref } from "vue";
+import { invoke, open, save } from "~/lib/ipc";
 import { basename, deriveWuaPath } from "~/composables/useDerivedPath";
+import { formatBytes } from "~/lib/inspect/shared";
 import { buildCliCommand } from "~/composables/useCliEcho";
 import { useQueueStore } from "~/stores/queue";
 import { isDiscInput } from "~/stores/wup-compress";
 import CliChip from "~/components/ui/CliChip.vue";
+import DropZone from "~/components/op/DropZone.vue";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
 import LevelSlider from "~/components/ui/LevelSlider.vue";
 import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
@@ -94,7 +95,7 @@ function add(paths: string[]) {
 			error: "",
 		};
 		parts.value.push(part);
-		void probe(part);
+		void probe(parts.value[parts.value.length - 1]!);
 	}
 	queued.value = false;
 }
@@ -106,12 +107,6 @@ function removePart(id: string) {
 
 async function browseFolder() {
 	const picked = await open({ directory: true, multiple: true });
-	if (Array.isArray(picked)) add(picked);
-	else if (typeof picked === "string") add([picked]);
-}
-
-async function browseDisc() {
-	const picked = await open({ multiple: true, filters: props.def.browseFilters });
 	if (Array.isArray(picked)) add(picked);
 	else if (typeof picked === "string") add([picked]);
 }
@@ -161,18 +156,6 @@ function badge(b: Bundle): string {
 	if (hasU) return "✓ base + update";
 	if (hasD) return "✓ base + DLC";
 	return "✓ base only";
-}
-
-function humanSize(bytes: number): string {
-	if (!bytes) return "0 B";
-	const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-	let n = bytes;
-	let i = 0;
-	while (n >= 1024 && i < units.length - 1) {
-		n /= 1024;
-		i++;
-	}
-	return `${n.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
 
 function bundleTotal(b: Bundle): number {
@@ -229,18 +212,18 @@ function progressKey(): string | undefined {
 	return opProgressKey(props.def, store);
 }
 
-const partTag: Record<PartKind, string> = { base: "BASE", update: "UPDATE", dlc: "DLC", unknown: "?" };
+const partTag: Record<PartKind, string> = { base: "Base", update: "Update", dlc: "DLC", unknown: "?" };
 
 const cli = computed(() => {
 	const b = readyBundles.value[0];
 	return buildCliCommand(
-		b ? bundleArgs(b) : runArgs("wup.compress", null, null, { level: store.level }, false, newTaskId()),
+		b ? bundleArgs(b) : runArgs("wup.compress", "input.wud", null, { level: store.level }, false, newTaskId()),
 	);
 });
 
 const queued = ref(false);
 const addLabel = computed(() =>
-	queued.value ? "Bundles queued ✓" : `Add ${readyBundles.value.length} bundles to queue`,
+	queued.value ? "Bundles queued ✓" : readyBundles.value.length === 0 ? (parts.value.length === 0 ? "Nothing staged" : "No complete bundles") : `Add ${readyBundles.value.length} bundle${readyBundles.value.length === 1 ? "" : "s"} to queue`,
 );
 
 function addBundles() {
@@ -298,18 +281,6 @@ function copied() {
 	showToast("Copied");
 }
 
-const dropEl = ref<HTMLElement | null>(null);
-let zoneId: string | null = null;
-
-onMounted(() => {
-	if (isTauri && dropEl.value) {
-		zoneId = registerDropZone(dropEl.value, (paths) => add(paths), 10);
-	}
-});
-
-onBeforeUnmount(() => {
-	if (zoneId) unregisterDropZone(zoneId);
-});
 </script>
 
 <template>
@@ -322,24 +293,25 @@ onBeforeUnmount(() => {
 			<CliChip :command="cli" @copy="copied" />
 		</div>
 
-		<div ref="dropEl" class="rc-drop">
-			<svg class="rc-drop__icon" width="20" height="20" viewBox="0 0 24 24" fill="none"
-				stroke="#4593f8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-				<path d="M4 4h5l2 3h9v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
-			</svg>
-			<span class="rc-drop__text">{{ def.dropText }}</span>
-			<button type="button" class="rc-drop__browse" @click="browseFolder">Browse folder</button>
-			<button type="button" class="rc-drop__browse" @click="browseDisc">Browse disc image</button>
-		</div>
+		<DropZone
+			:drop-text="def.dropText"
+			:filters="def.browseFilters"
+			file-label="Browse disc image"
+			multiple
+			also-directory
+			@add="add"
+		/>
 
 		<div v-if="unresolved.length" class="rc-card rc-card--warn">
 			<div class="rc-card__head">Unreadable or key not auto-detected</div>
 			<div v-for="p in unresolved" :key="p.id" class="rc-part">
-				<span class="rc-part__name">{{ p.name }}</span>
-				<span class="rc-part__meta">{{ p.error || "reading…" }}</span>
+				<span class="rc-tag rc-tag--unknown">?</span>
+				<span class="rc-part__name" :title="p.name">{{ p.name }}</span>
+				<span class="rc-part__meta" :title="p.error || 'reading…'">{{ p.error || "reading…" }}</span>
 				<button v-if="p.isDisc" type="button" class="rc-link" @click="pickKey(p)">
 					{{ p.key ? "Change key…" : "Master key…" }}
 				</button>
+				<span v-else />
 				<button type="button" class="rc-x" @click="removePart(p.id)">✕</button>
 			</div>
 		</div>
@@ -351,27 +323,35 @@ onBeforeUnmount(() => {
 			:class="{ 'rc-card--warn': !b.complete }"
 		>
 			<div class="rc-bundle__head">
-				<span class="rc-bundle__title" :class="{ 'rc-bundle__title--warn': !b.complete }">
+				<span class="rc-bundle__title" :class="{ 'rc-bundle__title--warn': !b.complete }" :title="bundleName(b)">
 					{{ bundleName(b) }}
 				</span>
 				<span v-if="b.complete" class="rc-bundle__badge">{{ badge(b) }}</span>
 				<span v-else class="rc-bundle__note">
-					A DLC can't be bundled alone. Drop the base title (00050000{{ b.lowId }}) to complete it
+					Update or DLC without its base game. Add the base title (00050000{{ b.lowId }}) to bundle it.
 				</span>
-				<span class="rc-bundle__spacer" />
 				<span v-if="b.complete" class="rc-bundle__total">
-					Total {{ humanSize(bundleTotal(b)) }} → {{ basename(bundleOutput(b)) }}
+					Total {{ formatBytes(bundleTotal(b)) }}
 				</span>
-				<button v-if="b.complete" type="button" class="rc-link" @click="pickOutput(b)">Change output…</button>
-				<button v-else type="button" class="rc-link" @click="browseFolder">Locate base…</button>
+				<button v-if="!b.complete" type="button" class="rc-link" @click="browseFolder">Locate base…</button>
+			</div>
+			<div v-if="b.complete" class="rc-output-row">
+				<FieldLabel label="Output" />
+				<button type="button" class="rc-picker rc-bundle__output" :title="bundleOutput(b)" :aria-label="`Output: ${bundleOutput(b)}`" @click="pickOutput(b)">
+					<span class="rc-picker__value">{{ bundleOutput(b) }}</span>
+					<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+						<path d="M3 7h6l2 2h10v10H3z" />
+					</svg>
+				</button>
 			</div>
 			<div v-for="p in b.parts" :key="p.id" class="rc-part">
 				<span class="rc-tag" :class="`rc-tag--${p.kind}`">{{ partTag[p.kind] }}</span>
-				<span class="rc-part__name">{{ p.name }}</span>
-				<span class="rc-part__meta">{{ p.titleIdHex }} · v{{ p.version }} · {{ humanSize(p.size) }}</span>
+				<span class="rc-part__name" :title="p.name">{{ p.name }}</span>
+				<span class="rc-part__meta" :title="`${p.titleIdHex} · v${p.version} · ${formatBytes(p.size)}`">{{ p.titleIdHex }} · v{{ p.version }} · {{ formatBytes(p.size) }}</span>
 				<button v-if="p.isDisc" type="button" class="rc-link" @click="pickKey(p)">
-					{{ p.key ? "key ✓" : "key…" }}
+					{{ p.key ? "Master key ✓" : "Master key…" }}
 				</button>
+				<span v-else />
 				<button type="button" class="rc-x" @click="removePart(p.id)">✕</button>
 			</div>
 		</div>
@@ -432,99 +412,84 @@ onBeforeUnmount(() => {
 .rc-page {
 	display: flex;
 	flex-direction: column;
-	gap: 14px;
-	padding: 18px 26px;
+	gap: 16px;
+	padding: 24px 28px 32px;
 }
 
 .rc-head {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: flex-start;
-	justify-content: space-between;
-	gap: 16px;
+	gap: 10px 24px;
+}
+
+.rc-head__text {
+	flex: 1 1 480px;
+	min-width: 0;
+}
+
+.rc-head > :deep(.rc-cli-chip) {
+	flex: 0 1 auto;
+	min-width: 0;
 }
 
 .rc-head__title {
 	margin: 0;
-	font-size: 18px;
+	font-size: var(--fs-xl);
+	line-height: 1.25;
 	font-weight: 700;
 	color: var(--t0);
+	text-wrap: balance;
 }
 
 .rc-head__subtitle {
 	margin: 4px 0 0;
-	font-size: 11.5px;
+	max-width: 72ch;
+	font-size: var(--fs-md);
+	line-height: var(--lh-body);
 	color: var(--t4);
-}
-
-.rc-drop {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	border: 1.5px dashed var(--a22);
-	border-radius: 10px;
-	padding: 12px 14px;
-	color: var(--t4);
-	font-size: 12px;
-}
-
-.rc-drop:hover,
-.rc-drop.drop-hover {
-	border-color: #4593f8;
-}
-
-.rc-drop__icon {
-	flex-shrink: 0;
-}
-
-.rc-drop__text {
-	flex: 1;
-	min-width: 0;
-}
-
-.rc-drop__browse {
-	border: 1px solid var(--a25);
-	border-radius: 6px;
-	padding: 4px 12px;
-	font-size: 11px;
-	color: var(--t0);
-	font-weight: 500;
-	background: transparent;
-	cursor: pointer;
+	text-wrap: pretty;
 }
 
 .rc-card {
+	min-width: 0;
+	container: bundle / inline-size;
 	border: 1px solid var(--a10);
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	background: var(--card);
-	padding: 12px 14px;
+	padding: 14px 16px;
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
 }
 
 .rc-card--warn {
-	border-color: rgba(210, 153, 34, 0.4);
+	border-color: var(--yellow);
 }
 
 .rc-card__head {
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
+	margin-bottom: 8px;
+	font-size: var(--fs-lg);
+	font-weight: 600;
 	color: var(--yellow);
 }
 
 .rc-bundle__head {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 10px;
-	margin-bottom: 2px;
+	gap: 8px 16px;
+	margin-bottom: 8px;
 }
 
 .rc-bundle__title {
-	font-weight: 700;
-	color: var(--t0);
-	font-size: 13px;
+	flex: 1 1 240px;
+	min-width: 0;
+	font-weight: 600;
+	color: var(--t1);
+	font-size: var(--fs-lg);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .rc-bundle__title--warn {
@@ -532,54 +497,80 @@ onBeforeUnmount(() => {
 }
 
 .rc-bundle__badge {
-	font-size: 10.5px;
+	flex: none;
+	font-size: var(--fs-xs);
 	color: var(--green);
+	background: var(--tint-green);
+	border-radius: var(--r-sm);
+	padding: 2px 7px;
+	white-space: nowrap;
 }
 
 .rc-bundle__note {
-	font-size: 10.5px;
+	flex: 1 1 260px;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t5);
-}
-
-.rc-bundle__spacer {
-	flex: 1;
+	text-wrap: pretty;
 }
 
 .rc-bundle__total {
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	color: var(--t5);
+	white-space: nowrap;
+}
+
+.rc-bundle__output {
+	width: 100%;
+}
+
+.rc-bundle__output .rc-picker__value {
+	font-family: var(--font-mono);
+}
+
+.rc-output-row {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 6px 0 12px;
 }
 
 .rc-part {
-	display: flex;
+	display: grid;
+	grid-template-columns: 60px minmax(0, 1fr) minmax(0, 1.4fr) 104px var(--ctl-h);
 	align-items: center;
-	gap: 10px;
-	padding: 4px 0;
+	gap: 6px 10px;
+	min-height: 40px;
+	padding: 6px 0;
+	border-top: 1px solid var(--a06);
 }
 
 .rc-tag {
-	flex-shrink: 0;
-	width: 52px;
+	flex: none;
+	width: 60px;
 	text-align: center;
-	border-radius: 5px;
+	border-radius: var(--r-sm);
 	padding: 2px 0;
-	font-size: 9.5px;
-	font-weight: 700;
+	font-size: var(--fs-xs);
+	font-weight: 600;
+	white-space: nowrap;
 }
 
 .rc-tag--base {
-	background: rgba(69, 147, 248, 0.15);
+	background: var(--tint-blue);
 	color: var(--blue);
 }
 
 .rc-tag--update {
-	background: rgba(63, 185, 80, 0.15);
+	background: var(--tint-green);
 	color: var(--green);
 }
 
 .rc-tag--dlc {
-	background: rgba(210, 153, 34, 0.15);
+	background: var(--tint-yellow);
 	color: var(--yellow);
 }
 
@@ -589,61 +580,124 @@ onBeforeUnmount(() => {
 }
 
 .rc-part__name {
+	min-width: 0;
 	color: var(--t0);
-	font-size: 12px;
+	font-size: var(--fs-md);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .rc-part__meta {
-	flex: 1;
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	min-width: 0;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	color: var(--t5);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+@container bundle (max-width: 639px) {
+	.rc-part {
+		grid-template-columns: 60px minmax(0, 1fr) 104px var(--ctl-h);
+	}
+
+	.rc-part__meta {
+		grid-column: 2 / -1;
+		grid-row: 2;
+	}
 }
 
 .rc-link {
+	flex: none;
 	border: none;
+	border-radius: var(--r-sm);
 	background: transparent;
 	color: var(--blue);
-	font-size: 11px;
+	font-size: var(--fs-sm);
+	min-height: var(--ctl-h);
+	padding: 0 8px;
 	cursor: pointer;
+	white-space: nowrap;
+}
+
+.rc-link:hover {
+	background: var(--a06);
 }
 
 .rc-x {
+	flex: none;
+	width: var(--ctl-h);
+	height: var(--ctl-h);
 	border: none;
+	border-radius: var(--r-sm);
 	background: transparent;
 	color: var(--t5);
 	cursor: pointer;
-	font-size: 12px;
+	font-size: var(--fs-md);
+	white-space: nowrap;
 }
 
 .rc-x:hover {
 	color: var(--red);
+	background: var(--tint-red);
 }
 
 .rc-grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-	gap: 12px;
+	grid-template-columns: minmax(0, 1fr);
+	align-items: start;
+	gap: 16px;
+}
+
+@container page (min-width: 820px) {
+	.rc-grid {
+		grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+	}
+
+	.rc-grid > :last-child {
+		position: sticky;
+		top: 16px;
+	}
 }
 
 .rc-conflict-row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	justify-content: space-between;
-	padding: 3px 0;
+	gap: 10px 16px;
+	min-height: 40px;
+	padding: 6px 0;
+}
+
+.rc-conflict-row > :first-child {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.rc-conflict-row > :last-child {
+	flex: none;
+	max-width: 60%;
+}
+
+.rc-conflict-row + :deep(.rc-toggle-row) {
+	border-top: 1px solid var(--a06);
 }
 
 .rc-actions {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 12px;
+	gap: 10px 12px;
 }
 
 .rc-actions__note {
-	font-size: 11.5px;
-	color: var(--t4);
+	flex: 1 1 260px;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	color: var(--t5);
+	text-wrap: pretty;
 }
 </style>

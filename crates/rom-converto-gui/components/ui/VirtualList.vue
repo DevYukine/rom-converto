@@ -1,12 +1,12 @@
 <script setup lang="ts" generic="T">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
-// Fixed-height rows windowed against the nearest scrolling ancestor, so the
-// page keeps one natural scrollbar while only the visible rows exist in the DOM.
+// Rows are windowed against the nearest scrolling ancestor, so the page keeps
+// one natural scrollbar while only the visible rows exist in the DOM.
 const props = defineProps<{
 	items: T[];
-	rowHeight: number;
-	keyOf: (item: T) => string;
+	rowHeight: number | ((item: T) => number);
+	keyOf: (item: T, index: number) => string;
 }>();
 
 const OVERSCAN = 8;
@@ -18,6 +18,32 @@ let parent: HTMLElement | null = null;
 let scroller: HTMLElement | Window | null = null;
 let raf = 0;
 let observer: ResizeObserver | null = null;
+
+const offsets = computed(() => {
+	const height = props.rowHeight;
+	if (typeof height === "number") return null;
+	const out = [0];
+	for (const item of props.items) out.push(out[out.length - 1]! + height(item));
+	return out;
+});
+
+function offsetAt(index: number): number {
+	const positions = offsets.value;
+	return positions ? positions[Math.min(index, props.items.length)]! : index * (props.rowHeight as number);
+}
+
+function indexAt(offset: number): number {
+	const positions = offsets.value;
+	if (!positions) return Math.floor(offset / (props.rowHeight as number));
+	let lo = 0;
+	let hi = props.items.length;
+	while (lo < hi) {
+		const mid = Math.ceil((lo + hi) / 2);
+		if (positions[mid]! <= offset) lo = mid;
+		else hi = mid - 1;
+	}
+	return lo;
+}
 
 function scrollParent(el: HTMLElement): HTMLElement | null {
 	let node = el.parentElement;
@@ -34,8 +60,8 @@ function update() {
 	if (!root.value || !parent) return;
 	const offset = parent.getBoundingClientRect().top - root.value.getBoundingClientRect().top;
 	const viewport = parent.clientHeight;
-	start.value = Math.max(0, Math.floor(offset / props.rowHeight) - OVERSCAN);
-	end.value = Math.min(props.items.length, Math.ceil((offset + viewport) / props.rowHeight) + OVERSCAN);
+	start.value = Math.min(props.items.length, Math.max(0, indexAt(offset) - OVERSCAN));
+	end.value = Math.min(props.items.length, Math.max(0, indexAt(offset + viewport) + 1 + OVERSCAN));
 }
 
 function schedule() {
@@ -60,16 +86,16 @@ onBeforeUnmount(() => {
 	if (raf) cancelAnimationFrame(raf);
 });
 
-watch(() => props.items, schedule);
+watch([() => props.items, () => props.rowHeight], schedule);
 
 const slice = computed(() => props.items.slice(start.value, end.value));
 </script>
 
 <template>
-	<div ref="root" class="rc-vlist" :style="{ height: `${items.length * rowHeight}px` }">
-		<div class="rc-vlist__window" :style="{ transform: `translateY(${start * rowHeight}px)` }">
-			<div v-for="item in slice" :key="keyOf(item)" :style="{ height: `${rowHeight}px` }">
-				<slot :item="item" />
+	<div ref="root" class="rc-vlist" :style="{ height: `${offsetAt(items.length)}px` }">
+		<div class="rc-vlist__window" :style="{ transform: `translateY(${offsetAt(start)}px)` }">
+			<div v-for="(item, index) in slice" :key="keyOf(item, start + index)" :style="{ height: `${offsetAt(start + index + 1) - offsetAt(start + index)}px` }">
+				<slot :item="item" :index="start + index" />
 			</div>
 		</div>
 	</div>
@@ -78,6 +104,7 @@ const slice = computed(() => props.items.slice(start.value, end.value));
 <style scoped>
 .rc-vlist {
 	position: relative;
+	min-width: 0;
 }
 
 .rc-vlist__window {

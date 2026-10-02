@@ -52,9 +52,9 @@ function resultText(job: QueueJob): string {
 function verifyTag(job: QueueJob): string | null {
 	const v = job.comparison?.verify;
 	if (!v) return null;
-	if (v.verdict === "unverified") return "UNVERIFIED";
-	if (v.verdict === "failed") return "MISMATCH";
-	return v.round_trip ? "VERIFIED" : "CHECKED";
+	if (v.verdict === "unverified") return "Unverified";
+	if (v.verdict === "failed") return "Mismatch";
+	return v.round_trip ? "Verified" : "Checked";
 }
 
 function ratioText(c: ComparisonData): string {
@@ -72,16 +72,16 @@ function toggleExpand(job: QueueJob) {
 
 <template>
 	<div class="body" :class="{ full }">
-		<div class="col run">
-			<div class="colhead">Running</div>
+		<div class="col">
+			<div class="colhead"><span>Running</span></div>
 			<div v-if="!queue.running.length" class="empty">Nothing running.</div>
 			<div v-for="job in queue.running" :key="job.id" class="rcard">
-				<svg class="ring" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4593f8" stroke-width="3" stroke-linecap="round">
+				<svg class="spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
 					<path d="M21 12a9 9 0 1 1-6.2-8.5" />
 				</svg>
 				<div class="rmain">
 					<div class="rtop">
-						<span class="name">{{ job.name }}</span>
+						<span class="name" :title="job.name">{{ job.name }}</span>
 						<span class="stat">{{ pct(job) }}% · {{ jobSpeed(job) }} MB/s</span>
 						<button class="cancel" @click="queue.cancel(job.id)">Cancel</button>
 					</div>
@@ -92,7 +92,7 @@ function toggleExpand(job: QueueJob) {
 		</div>
 
 		<div class="col next">
-			<div class="colhead">Up next<span class="sub">drag to reorder</span></div>
+			<div class="colhead"><span>Up next</span><span class="sub">drag to reorder</span></div>
 			<div v-if="!queue.queued.length" class="empty">Queue is empty. Add jobs from any operation page.</div>
 			<div
 				v-for="job in queue.queued"
@@ -104,14 +104,15 @@ function toggleExpand(job: QueueJob) {
 				@drop="onDrop(job.id)"
 			>
 				<span class="grip">⠿</span>
-				<span class="name">{{ job.name }}</span>
-				<span class="optag">{{ job.opLabel }}</span>
+				<span class="name" :title="job.name">{{ job.name }}</span>
+				<span class="optag" :title="job.opLabel">{{ job.opLabel }}</span>
 				<button class="rm" @click="queue.remove(job.id)">Remove</button>
 			</div>
 		</div>
 
 		<div class="col fin">
-			<div class="colhead">Finished this session<span class="sub green">{{ queue.savedGiB }} GiB saved</span></div>
+			<div class="colhead"><span>Finished this session</span><span class="sub green">{{ queue.savedGiB }} GiB saved</span></div>
+			<div v-if="!queue.finished.length" class="empty">Nothing finished this session.</div>
 			<div v-for="job in queue.finished" :key="job.id" class="fitem">
 				<div
 					class="frow"
@@ -124,9 +125,9 @@ function toggleExpand(job: QueueJob) {
 					@keydown.space.prevent="toggleExpand(job)"
 				>
 					<span :class="['fmark', mark(job.status).cls]">{{ mark(job.status).ch }}</span>
-					<span class="name">{{ job.name }}</span>
-					<span class="optag">{{ job.opLabel }}</span>
-					<StatusTag v-if="verifyTag(job)" :status="verifyTag(job)!" :width="62" />
+					<span class="name" :title="job.name">{{ job.name }}</span>
+					<span class="optag" :title="job.opLabel">{{ job.opLabel }}</span>
+					<StatusTag v-if="verifyTag(job)" :status="verifyTag(job)!" />
 					<span :class="['fres', mark(job.status).cls]" :title="job.status === 'failed' ? job.error : undefined">{{ resultText(job) }}</span>
 					<button v-if="job.status === 'failed'" class="retry" @click.stop="queue.retry(job.id)">Retry</button>
 				</div>
@@ -145,68 +146,89 @@ function toggleExpand(job: QueueJob) {
 
 <style scoped>
 .body {
-	display: flex;
-	height: min(236px, 32vh);
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	grid-template-rows: minmax(0, 1fr);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: hidden;
 }
 .body.full {
-	flex: 1;
+	flex: none;
 	min-height: 0;
+	grid-template-rows: none;
 	height: auto;
+	overflow-y: visible;
+	border: 1px solid var(--a10);
+	border-radius: var(--r-lg);
+	background: var(--card);
 }
 .col {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
-	padding: 8px 12px;
-	overflow-y: auto;
+	min-width: 0;
+	gap: 8px;
+	padding: 12px;
 }
-.col.run {
-	flex: 1.2;
+.body:not(.full) .col {
+	min-height: 0;
+	overflow-y: auto;
 }
 .col.next,
 .col.fin {
-	flex: 1;
-	border-left: 1px solid var(--a05);
+	border-left: 1px solid var(--a06);
 }
 .colhead {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	background: var(--bg2);
 	display: flex;
+	align-items: baseline;
 	justify-content: space-between;
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
-	color: var(--t4);
+	flex-wrap: wrap;
+	gap: 4px 8px;
+	font-size: var(--fs-md);
+	font-weight: 600;
+	color: var(--t2);
 	margin-bottom: 2px;
+	white-space: nowrap;
+}
+.body.full .colhead {
+	background: var(--card);
+}
+.body:not(.full) .colhead {
+	top: -12px;
 }
 .sub {
+	font-size: var(--fs-sm);
 	font-weight: 400;
-	text-transform: none;
-	letter-spacing: 0;
-	color: var(--t6);
+	color: var(--t5);
+	white-space: nowrap;
 }
 .sub.green {
 	color: var(--green);
 }
 .empty {
-	color: var(--t6);
-	font-size: 12px;
+	padding: 14px 8px;
+	color: var(--t5);
+	font-size: var(--fs-md);
+	line-height: var(--lh-body);
+	text-align: center;
+	text-wrap: pretty;
 }
 .rcard {
 	display: flex;
 	gap: 8px;
 	background: var(--a03);
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	padding: 8px 10px;
 }
-.ring {
+.spin {
 	flex-shrink: 0;
 	margin-top: 2px;
+	color: var(--blue);
 	animation: rcspin 1s linear infinite;
-}
-@keyframes rcspin {
-	to {
-		transform: rotate(360deg);
-	}
 }
 .rmain {
 	flex: 1;
@@ -216,13 +238,13 @@ function toggleExpand(job: QueueJob) {
 	gap: 5px;
 }
 .rtop {
-	display: flex;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
 	align-items: center;
-	gap: 8px;
-	font-size: 12px;
+	gap: 4px 8px;
+	font-size: var(--fs-md);
 }
 .rtop .name {
-	flex: 1;
 	min-width: 0;
 	color: var(--t1);
 	overflow: hidden;
@@ -230,39 +252,51 @@ function toggleExpand(job: QueueJob) {
 	white-space: nowrap;
 }
 .stat {
-	font-family: ui-monospace, monospace;
+	grid-column: 1;
+	grid-row: 2;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
+	white-space: nowrap;
 	color: var(--blue);
 }
 .cancel {
+	grid-column: 2;
+	grid-row: 1 / 3;
 	background: none;
 	border: none;
 	color: var(--red);
 	cursor: pointer;
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
+	white-space: nowrap;
 }
 .bar {
 	height: 6px;
-	border-radius: 3px;
+	border-radius: var(--r-sm);
 	background: var(--a10);
 	overflow: hidden;
 }
 .fill {
 	display: block;
 	height: 100%;
-	background: #3b82f6;
+	background: var(--fill);
 	transition: width 0.4s;
 }
 .locked {
-	font-family: ui-monospace, monospace;
-	font-size: 9.5px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	color: var(--t5);
+	line-height: var(--lh-body);
+	overflow-wrap: anywhere;
 }
 .nrow,
 .frow {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	font-size: 12px;
+	min-height: 40px;
+	padding: 6px 0;
+	font-size: var(--fs-md);
+	border-top: 1px solid var(--a06);
 }
 .nrow {
 	cursor: grab;
@@ -273,20 +307,46 @@ function toggleExpand(job: QueueJob) {
 .nrow .name,
 .frow .name {
 	flex: 1;
-	min-width: 64px;
+	min-width: 0;
 	color: var(--t2);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 .optag {
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	font-size: var(--fs-xs);
 	color: var(--t5);
 	white-space: nowrap;
-	max-width: 96px;
+	max-width: 84px;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.frow {
+	display: grid;
+	grid-template-columns: 12px minmax(0, 1fr) auto;
+	gap: 4px 8px;
+}
+.frow .name {
+	grid-column: 2;
+	grid-row: 1;
+}
+.frow .optag {
+	grid-column: 2;
+	grid-row: 2;
+}
+.frow :deep(.rc-status-tag) {
+	grid-column: 3;
+	grid-row: 1;
+}
+.frow .fres {
+	grid-column: 3;
+	grid-row: 2;
+	max-width: 120px;
+}
+.frow .retry {
+	grid-column: 3;
+	grid-row: 3;
+	justify-self: end;
 }
 .fitem {
 	display: flex;
@@ -294,7 +354,7 @@ function toggleExpand(job: QueueJob) {
 }
 .frow.expandable {
 	cursor: pointer;
-	border-radius: 6px;
+	border-radius: var(--r-sm);
 }
 .frow.expandable:hover {
 	background: var(--a03);
@@ -304,14 +364,15 @@ function toggleExpand(job: QueueJob) {
 	padding: 6px 10px;
 	border-left: 2px solid var(--a10);
 	background: var(--a03);
-	border-radius: 0 6px 6px 0;
+	border-radius: 0 var(--r-sm) var(--r-sm) 0;
 }
 .rm,
 .retry {
 	background: none;
 	border: none;
 	cursor: pointer;
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
+	white-space: nowrap;
 }
 .rm {
 	color: var(--t5);
@@ -329,8 +390,8 @@ function toggleExpand(job: QueueJob) {
 }
 .fres {
 	max-width: 40%;
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -343,5 +404,34 @@ function toggleExpand(job: QueueJob) {
 }
 .m-cancel {
 	color: var(--yellow2);
+}
+@container page (max-width: 759px) {
+	.body.full {
+		grid-template-columns: minmax(0, 1fr);
+		flex: none;
+		min-height: 0;
+	}
+	.body.full .col + .col {
+		border-left: none;
+		border-top: 1px solid var(--a06);
+	}
+}
+@container queue (max-width: 759px) {
+	.body {
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: none;
+		overflow-y: auto;
+	}
+	.body:not(.full) .col {
+		min-height: auto;
+		overflow-y: visible;
+	}
+	.body:not(.full) .colhead {
+		top: 0;
+	}
+	.col + .col {
+		border-left: none;
+		border-top: 1px solid var(--a06);
+	}
 }
 </style>

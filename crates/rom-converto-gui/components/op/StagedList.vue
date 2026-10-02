@@ -1,31 +1,18 @@
 <script setup lang="ts">
+import { formatBytes } from "~/lib/inspect/shared";
 import type { StagedItem } from "~/lib/opdefs/types";
 
 defineProps<{
 	items: StagedItem[];
 	label: string;
-	consoleName: string;
 }>();
 
 const emit = defineEmits<{ remove: [id: string]; clear: [] }>();
 
-const UNITS = ["B", "KiB", "MiB", "GiB", "TiB"];
-
-function humanSize(bytes: number): string {
-	if (bytes <= 0) return "…";
-	let n = bytes;
-	let u = 0;
-	while (n >= 1024 && u < UNITS.length - 1) {
-		n /= 1024;
-		u++;
-	}
-	return `${n.toFixed(u === 0 ? 0 : 1)} ${UNITS[u]}`;
-}
-
-function meta(item: StagedItem, consoleName: string): string {
-	const parts = [consoleName, humanSize(item.size)];
+function meta(item: StagedItem): string {
+	const parts = [!item.dir && item.size > 0 ? formatBytes(item.size) : ""];
 	if (item.outExt) parts.push(`→ .${item.outExt}`);
-	return parts.join(" · ");
+	return parts.filter(Boolean).join(" · ");
 }
 </script>
 
@@ -35,11 +22,12 @@ function meta(item: StagedItem, consoleName: string): string {
 			<span class="rc-staged__title">{{ label }}</span>
 			<button type="button" class="rc-staged__clear" @click="emit('clear')">Clear all</button>
 		</div>
-		<div v-for="item in items" :key="item.id" class="rc-staged__row">
-			<span class="rc-staged__dot" />
-			<span class="rc-staged__name">{{ item.name }}</span>
-			<span class="rc-staged__meta">{{ meta(item, consoleName) }}</span>
-			<button type="button" class="rc-staged__remove" title="Remove" @click="emit('remove', item.id)">✕</button>
+		<div class="rc-staged__items">
+			<div v-for="item in items" :key="item.id" class="rc-staged__row">
+				<span class="rc-staged__name" :title="item.path">{{ item.name }}</span>
+				<span v-if="meta(item)" class="rc-staged__meta">{{ meta(item) }}</span>
+				<button type="button" class="rc-staged__remove" title="Remove" :aria-label="`Remove ${item.name}`" @click="emit('remove', item.id)">✕</button>
+			</div>
 		</div>
 	</div>
 </template>
@@ -47,53 +35,58 @@ function meta(item: StagedItem, consoleName: string): string {
 <style scoped>
 .rc-staged {
 	border: 1px solid var(--a10);
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	background: var(--card);
+	min-width: 0;
 }
 
 .rc-staged__head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
+	gap: 16px;
 	padding: 10px 14px;
 	border-bottom: 1px solid var(--a06);
 }
 
 .rc-staged__title {
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
-	color: var(--t4);
+	font-size: var(--fs-md);
+	font-weight: 600;
+	color: var(--t1);
+	white-space: nowrap;
 }
 
 .rc-staged__clear {
 	background: none;
 	border: none;
 	color: var(--blue);
-	font-size: 11px;
+	font-size: var(--fs-sm);
 	cursor: pointer;
 	padding: 0;
+	white-space: nowrap;
+	flex: none;
+}
+
+.rc-staged__items {
+	max-height: 280px;
+	overflow-y: auto;
 }
 
 .rc-staged__row {
-	display: flex;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
 	align-items: center;
 	gap: 10px;
 	padding: 7px 14px;
 }
 
-.rc-staged__dot {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-	background: var(--t5);
-	flex-shrink: 0;
+.rc-staged__row + .rc-staged__row {
+	border-top: 1px solid var(--a06);
 }
 
 .rc-staged__name {
 	color: var(--t0);
-	font-size: 12px;
+	font-size: var(--fs-md);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -101,11 +94,11 @@ function meta(item: StagedItem, consoleName: string): string {
 }
 
 .rc-staged__meta {
-	margin-left: auto;
-	font-family: ui-monospace, monospace;
-	font-size: 10px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-xs);
 	color: var(--t5);
 	white-space: nowrap;
+	grid-column: 2;
 }
 
 .rc-staged__remove {
@@ -113,8 +106,12 @@ function meta(item: StagedItem, consoleName: string): string {
 	border: none;
 	color: var(--t5);
 	cursor: pointer;
-	font-size: 11px;
+	font-size: var(--fs-xs);
 	padding: 0;
+	width: var(--ctl-h);
+	height: var(--ctl-h);
+	border-radius: var(--r-sm);
+	grid-column: 3;
 }
 
 .rc-staged__remove:hover {

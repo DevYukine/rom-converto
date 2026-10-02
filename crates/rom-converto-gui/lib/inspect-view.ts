@@ -19,9 +19,9 @@ export function buildInspectView(info: InfoResult): InspectView {
 	return {
 		container: build.container ?? [],
 		rom,
-		innerTitle: build.innerTitle ?? "Inner Files",
+		innerTitle: build.innerTitle ?? "Inner files",
 		innerFiles: build.innerFiles ?? [],
 		hashes: build.hashes ?? [],
-		contentType: rom.find((f) => f.label === "Content Type")?.value ?? null,
+		contentType: rom.find((f) => f.label === "Content type")?.value ?? null,
 	};
 }

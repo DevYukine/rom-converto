@@ -39,11 +39,15 @@ const alertsOpen = ref(false);
 
 		<div class="mid">
 			<IconRail :alerts-open="alertsOpen" @toggle-alerts="alertsOpen = !alertsOpen" />
-			<ContextPanel v-if="showContext" :op="currentOp" />
-			<main class="content"><slot /></main>
+			<div class="workspace">
+				<div class="main-row">
+					<ContextPanel v-if="showContext" :op="currentOp" />
+					<main class="content"><slot /></main>
+				</div>
+				<QueueDrawer v-if="queue.drawerOpen" />
+			</div>
 		</div>
 
-		<QueueDrawer v-if="queue.drawerOpen" />
 		<QueueBar />
 
 		<AlertsFlyout v-if="alertsOpen" @close="alertsOpen = false" />
@@ -59,16 +63,31 @@ const alertsOpen = ref(false);
 
 <style scoped>
 .app {
+	--titlebar-h: 36px;
+	--queuebar-h: 44px;
+	--rail-w: 72px;
 	position: relative;
 	display: flex;
 	flex-direction: column;
 	height: 100vh;
 	background: var(--bg);
 	color: var(--t1);
-	font-size: 13px;
+	font-size: var(--fs-md);
 	user-select: none;
 }
 .mid {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+}
+.workspace {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+}
+.main-row {
 	display: flex;
 	flex: 1;
 	min-height: 0;
@@ -86,11 +105,16 @@ const alertsOpen = ref(false);
 	align-items: center;
 	justify-content: center;
 	background: var(--overlay);
-	border: 2px dashed #4593f8;
-	border-radius: 10px;
+	border: 2px dashed var(--blue);
+	border-radius: var(--r-lg);
 	pointer-events: none;
-	font-size: 15px;
+	font-size: var(--fs-lg);
 	font-weight: 600;
 	color: var(--t0);
+}
+@media (max-height: 719px) {
+	.app {
+		--rail-w: 56px;
+	}
 }
 </style>

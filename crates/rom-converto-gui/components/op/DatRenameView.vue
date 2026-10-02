@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { basename } from "~/composables/useDerivedPath";
 import { openContextMenu } from "~/composables/useContextMenu";
 import { useQueueStore, type QueueJob } from "~/stores/queue";
@@ -42,6 +42,11 @@ const plan = computed<DatRenameData | null>(() => {
 
 const pendingCount = computed(() => plan.value?.rows.filter((r) => r.action === "would_rename").length ?? 0);
 const applied = computed(() => !!plan.value && !plan.value.dry_run);
+const query = ref("");
+const visibleRows = computed(() => {
+	const q = query.value.trim().toLowerCase();
+	return (plan.value?.rows ?? []).filter((r) => !q || r.from.toLowerCase().includes(q) || r.to?.toLowerCase().includes(q));
+});
 // A queued or running rename must not be queued a second time: the plan on
 // screen is already being re-planned against the filesystem.
 const running = computed(() =>
@@ -86,102 +91,115 @@ function contextItems(r: DatRenameRowData) {
 </script>
 
 <template>
-	<ConfigCard v-if="plan" title="Rename plan">
-		<template #head-tag>
-			<span class="rc-head">
-				<span class="rc-head__note">Only the filename changes. The file content is never touched.</span>
-				<button type="button" class="rc-apply" :disabled="pendingCount === 0 || running" @click="apply">
-					{{ running ? "Renaming…" : applied ? "All renamed ✓" : `Rename all (${pendingCount})` }}
-				</button>
-			</span>
-		</template>
-
+	<ConfigCard v-if="plan" title="Rename plan" class="rc-results rc-rename">
+		<div class="rc-results__toolbar">
+			<button type="button" class="rc-apply" :disabled="pendingCount === 0 || running" @click="apply">
+				{{ running ? "Renaming…" : applied ? "All renamed ✓" : `Rename all (${pendingCount})` }}
+			</button>
+			<input v-model="query" type="search" class="rc-input rc-results__search" placeholder="Filter by name" aria-label="Filter results by name">
+		</div>
+		<p class="rc-results__summary">{{ visibleRows.length }} of {{ plan.rows.length }} {{ plan.rows.length === 1 ? "file" : "files" }}. Only the filename changes. The file content is never touched.</p>
+		<div class="rc-results__columns" aria-hidden="true">
+			<span>Status</span>
+			<span class="rc-columns__stack">Name</span>
+			<span class="rc-columns__wide">Original</span>
+			<span class="rc-columns__wide" />
+			<span class="rc-columns__wide">New name</span>
+		</div>
+		<div v-if="!visibleRows.length" class="rc-results__none">Nothing matches this filter.</div>
 		<div
-			v-for="r in plan.rows"
+			v-for="r in visibleRows"
 			:key="r.from"
-			class="rc-row"
+			class="rc-results__row"
+			:class="{ 'rc-results__row--fail': r.action === 'failed', 'rc-results__row--multiline': !r.to && !!r.detail, 'rc-rename-row--new-name': !!r.to }"
 			@contextmenu="openContextMenu($event, contextItems(r))"
 		>
-			<StatusTag :status="TAG[r.action]?.tag ?? r.action" :label="TAG[r.action]?.label" :width="96" />
-			<div class="rc-row__text">
-				<span class="rc-row__name">{{ basename(r.from) }}</span>
-				<span v-if="r.to" class="rc-row__to">↳ {{ basename(r.to) }}</span>
-				<span v-else-if="r.detail" class="rc-row__detail">{{ r.detail }}</span>
+			<StatusTag :status="TAG[r.action]?.tag ?? r.action" :label="TAG[r.action]?.label" />
+			<div class="rc-results__text">
+				<span class="rc-results__name" :title="r.from">{{ basename(r.from) }}</span>
+				<span class="rc-results__arrow">{{ r.to ? "→" : "" }}</span>
+				<span class="rc-row__to" :title="r.to ?? undefined">{{ r.to ? basename(r.to) : "" }}</span>
+				<span v-if="!r.to && r.detail" class="rc-results__detail" :title="r.detail">{{ r.detail }}</span>
 			</div>
 		</div>
 	</ConfigCard>
 </template>
 
 <style scoped>
-.rc-head {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-}
-
-.rc-head__note {
-	font-size: 11px;
-	font-weight: 400;
-	text-transform: none;
-	letter-spacing: 0;
-	color: var(--t5);
-}
-
 .rc-apply {
+	flex: none;
+	height: 32px;
 	border: none;
-	border-radius: 8px;
-	padding: 5px 14px;
-	font-size: 11.5px;
-	font-weight: 700;
+	border-radius: var(--r-md);
+	padding: 0 16px;
+	font-size: var(--fs-md);
+	font-weight: 600;
 	color: #fff;
-	background: #2f6fd0;
+	background: var(--fill);
+	white-space: nowrap;
 	cursor: pointer;
 }
 
+.rc-apply:hover:not(:disabled) {
+	background: var(--fill-hover);
+}
+
 .rc-apply:disabled {
-	background: var(--btnDim);
-	color: var(--t3);
+	background: var(--a08);
+	color: var(--t5);
 	cursor: not-allowed;
 }
 
-.rc-row {
-	display: flex;
+.rc-rename .rc-results__columns,
+.rc-rename .rc-results__row {
+	grid-template-columns: 128px minmax(0, 1fr) 16px minmax(0, 1fr);
+}
+
+.rc-columns__stack {
+	display: none;
+}
+
+.rc-rename .rc-results__text {
+	display: grid;
+	grid-template-columns: subgrid;
+	grid-column: 2 / -1;
 	align-items: center;
-	gap: 12px;
-	padding: 8px 0;
-	border-top: 1px solid var(--a06);
-	user-select: text;
-}
-
-.rc-row__text {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 0;
-	flex: 1;
-}
-
-.rc-row__name {
-	color: var(--t0);
-	font-size: 12px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .rc-row__to {
+	min-width: 0;
+	font-size: var(--fs-sm);
 	color: var(--green);
-	font-size: 11px;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.rc-row__detail {
-	color: var(--t4);
-	font-size: 11px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+.rc-rename .rc-results__detail {
+	grid-column: 1 / -1;
+}
+
+@container results (max-width: 519px) {
+	.rc-rename .rc-results__columns,
+	.rc-rename .rc-results__row {
+		grid-template-columns: 128px minmax(0, 1fr);
+	}
+
+	.rc-columns__wide,
+	.rc-rename .rc-results__arrow {
+		display: none;
+	}
+
+	.rc-columns__stack {
+		display: block;
+	}
+
+	.rc-rename .rc-results__text {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.rc-rename-row--new-name {
+		min-height: 60px;
+	}
 }
 </style>

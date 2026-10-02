@@ -17,12 +17,15 @@ const { toasts } = useToast();
 .host {
 	position: fixed;
 	left: 50%;
-	bottom: 64px;
+	bottom: calc(var(--queuebar-h) + 20px);
 	transform: translateX(-50%);
 	display: flex;
 	flex-direction: column-reverse;
 	align-items: center;
 	gap: 8px;
+	max-width: calc(100vw - 32px);
+	max-height: calc(100vh - var(--titlebar-h) - var(--queuebar-h) - 32px);
+	overflow-y: auto;
 	z-index: 60;
 	pointer-events: none;
 }
@@ -30,12 +33,22 @@ const { toasts } = useToast();
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	max-width: calc(100vw - 32px);
 	background: var(--pop2);
 	border: 1px solid var(--a16);
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	padding: 8px 18px;
 	box-shadow: 0 12px 36px var(--shC);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	color: var(--t1);
+}
+.toast svg {
+	flex: none;
+}
+.toast span {
+	min-width: 0;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
+	overflow-wrap: anywhere;
 }
 </style>

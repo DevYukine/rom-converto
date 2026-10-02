@@ -7,7 +7,7 @@ import { useChdVerifyStore } from "~/stores/chd-verify";
 import { useCsoVerifyStore } from "~/stores/cso-verify";
 import { useXenonVerifyStore } from "~/stores/xenon-verify";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_TOOLTIP, runArgs, type OpDef } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, runArgs, type OpDef } from "./types";
 
 const SUBTITLE = "Checks hashes and container structure. Read-only.";
 const DROP_TEXT = "Drop files or a folder";
@@ -134,11 +134,12 @@ export const verifyOps: OpDef[] = [
 			{
 				kind: "file",
 				key: "keys",
-				label: "Disc master key file (optional, for .wud/.wux inputs only)",
+				label: "Disc key file",
 				filters: [{ name: "Disc key", extensions: ["key", "bin", "txt"] }],
-				display: (store) => store.keys || "none",
+				display: (store) => store.keys || "",
+				placeholder: "None",
 				tooltip:
-					"Optional override of the disc's 16-byte master key for .wud or .wux inputs. When left empty, a sibling <input>.key or game.key next to the disc is used, then the built-in key database matched by the disc's file name, then a trial decrypt against every embedded key.",
+					"Optional. Only used for .wud and .wux inputs. Overrides the disc's 16-byte master key. When left empty, a sibling <input>.key or game.key next to the disc is used, then the built-in key database matched by the disc's file name, then a trial decrypt against every embedded key.",
 			},
 		],
 		outputRows: [],
@@ -175,6 +176,7 @@ export const verifyOps: OpDef[] = [
 				tooltip: NX_KEYS_TOOLTIP,
 				filters: [{ name: "prod.keys", extensions: ["keys", "txt"] }],
 				display: nxKeysDisplay,
+				placeholder: NX_KEYS_AUTO,
 				color: nxKeysColor,
 			},
 		],
@@ -208,7 +210,8 @@ export const verifyOps: OpDef[] = [
 				key: "parent",
 				label: "Parent CHD (optional)",
 				filters: [{ name: "CHD", extensions: ["chd"] }],
-				display: (store) => store.parent || "none",
+				display: (store) => store.parent || "",
+				placeholder: "None",
 				tooltip:
 					"Some CHDs are delta files that only store the differences against a base image. Pick that base CHD here if this file needs one.",
 			},

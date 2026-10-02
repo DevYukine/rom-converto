@@ -1,6 +1,6 @@
 {
   "default": {
-    "echo": "> rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --trim-add-padding=false --zip-exclude=",
+    "echo": "rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --trim-add-padding=false --zip-exclude=",
     "options": {
       "output_dir": "/roms/sorted",
       "output_template": "{console}/{basename}.{ext}",
@@ -44,7 +44,7 @@
     }
   },
   "on": {
-    "echo": "> rom-converto --skip-space-check organize /roms/library --allow-encrypted --clean --clean-backup '~/backup' --clean-exclude '**/*.txt' --dat --dir-letter --dir-letter-count 2 --dir-letter-group --dir-letter-limit 10 --filter-language EN,FR --filter-regex '(USA|Europe)' --filter-regex-exclude '\\(Demo\\)' --filter-region USA,EUR --input-exclude '**/*-beta.*' --input-exclude '**/*.nav' --keys '~/prod.keys' --link-mode hardlink --max-depth 2 --move-delete-dirs never --move --no-type demo,beta --on-conflict error --only-retail --only-type program --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --patch '~/patches' --patch-only --playlists --prefer-filename-regex Redump --prefer-game-regex 'Rev A' --prefer-good --prefer-language EN,FR --prefer-parent --prefer-region USA,EUR --prefer-retail --prefer-revision older --prefer-verified --remove-headers=nes,fds --single --trim-add-padding --verify-after --zip-exclude '**/*.zip' --zip-format torrentzip",
+    "echo": "rom-converto --skip-space-check organize /roms/library --allow-encrypted --clean --clean-backup '~/backup' --clean-exclude '**/*.txt' --dat --dir-letter --dir-letter-count 2 --dir-letter-group --dir-letter-limit 10 --filter-language EN,FR --filter-regex '(USA|Europe)' --filter-regex-exclude '\\(Demo\\)' --filter-region USA,EUR --input-exclude '**/*-beta.*' --input-exclude '**/*.nav' --keys '~/prod.keys' --link-mode hardlink --max-depth 2 --move-delete-dirs never --move --no-type demo,beta --on-conflict error --only-retail --only-type program --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --patch '~/patches' --patch-only --playlists --prefer-filename-regex Redump --prefer-game-regex 'Rev A' --prefer-good --prefer-language EN,FR --prefer-parent --prefer-region USA,EUR --prefer-retail --prefer-revision older --prefer-verified --remove-headers=nes,fds --single --trim-add-padding --verify-after --zip-exclude '**/*.zip' --zip-format torrentzip",
     "options": {
       "output_dir": "/roms/sorted",
       "output_template": "{console}/{basename}.{ext}",
@@ -128,7 +128,7 @@
     }
   },
   "symlink": {
-    "echo": "> rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --link-mode symlink --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --symlink-relative=false --trim-add-padding=false --zip-exclude=",
+    "echo": "rom-converto organize /roms/library --clean=false --clean-exclude= --dat=false --dir-letter=false --dir-letter-group=false --filter-language= --filter-regex= --filter-regex-exclude= --filter-region= --link-mode symlink --move=false --no-type= --on-conflict error --only-retail=false --only-type= --output-dir /roms/sorted --output-template '{console}/{basename}.{ext}' --playlists=false --prefer-filename-regex= --prefer-game-regex= --prefer-good=false --prefer-language= --prefer-parent=false --prefer-region= --prefer-retail=false --prefer-revision any --prefer-verified=false --remove-headers=none --single=false --symlink-relative=false --trim-add-padding=false --zip-exclude=",
     "options": {
       "output_dir": "/roms/sorted",
       "output_template": "{console}/{basename}.{ext}",

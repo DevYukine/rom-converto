@@ -1,4 +1,7 @@
-@import "tailwindcss";
+/* Only the reset: the app styles itself with scoped component CSS and the
+   tokens in tokens.css, so no utility classes are generated (a plain class
+   such as `ring` would otherwise collide with a utility of the same name). */
+@import "tailwindcss/preflight.css";
 
 html, body {
 	margin: 0;
@@ -8,11 +11,104 @@ html, body {
 	overflow: hidden;
 }
 
-/* Readability cap on very wide windows; the queue page stays fluid. */
+/* Readability cap on very wide windows. The page is a size container so
+   layouts follow the space next to the side panels, not the window. Size
+   containment makes it the containing block for position: fixed
+   descendants, so overlays rendered from a page must teleport to body. */
 .rc-page {
 	width: 100%;
-	max-width: 1320px;
+	max-width: 1200px;
 	margin-inline: auto;
+	container: page / inline-size;
+}
+
+/* Shared form primitives. Components add layout (width, alignment) on top. */
+.rc-input {
+	box-sizing: border-box;
+	min-width: 0;
+	height: var(--ctl-h);
+	padding: 0 9px;
+	background: var(--field);
+	border: 1px solid var(--a14);
+	border-radius: var(--r-sm);
+	color: var(--t1);
+	font: inherit;
+	font-size: var(--fs-sm);
+}
+
+textarea.rc-input {
+	height: auto;
+	min-height: 60px;
+	padding: 6px 9px;
+	line-height: var(--lh-body);
+	resize: vertical;
+}
+
+.rc-input--mono {
+	font-family: var(--font-mono);
+}
+
+.rc-input::placeholder {
+	color: var(--t6);
+}
+
+.rc-input:hover {
+	border-color: var(--a22);
+}
+
+.rc-input:focus {
+	border-color: var(--blue);
+}
+
+/* Inline notice for op-level caveats and streamed run warnings. */
+.rc-warning {
+	border: 1px solid var(--yellow);
+	border-radius: var(--r-md);
+	background: var(--tint-yellow);
+	padding: 10px 14px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	color: var(--yellow);
+	text-wrap: pretty;
+}
+
+/* A button that shows a chosen value and opens a picker: paths, files,
+   templates, policies. Long values truncate; the full value goes in title. */
+.rc-picker {
+	box-sizing: border-box;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	max-width: 100%;
+	height: var(--ctl-h);
+	padding: 0 8px 0 10px;
+	background: var(--field);
+	border: 1px solid var(--a14);
+	border-radius: var(--r-sm);
+	color: var(--t1);
+	font: inherit;
+	font-size: var(--fs-sm);
+	text-align: left;
+	cursor: pointer;
+}
+
+.rc-picker:hover {
+	border-color: var(--a25);
+	background: var(--field-hover);
+}
+
+.rc-picker__value {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.rc-picker__icon {
+	flex: none;
+	color: var(--t5);
 }
 
 @keyframes rcspin {

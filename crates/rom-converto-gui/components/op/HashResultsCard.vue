@@ -47,16 +47,16 @@ async function copy(value: string) {
 </script>
 
 <template>
-	<ConfigCard :title="`Hashes · ${rows.length} files`">
+	<ConfigCard :title="`Hashes · ${rows.length} file${rows.length === 1 ? '' : 's'}`">
 		<p v-if="rows.length === 0" class="rc-hash__empty">
 			No hashes yet. Stage files and add them to the queue; results appear here as jobs finish.
 		</p>
 		<div v-for="row in rows" :key="row.key" class="rc-hash__row">
-			<span class="rc-hash__name">{{ row.name }}</span>
+			<span class="rc-hash__name" :title="row.name">{{ row.name }}</span>
 			<div class="rc-hash__grid">
 				<template v-for="entry in row.values" :key="entry.label">
 					<span class="rc-hash__label">{{ entry.label }}</span>
-					<button type="button" class="rc-hash__value" @click="copy(entry.value)">{{ entry.value }}</button>
+					<button type="button" class="rc-hash__value" :title="`Copy ${entry.label}`" @click="copy(entry.value)">{{ entry.value }}</button>
 				</template>
 			</div>
 		</div>
@@ -66,9 +66,9 @@ async function copy(value: string) {
 <style scoped>
 .rc-hash__empty {
 	margin: 0;
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
 	color: var(--t5);
-	line-height: 1.5;
+	line-height: var(--lh-body);
 }
 
 .rc-hash__row {
@@ -82,7 +82,7 @@ async function copy(value: string) {
 
 .rc-hash__name {
 	display: block;
-	font-size: 12px;
+	font-size: var(--fs-md);
 	color: var(--t0);
 	margin-bottom: 4px;
 	overflow: hidden;
@@ -92,18 +92,21 @@ async function copy(value: string) {
 
 .rc-hash__grid {
 	display: grid;
-	grid-template-columns: auto 1fr;
+	grid-template-columns: auto minmax(0, 1fr);
 	gap: 2px 10px;
 }
 
 .rc-hash__label {
-	font-size: 10.5px;
-	color: var(--t4);
+	font-size: var(--fs-sm);
+	color: var(--t5);
 }
 
 .rc-hash__value {
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
+	min-width: 0;
+	max-width: 100%;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
 	color: var(--t3);
 	background: none;
 	border: none;

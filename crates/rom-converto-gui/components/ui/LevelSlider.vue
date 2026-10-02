@@ -25,7 +25,7 @@ const displayValue = computed(() => (props.formatValue ? props.formatValue(props
 
 const fillPct = computed(() => ((props.modelValue - props.min) / (props.max - props.min)) * 100);
 const trackStyle = computed(() => ({
-	background: `linear-gradient(to right, #3b82f6 ${fillPct.value}%, var(--a12) ${fillPct.value}%)`,
+	background: `linear-gradient(to right, var(--fill) ${fillPct.value}%, var(--a12) ${fillPct.value}%)`,
 }));
 
 function onInput(e: Event) {
@@ -60,35 +60,40 @@ function onInput(e: Event) {
 .rc-slider-row {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	padding: 6px 0;
 }
 
 .rc-slider-row__head {
 	display: flex;
 	justify-content: space-between;
 	align-items: baseline;
+	gap: 16px;
+	margin-bottom: 6px;
 }
 
 .rc-slider-row__value {
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	white-space: nowrap;
 	color: var(--blue);
 }
 
 .rc-slider-row__hint {
-	margin: 0;
-	font-size: 10.5px;
+	margin: 4px 0 0;
+	font-size: var(--fs-sm);
 	color: var(--t5);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 
 .rc-slider {
 	appearance: none;
 	width: 100%;
 	height: 4px;
-	border-radius: 2px;
+	border-radius: var(--r-sm);
 	background: var(--a12);
 	cursor: pointer;
+	margin: 0;
 }
 
 .rc-slider:disabled {
@@ -101,22 +106,23 @@ function onInput(e: Event) {
 	width: 12px;
 	height: 12px;
 	border-radius: 50%;
-	background: #fff;
-	box-shadow: 0 1px 3px var(--shC);
+	background: var(--fill);
+	border: 2px solid #fff;
+	box-shadow: 0 0 0 1px var(--a25);
 }
 
 .rc-slider::-moz-range-thumb {
 	width: 12px;
 	height: 12px;
-	border: none;
+	border: 2px solid #fff;
 	border-radius: 50%;
-	background: #fff;
-	box-shadow: 0 1px 3px var(--shC);
+	background: var(--fill);
+	box-shadow: 0 0 0 1px var(--a25);
 }
 
 .rc-slider::-moz-range-progress {
-	background: #3b82f6;
+	background: var(--fill);
 	height: 4px;
-	border-radius: 2px;
+	border-radius: var(--r-sm);
 }
 </style>

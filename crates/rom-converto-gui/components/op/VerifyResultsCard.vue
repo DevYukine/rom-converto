@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useQueueStore, type QueueJob } from "~/stores/queue";
+import { openContextMenu } from "~/composables/useContextMenu";
+import { rowContextItems, useResultRows } from "~/composables/useResultRows";
+import { requestPath } from "~/lib/opdefs/types";
+import FilterChip from "~/components/ui/FilterChip.vue";
 import ConfigCard from "~/components/ui/ConfigCard.vue";
 import StatusTag from "~/components/ui/StatusTag.vue";
 import DetailModal from "~/components/modals/DetailModal.vue";
@@ -127,31 +131,51 @@ const rows = computed<Row[]>(() => {
 	return out.reverse();
 });
 
-const passedCount = computed(() => rows.value.filter((r) => r.ok).length);
-const failedCount = computed(() => rows.value.filter((r) => !r.ok).length);
+const statusFilter = ref<"passed" | "failed" | "all">("all");
+const { counts, visibleRows: statusRows, toggleFilter } = useResultRows(rows, (r) => (r.ok ? "passed" : "failed"), statusFilter);
+const query = ref("");
+const visibleRows = computed(() => {
+	const q = query.value.trim().toLowerCase();
+	return q ? statusRows.value.filter((r) => r.job.name.toLowerCase().includes(q)) : statusRows.value;
+});
 
 const detailRow = ref<Row | null>(null);
 </script>
 
 <template>
-	<ConfigCard v-if="rows.length" title="Results">
-		<template #head-tag>
-			<span class="rc-counts">
-				<strong class="rc-counts__pass">{{ passedCount }} passed</strong>
-				<span class="rc-counts__dot">·</span>
-				<strong class="rc-counts__fail">{{ failedCount }} failed</strong>
-			</span>
-		</template>
-
-		<div v-for="row in rows" :key="row.job.id" class="rc-row" :class="{ 'rc-row--fail': !row.ok }">
-			<StatusTag :status="row.ok ? 'PASSED' : 'FAILED'" />
-			<div class="rc-row__text">
-				<span class="rc-row__name">{{ row.job.name }}</span>
-				<span v-if="row.detail" class="rc-row__detail" :class="row.ok ? 'rc-row__detail--pass' : 'rc-row__detail--fail'">
+	<ConfigCard v-if="rows.length" title="Results" class="rc-results">
+		<div class="rc-results__toolbar">
+			<div class="rc-results__chips">
+				<FilterChip label="All" :count="rows.length" :active="statusFilter === 'all'" @click="statusFilter = 'all'" />
+				<FilterChip label="Passed" :count="counts.passed ?? 0" color="green" :active="statusFilter === 'passed'" :class="{ 'rc-results__chip--empty': !counts.passed }" @click="toggleFilter('passed')" />
+				<FilterChip label="Failed" :count="counts.failed ?? 0" color="red" :active="statusFilter === 'failed'" :class="{ 'rc-results__chip--empty': !counts.failed }" @click="toggleFilter('failed')" />
+			</div>
+			<input v-model="query" type="search" class="rc-input rc-results__search" placeholder="Filter by name" aria-label="Filter results by name">
+		</div>
+		<p class="rc-results__summary">{{ counts.passed ?? 0 }} passed · {{ counts.failed ?? 0 }} failed · {{ visibleRows.length }} of {{ rows.length }} {{ rows.length === 1 ? "file" : "files" }}</p>
+		<div class="rc-results__columns" aria-hidden="true">
+			<span>Status</span>
+			<span>Name</span>
+			<span class="rc-results__actions" />
+		</div>
+		<div v-if="!visibleRows.length" class="rc-results__none">Nothing matches this filter.</div>
+		<div
+			v-for="row in visibleRows"
+			:key="row.job.id"
+			class="rc-results__row"
+			:class="{ 'rc-results__row--fail': !row.ok, 'rc-results__row--multiline': !!row.detail }"
+			@contextmenu="openContextMenu($event, rowContextItems(requestPath(row.job.args, 'input') || row.job.name, row.detail))"
+		>
+			<StatusTag :status="row.ok ? 'PASSED' : 'FAILED'" :label="row.ok ? 'Passed' : 'Failed'" />
+			<div class="rc-results__text">
+				<span class="rc-results__name" :title="row.job.name">{{ row.job.name }}</span>
+				<span v-if="row.detail" class="rc-results__detail" :class="{ 'rc-results__detail--red': !row.ok }" :title="row.detail">
 					{{ row.detail }}
 				</span>
 			</div>
-			<button v-if="row.lines.length" type="button" class="rc-link" @click="detailRow = row">Details</button>
+			<div class="rc-results__actions">
+				<button v-if="row.lines.length" type="button" class="rc-results__link" @click="detailRow = row">Details</button>
+			</div>
 		</div>
 	</ConfigCard>
 
@@ -159,80 +183,17 @@ const detailRow = ref<Row | null>(null);
 		v-if="detailRow"
 		:title="detailRow.job.name"
 		:lines="detailRow.lines"
+		:tone="detailRow.ok ? 'plain' : 'error'"
 		@close="detailRow = null"
 	/>
 </template>
 
+
 <style scoped>
-.rc-counts {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	font-size: 11.5px;
-}
-
-.rc-counts__pass {
-	color: var(--green);
-}
-
-.rc-counts__fail {
-	color: var(--red);
-}
-
-.rc-counts__dot {
-	color: var(--t5);
-}
-
-.rc-row {
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	padding: 8px 0;
-	border-top: 1px solid var(--a06);
-}
-
-.rc-row--fail {
-	background: rgba(212, 58, 62, 0.06);
-}
-
-.rc-row__text {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 0;
-	flex: 1;
-}
-
-.rc-row__name {
-	color: var(--t0);
-	font-size: 12px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-row__detail {
-	font-size: 11px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-row__detail--pass {
-	color: var(--t4);
-}
-
-.rc-row__detail--fail {
-	color: var(--red);
-}
-
-.rc-link {
-	border: none;
-	background: none;
-	color: var(--blue);
-	font-size: 11.5px;
-	cursor: pointer;
-	padding: 0;
-	white-space: nowrap;
+.rc-results__detail {
+	white-space: normal;
+	overflow-wrap: anywhere;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 </style>

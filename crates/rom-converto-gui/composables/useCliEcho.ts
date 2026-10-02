@@ -87,7 +87,7 @@ function flagToken(def: CliFlag, value: unknown): string | false {
 			: `${flag} ${quote(text)}`;
 }
 
-// Builds the `> rom-converto ...` preview for a `cmd_run` payload
+// Builds the copyable `rom-converto ...` command for a `cmd_run` payload
 // (`{ request: { operation, input, output, options, dry_run }, reportFile }`
 // from lib/opdefs/types.ts `runArgs`), deriving the CLI's shape entirely
 // from the generated cli_echo manifest.
@@ -139,5 +139,5 @@ export function buildCliCommand(payload: Record<string, unknown>): string {
 		if (token) tokens.push(token);
 	}
 
-	return `> ${tokens.join(" ")}`;
+	return tokens.join(" ");
 }

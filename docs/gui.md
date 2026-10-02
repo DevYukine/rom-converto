@@ -1,8 +1,9 @@
 # Desktop GUI
 
-The desktop app is a Tauri 2 application with a Nuxt 4, Vue, Pinia, and
-Tailwind CSS frontend. It runs on Windows, macOS, and Linux. Its operations use
-the same `rom-converto-lib` functions as the CLI.
+The desktop app is a Tauri 2 application with a Nuxt 4, Vue, and Pinia
+frontend. Styling is scoped component CSS plus design tokens; Tailwind is used
+only for its preflight reset. It runs on Windows, macOS, and Linux. Its
+operations use the same `rom-converto-lib` functions as the CLI.
 
 ## Use
 
@@ -10,10 +11,13 @@ Choose a format page, add files or folders, set its options, then run the queue.
 Each page shows the equivalent CLI command with the selected options. The
 Inspect page reads supported files through the same path as `rom-converto info`.
 
-Batch pages keep pending and running work in Active, then move each item to
-Completed or Failed. You can reorder pending work, select items to remove, retry
-failed items, and choose 1 to 8 concurrent jobs. Wii U compression is one bundle
-operation, so it does not expose those per-file queue controls.
+Batch pages keep running work in Running, pending work in Up next, and finished
+or failed items in Finished this session. Failed items stay inside Finished
+this session, with a Retry failed button to run them again. You can reorder
+pending work, remove items with the per-row Remove button, and choose 1 to 8
+concurrent jobs. Wii U
+compression is one bundle operation, so it does not expose those per-file queue
+controls.
 
 Dropping a folder queues matching input files. Recursive scanning and its maximum
 depth use the same library walker as the CLI. Pages with archive support accept
@@ -32,9 +36,9 @@ their version and stored hashes.
 
 ### Switch merge and split
 
-Under Utilities, **Merge Switch NSP/XCI** stages all selected files into one job.
+Under Tools, **Merge Switch NSP/XCI** stages all selected files into one job.
 Choose NSP output (default), or XCI when every input is an XCI. The page supports
-`prod.keys`, output directory and filename, conflicts, and preview. It displays a
+`prod.keys`, output directory and filename, conflicts, and a dry run. It displays a
 persistent signature warning and is intended for emulator use.
 
 The warning appears for both output formats. Selected NCA bytes stay unchanged;
@@ -52,7 +56,7 @@ in NxEmu.
 ### Xbox 360 GoD conversion
 
 **Convert ISO to GoD** takes a disc ISO and writes `<stem>_god` by default. You can
-choose an output directory and title, preview the job, or add folders to the queue.
+choose an output directory and title, start a dry run, or add folders to the queue.
 Archive inputs are supported here even though the CLI conversion takes an ISO directly.
 
 The page has no key, report, output-template, or verification setting. Unlike the CLI,
@@ -78,32 +82,35 @@ format are copied unchanged; unrecognized files are skipped.
 
 `Rename with DAT` hashes every file and queries the Playmatch API, including
 during a dry run. `.m3u` playlists for multi-disc sets are written on real
-runs only, never during a dry run. Move deletes each source only after its
-organized copy was written successfully.
+runs only, never during a dry run. Move files deletes each source only after
+its organized copy was written successfully.
 
-The remaining options mirror the CLI flags, grouped as in
-[the CLI reference](cli.md#organize):
+The remaining options mirror the CLI flags (see [the CLI reference](cli.md#organize)).
+The page shows the common ones first and groups the rest into collapsible
+sections. A section starts open when any of its options is set:
 
-- **Choose what gets organized**: excluded input globs, name-regex include and
-  exclude, language and region filters, kinds to drop or keep, and retail-only.
+- **Filters**: excluded input globs, name-regex include and exclude, language
+  and region filters, kinds to drop or keep, and retail-only.
 - **Best release**: keep one release per parent/clone group
   (needs the DAT match) and the preferences that pick the winner: name regex,
   verified, good, language, region, revision, retail, and parent. A separate
   file-name regex breaks ties between inputs for the same game or the same
   output path, after the already-placed and format preferences, whether or
-  not Best release is on.
-- **Zip, links, and output layout**: letter folders with count, limit, and
-  range grouping; TorrentZip or RVZSTD; a zip-exclusion glob; and hardlink,
-  symlink, or reflink instead of copying already-correct files.
-- **Headers, trimming, and patching**: header stripping (`nes`, `fds`, `a78`,
-  `lnx`, `smc`/`sfc`), re-padding trimmed GBA/NDS dumps, and CRC32-matched patch
-  application with a patch-only mode.
-- **Cleaning up**: delete files in written output folders that the run did not
-  produce (clean never deletes files under INPUT), with exclusion globs, a flat backup
-  folder, and source-folder deletion after moves; plus post-write verification
-  of zips, copies, and conversions. A conversion whose format has no output
-  check (3DS, Wii U, Xbox, Xbox 360, and PS3) fails as unverified and keeps
-  its source.
+  not One game per set is on.
+- **Letter folders**: letter folders with count, limit, and range grouping.
+- **Archives and links**: TorrentZip or RVZSTD, a zip-exclusion glob, and
+  hardlink, symlink, or reflink instead of copying already-correct files.
+- **Headers and patches**: header stripping (`nes`, `fds`, `a78`, `lnx`, `smc`/`sfc`),
+  re-padding trimmed GBA/NDS dumps, and CRC32-matched patch application with
+  a patch-only mode.
+- **Cleanup**: delete files in written output folders that the run did not
+  produce (clean never deletes files under INPUT), with exclusion globs and a
+  flat backup folder.
+
+Empty folders, next to Move files, controls source-folder deletion after moves.
+Verify after organize, under Safety, checks zips, copies, and conversions after
+they are written. A conversion whose format has no output check (3DS, Wii U,
+Xbox, Xbox 360, and PS3) fails as unverified and keeps its source.
 
 ## Output and safety controls
 
@@ -115,11 +122,11 @@ if invalid. Skip and Error leave an existing target unchanged. The last option
 verifies supported outputs before choosing whether to retain or replace them.
 Organize always starts at Error, regardless of the default policy setting.
 
-Most write pages provide Preview. It uses the same planning logic as CLI
+Most write pages provide Dry run. It uses the same planning logic as CLI
 `--dry-run` and writes no conversion output. Archive previews may extract a file into a temporary directory, which is cleaned up afterward. The app also checks available space before a
 write, using the input size plus 256 MiB as a conservative floor. A page option
-can skip that check. Organize's Move option deletes source files only after
-their organized copies were written successfully; skipped or failed files keep
+can skip that check. Organize's Move files option deletes source files only
+after their organized copies were written successfully; skipped or failed files keep
 their sources, except with On conflict set to Overwrite if invalid: an existing
 zip, copy, or hardlink (never a symlink) that verifies valid, meaning it holds this source's data,
 counts as written and its source is deleted. Any item whose planned output path is its own source file
@@ -135,8 +142,8 @@ dock where the desktop supports it.
 
 The GUI reads and writes the CLI `rom-converto.toml` preset file. Presets for
 GameCube, Wii, Switch, CHD, CSO/ZSO, and the covered Wii U compression options
-can be selected and saved from their pages. The Settings page lists and deletes
-presets. A GUI edit rewrites only the edited preset table, so comments within
+can be selected and saved from their pages. The Settings page lists, edits, and
+deletes presets. A GUI edit rewrites only the edited preset table, so comments within
 that table are lost.
 
 ## Updates

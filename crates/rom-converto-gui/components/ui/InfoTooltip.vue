@@ -1,40 +1,93 @@
 <script setup lang="ts">
-withDefaults(
-  defineProps<{
-    message: string;
-    placement?: "top" | "bottom";
-    block?: boolean;
-  }>(),
-  { placement: "top" },
-);
+// `label` names the trigger when the slot is a bare icon; wrapped controls
+// (a disabled Segmented option) keep their own text as the accessible name.
+defineProps<{ message: string; label?: string }>();
 
 const tipId = useId();
-const open = ref(false);
+const trigger = ref<HTMLElement | null>(null);
+const bubble = ref<HTMLElement | null>(null);
+const hovered = ref(false);
+const focused = ref(false);
+const open = computed(() => hovered.value || focused.value);
+const position = ref({ left: "8px", top: "8px" });
+
+function place() {
+	if (!trigger.value || !bubble.value) return;
+	const rect = trigger.value.getBoundingClientRect();
+	const tip = bubble.value.getBoundingClientRect();
+	const left = Math.max(8, Math.min(rect.left + (rect.width - tip.width) / 2, window.innerWidth - tip.width - 8));
+	const above = rect.top - tip.height - 6;
+	const top = Math.max(8, Math.min(
+		above >= 8 && above + tip.height <= window.innerHeight - 8 ? above : rect.bottom + 6,
+		window.innerHeight - tip.height - 8,
+	));
+	position.value = { left: `${left}px`, top: `${top}px` };
+}
+
+watch(open, async (value) => {
+	if (value) {
+		await nextTick();
+		place();
+		window.addEventListener("resize", place);
+		window.addEventListener("scroll", place, true);
+	} else {
+		window.removeEventListener("resize", place);
+		window.removeEventListener("scroll", place, true);
+	}
+});
+
+onBeforeUnmount(() => {
+	window.removeEventListener("resize", place);
+	window.removeEventListener("scroll", place, true);
+});
 </script>
 
 <template>
-  <span
-    class="relative"
-    :class="block ? 'flex w-full' : 'inline-flex'"
-    tabindex="0"
-    :title="message"
-    :aria-describedby="tipId"
-    @mouseenter="open = true"
-    @mouseleave="open = false"
-    @focusin="open = true"
-    @focusout="open = false"
-  >
-    <slot />
-    <span
-      :id="tipId"
-      role="tooltip"
-      class="pointer-events-none absolute left-1/2 z-50 w-max max-w-xs -translate-x-1/2 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs text-zinc-200 shadow-lg transition-opacity duration-100"
-      :class="[
-        placement === 'top' ? 'bottom-full mb-1' : 'top-full mt-1',
-        open ? 'opacity-100' : 'opacity-0',
-      ]"
-    >
-      {{ message }}
-    </span>
-  </span>
+	<span
+		ref="trigger"
+		class="rc-info-tooltip"
+		tabindex="0"
+		:role="label ? 'img' : undefined"
+		:aria-label="label"
+		:aria-describedby="tipId"
+		@mouseenter="hovered = true"
+		@mouseleave="hovered = false"
+		@focusin="focused = true"
+		@focusout="focused = false"
+	>
+		<slot />
+		<span :id="tipId" hidden>{{ message }}</span>
+		<Teleport to="body">
+			<span v-if="open" ref="bubble" role="tooltip" aria-hidden="true" class="rc-info-tooltip__bubble" :style="position">
+				{{ message }}
+			</span>
+		</Teleport>
+	</span>
 </template>
+
+<style scoped>
+.rc-info-tooltip {
+	display: inline-flex;
+}
+
+.rc-info-tooltip__bubble {
+	position: fixed;
+	z-index: 100;
+	pointer-events: none;
+	box-sizing: border-box;
+	width: max-content;
+	max-width: min(280px, calc(100vw - 16px));
+	max-height: calc(100vh - 16px);
+	overflow: auto;
+	background: var(--pop2);
+	border: 1px solid var(--a16);
+	color: var(--t2);
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	padding: 6px 9px;
+	border-radius: var(--r-sm);
+	box-shadow: 0 6px 24px var(--shC);
+	white-space: normal;
+	text-wrap: pretty;
+}
+</style>

@@ -31,7 +31,8 @@ function templateOutputRows(): OpDef["outputRows"] {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where converted files are written. Leave empty to write each output next to its source file.",
@@ -40,6 +41,7 @@ function templateOutputRows(): OpDef["outputRows"] {
 			kind: "template",
 			label: "Template",
 			display: (s) => s.outputTemplate || "",
+			placeholder: "None",
 			set: (s, v) => { s.outputTemplate = v; },
 			tooltip:
 				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. Values come from the file's extracted metadata; a token that can't be resolved falls back to the input's plain filename. Combined with the output directory above.",
@@ -53,7 +55,8 @@ function templateOutputRowsWithReport(): OpDef["outputRows"] {
 		{
 			kind: "report",
 			label: "Run report",
-			display: (s) => (s.reportFile ? basename(s.reportFile) : "none"),
+			display: (s) => (s.reportFile ? basename(s.reportFile) : ""),
+			placeholder: "None",
 			set: (s, v) => { s.reportFile = v; },
 			tooltip:
 				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
@@ -82,13 +85,6 @@ const ctr: OpDef = {
 			display: () => "auto (CIA ↔ CCI)",
 			tooltip:
 				"Detected from the input file: a CIA converts to a 3DS/CCI cart image, while a 3DS or CCI file converts to a CIA.",
-		},
-		{
-			kind: "toggle",
-			key: "trim",
-			label: "Trim 3DS output",
-			tooltip:
-				"Ends the 3DS/CCI image after the last partition instead of padding it with 0xFF to the next cartridge size, the same shape as a trimmed cart dump. Off by default to match a full dump. Ignored when converting to CIA.",
 		},
 		{
 			kind: "toggle",
@@ -178,7 +174,7 @@ const cso: OpDef = {
 	useStore: useCsoToChdStore,
 	command: "cmd_run",
 	resultKind: "convert",
-	title: "Convert ISO → CHD",
+	title: "Convert CSO → CHD",
 	subtitle: "Decodes a CSO/ZSO/DAX disc image and rebuilds it as a CHD.",
 	dropText: "Drop .cso, .zso or .dax files or folders",
 	acceptedExts: ["cso", "zso", "dax", ...ARCHIVE_EXTS],
@@ -200,7 +196,7 @@ const cso: OpDef = {
 			kind: "number",
 			key: "hunkSize",
 			label: "Hunk size",
-			placeholder: "auto",
+			placeholder: "Automatic",
 			tooltip:
 				"Size of each compressed block in bytes, a multiple of 2048. Automatically uses 4096, or 2048 for detected PSP images since PPSSPP reads 2048 byte blocks.",
 		},
@@ -231,7 +227,7 @@ const cso: OpDef = {
 			kind: "number",
 			key: "level",
 			label: "Level",
-			placeholder: "auto",
+			placeholder: "Automatic",
 			hint: CHD_LEVEL_HINT,
 			tooltip:
 				"Compression strength from 1 to 22. Zstandard uses the value directly; deflate and lzma cap at 9. Leave empty to use each codec's default (zstd 19, lzma 8, zlib 9).",
@@ -299,7 +295,7 @@ const chd: OpDef = {
 			kind: "number",
 			key: "blockSize",
 			label: "Block size",
-			placeholder: "default",
+			placeholder: "Default",
 			tooltip:
 				"Block size in bytes, a power of two. Defaults to 2048, or 16384 for inputs 2 GiB and larger, matching maxcso.",
 		},
@@ -356,7 +352,7 @@ const chdMigrate: OpDef = {
 			kind: "number",
 			key: "hunkSize",
 			label: "Hunk size",
-			placeholder: "source",
+			placeholder: "Source",
 			tooltip:
 				"Size of each compressed block in bytes. Left empty, the migrated CHD keeps the source's hunk size.",
 		},
@@ -366,7 +362,7 @@ const chdMigrate: OpDef = {
 			label: "Codecs",
 			options: CHD_CODEC_OPTIONS,
 			max: 4,
-			placeholder: "auto (CD or DVD set, from the source's unit size)",
+			placeholder: "Automatic (CD or DVD set, from the source's unit size)",
 			tooltip:
 				"Up to 4 compressor slots stored in the CHD header. Left empty, this follows the source's unit size: cdlz, cdzl, cdfl for a CD, lzma, zlib, huff, flac for a DVD. cdlz: CD-specific LZMA, best ratio. cdzl: CD-specific deflate, fast. cdzs: CD-specific zstd, good ratio and speed. cdfl: CD-specific FLAC, used for audio tracks. lzma: generic LZMA, best ratio but slow. zlib: generic deflate, fast. zstd: generic zstd, fast with a good ratio. huff: Huffman coding, very fast but a low ratio. flac: generic FLAC, for audio-like data.",
 		},
@@ -374,7 +370,7 @@ const chdMigrate: OpDef = {
 			kind: "number",
 			key: "level",
 			label: "Level",
-			placeholder: "auto",
+			placeholder: "Automatic",
 			hint: CHD_LEVEL_HINT,
 			tooltip:
 				"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above.",
@@ -462,7 +458,8 @@ const cue: OpDef = {
 		{
 			kind: "directory",
 			label: "Directory",
-			display: (s) => s.outputDir || "same as source",
+			display: (s) => s.outputDir || "",
+			placeholder: "Same as source",
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip: "Where the converted file is written. Leave empty to write it next to its source file.",
@@ -581,7 +578,7 @@ const xenon: OpDef = {
 			kind: "text",
 			key: "title",
 			label: "Title (optional)",
-			placeholder: "auto",
+			placeholder: "Automatic",
 			tooltip: "Display name written into the GoD container header.",
 		},
 		...recursiveFields(),

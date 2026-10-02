@@ -21,11 +21,11 @@ export const pbp: KindModule<"pbp"> = {
 		const rom: InspectField[] = [];
 		add(rom, "Title", info.title);
 		add(rom, "Title ID", info.disc_id);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
 		add(rom, "Version", info.disc_version);
 		add(rom, "Size", formatBytes(info.physical_bytes));
-		add(rom, "System Version", info.psp_system_ver);
-		add(rom, "Parental Level", info.parental_level);
+		add(rom, "System version", info.psp_system_ver);
+		add(rom, "Parental level", info.parental_level);
 		add(rom, "Region", info.region);
 		add(rom, "DATA.PSAR", info.psar_kind ? psarKindLabel(info.psar_kind) : null);
 		return {

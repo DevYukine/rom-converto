@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import ModalShell from "~/components/modals/ModalShell.vue";
+import CliChip from "~/components/ui/CliChip.vue";
+import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 
 export interface DryRunLine {
 	source: string;
@@ -20,59 +22,36 @@ const fullCommand = computed(() => `${props.command} --dry-run`);
 
 const { show: showToast } = useToast();
 
-function copy() {
-	navigator.clipboard?.writeText(fullCommand.value);
+function copied() {
 	showToast("Copied");
 }
 </script>
 
 <template>
-	<ModalShell title="Dry run" :width="680" @close="emit('close')">
+	<ModalShell title="Dry run" :width="900" @close="emit('close')">
 		<template #header-extra>
-			<button type="button" class="rc-cli" title="Click to copy" @click="copy">
-				$ {{ fullCommand }}
-			</button>
+			<CliChip :command="fullCommand" @copy="copied" />
 		</template>
 
 		<div class="rc-rows">
-			<div v-for="(line, i) in lines" :key="i" class="rc-row">
+			<div v-for="(line, i) in lines" :key="i" class="rc-row" :class="{ 'rc-row--source-only': !line.output }">
 				<div class="rc-source">{{ line.source }}</div>
-				<div class="rc-output">→ {{ line.output }}</div>
+				<span v-if="line.output" class="rc-arrow" aria-hidden="true">→</span>
+				<div v-if="line.output" class="rc-output">{{ line.output }}</div>
 				<div class="rc-note" :class="{ conflict: line.conflict }">{{ line.note }}</div>
 			</div>
 		</div>
 
 		<template #footer>
 			<span class="rc-hint">Nothing was written. Conflicts show the resolution the current policy would apply.</span>
-			<div class="rc-spacer" />
-			<button type="button" class="rc-outlined" @click="emit('close')">Close</button>
+			<div class="rc-footer-actions">
+				<PrimaryButton variant="outlined" @click="emit('close')">Close</PrimaryButton>
+			</div>
 		</template>
 	</ModalShell>
 </template>
 
 <style scoped>
-.rc-cli {
-	flex: 1;
-	min-width: 0;
-	background: var(--bg2);
-	border: 1px solid var(--a14);
-	border-radius: 6px;
-	padding: 5px 10px;
-	color: var(--t4);
-	font-family: ui-monospace, monospace;
-	font-size: 10.5px;
-	cursor: pointer;
-	text-align: left;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.rc-cli:hover {
-	border-color: var(--a30);
-	color: var(--t3);
-}
-
 .rc-rows {
 	display: flex;
 	flex-direction: column;
@@ -81,26 +60,40 @@ function copy() {
 
 .rc-row {
 	border: 1px solid var(--a10);
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	padding: 8px 10px;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) 16px minmax(0, 1fr);
+	gap: 4px 12px;
+}
+
+.rc-row--source-only {
+	grid-template-columns: minmax(0, 1fr);
 }
 
 .rc-source {
 	color: var(--t0);
-	font-size: 12px;
+	font-size: var(--fs-md);
+	font-family: var(--font-mono);
+	overflow-wrap: anywhere;
 }
 
 .rc-output {
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	overflow-wrap: anywhere;
 	color: var(--t4);
 }
 
+.rc-arrow {
+	color: var(--t5);
+}
+
 .rc-note {
-	font-size: 11px;
+	font-size: var(--fs-sm);
+	grid-column: 1 / -1;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 	color: var(--green);
 }
 
@@ -109,25 +102,15 @@ function copy() {
 }
 
 .rc-hint {
-	font-size: 11.5px;
-	color: var(--t4);
+	flex: 1 1 260px;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	color: var(--t5);
+	text-wrap: pretty;
 }
 
-.rc-spacer {
-	flex: 1;
-}
-
-.rc-outlined {
-	background: none;
-	border: 1px solid var(--a18);
-	color: var(--t3);
-	border-radius: 8px;
-	padding: 6px 16px;
-	font-size: 12.5px;
-	cursor: pointer;
-}
-
-.rc-outlined:hover {
-	border-color: var(--a40);
+.rc-footer-actions {
+	margin-left: auto;
 }
 </style>

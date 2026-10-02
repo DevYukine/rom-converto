@@ -5,6 +5,7 @@ import { useConfigStore } from "~/stores/config";
 import { useUpdatesStore } from "~/stores/updates";
 import { useUiStore } from "~/stores/ui";
 import { useJobConcurrency } from "~/composables/useJobConcurrency";
+import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import type { Preset, PresetFormat } from "~/types";
 
 const store = useConfigStore();
@@ -24,15 +25,14 @@ const SCALE_OPTIONS = [
 	{ label: "100%", value: "1" },
 	{ label: "115%", value: "1.15" },
 	{ label: "130%", value: "1.3" },
+	{ label: "150%", value: "1.5" },
+	{ label: "200%", value: "2" },
 ];
 
-function setScale(raw: string) {
-	ui.scale = Number(raw) as 0.9 | 1.0 | 1.15 | 1.3;
+function setScale(raw: string | number) {
+	ui.scale = Number(raw) as typeof ui.scale;
 }
 
-function stepConcurrency(delta: number) {
-	concurrency.value = Math.min(maxConcurrency, Math.max(1, concurrency.value + delta));
-}
 
 const FORMAT_LABELS: Record<PresetFormat, string> = {
 	dol: "GameCube (dol)",
@@ -110,45 +110,47 @@ onMounted(async () => {
 </script>
 
 <template>
-	<div class="page">
+	<div class="page rc-page">
 		<h1>Settings</h1>
 
 		<div class="cards">
 			<ConfigCard title="Appearance">
 				<div class="row">
+					<div class="row__text">
+						<FieldLabel label="Theme" tooltip="Light and dark stay fixed regardless of the OS. Follow OS is the only option that changes with it." />
+						<p class="caption">Follow OS switches automatically with your system.</p>
+					</div>
 					<Segmented
-						label="Theme"
-						tooltip="Light and dark stay fixed regardless of the OS. System is the only option that changes with it."
+						aria-label="Theme"
 						:model-value="ui.theme"
 						:options="THEME_OPTIONS"
-						@update:model-value="(v: string) => (ui.theme = v as typeof ui.theme)"
+						@update:model-value="(v) => (ui.theme = v as typeof ui.theme)"
 					/>
-					<p class="caption">Follow OS switches automatically with your system.</p>
 				</div>
 				<div class="row">
+					<div class="row__text">
+						<FieldLabel label="Interface scale" tooltip="Scales the size of the whole interface, not just text." />
+						<p class="caption">Tunes density for 2K+ or small displays. The layout is fluid either way.</p>
+					</div>
 					<Segmented
-						label="Interface scale"
-						tooltip="Scales the size of the whole interface, not just text."
+						aria-label="Interface scale"
 						:model-value="String(ui.scale)"
 						:options="SCALE_OPTIONS"
 						@update:model-value="setScale"
 					/>
-					<p class="caption">Tunes density for 2K+ or small displays. The layout is fluid either way.</p>
 				</div>
 			</ConfigCard>
 
 			<ConfigCard title="Global queue">
 				<div class="row">
-					<FieldLabel
-						label="Concurrent jobs"
-						tooltip="More jobs finish the queue faster but compete for CPU and disk."
-					/>
-					<span class="stepper">
-						<button type="button" aria-label="Fewer concurrent jobs" @click="stepConcurrency(-1)">−</button>
-						{{ concurrency }}
-						<button type="button" aria-label="More concurrent jobs" @click="stepConcurrency(1)">+</button>
-					</span>
-					<p class="caption">How many jobs run at once (1 to 8). Separate from per-format worker threads.</p>
+					<div class="row__text">
+						<FieldLabel
+							label="Concurrent jobs"
+							tooltip="More jobs finish the queue faster but compete for CPU and disk."
+						/>
+						<p class="caption">How many jobs run at once (1 to 8). Separate from per-format worker threads.</p>
+					</div>
+					<Stepper v-model="concurrency" :min="1" :max="maxConcurrency" label="Concurrent jobs" />
 				</div>
 				<ToggleSwitch
 					v-model="ui.startImmediately"
@@ -168,12 +170,14 @@ onMounted(async () => {
 					tooltip="Plays a sound when the queue finishes."
 				/>
 				<div class="row">
-					<FieldLabel
-						label="Default on-conflict policy"
-						tooltip="Applied to new jobs unless a page overrides it. What to do when the output file already exists. Organize always starts at Error regardless of this setting."
-					/>
+					<div class="row__text">
+						<FieldLabel
+							label="Default on-conflict policy"
+							tooltip="Applied to new jobs unless a page overrides it. What to do when the output file already exists. Organize always starts at Error regardless of this setting."
+						/>
+						<p class="caption">Pages can still override before queuing. Organize always starts at Error.</p>
+					</div>
 					<ConflictPopover v-model="ui.defaultOnConflict" />
-					<p class="caption">Pages can still override before queuing. Organize always starts at Error.</p>
 				</div>
 			</ConfigCard>
 
@@ -190,11 +194,11 @@ onMounted(async () => {
 				<ul v-else class="presets">
 					<li v-for="name in presetNames" :key="name" class="preset-row">
 						<div class="preset-row__main">
-							<button type="button" class="preset-name" @click="store.applyPreset(name)">
+							<button type="button" class="preset-name" :title="name" @click="store.applyPreset(name)">
 								{{ name }}
 							</button>
 							<span v-if="store.activePreset === name" class="pill">active</span>
-							<span class="preset-summary">{{ summary(store.presets[name]) }}</span>
+							<span class="preset-summary" :title="summary(store.presets[name])">{{ summary(store.presets[name]) }}</span>
 						</div>
 						<div class="preset-row__actions">
 							<button type="button" class="link" @click="editingPreset = name">Edit</button>
@@ -228,10 +232,10 @@ onMounted(async () => {
 				<div class="row">
 					<span class="status" role="status" aria-live="polite">{{ updateStatus }}</span>
 					<span class="row__buttons">
-						<button type="button" class="outlined" :disabled="updateBusy || (updateState.phase === 'available' && updates.blocked)" @click="updateAction">
+						<PrimaryButton variant="outlined" :disabled="updateBusy || (updateState.phase === 'available' && updates.blocked)" @click="updateAction">
 							{{ updateState.phase === "available" ? "Install update" : "Check now" }}
-						</button>
-						<button type="button" class="outlined" @click="openChangelog">Changelog</button>
+						</PrimaryButton>
+						<PrimaryButton variant="outlined" @click="openChangelog">Changelog</PrimaryButton>
 					</span>
 				</div>
 			</ConfigCard>
@@ -248,77 +252,84 @@ onMounted(async () => {
 
 <style scoped>
 .page {
-	padding: 22px 28px;
+	padding: 24px 28px 32px;
 	max-width: 860px;
 	margin-inline: auto;
 }
 
 h1 {
-	font-size: 18px;
+	font-size: var(--fs-xl);
 	font-weight: 700;
 	color: var(--t0);
-	margin-bottom: 14px;
+	line-height: 1.25;
+	text-wrap: balance;
+	margin-bottom: 16px;
 }
 
 .cards {
 	display: flex;
 	flex-direction: column;
-	gap: 14px;
+	gap: 16px;
 }
 
 .row {
 	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	gap: 4px;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 10px 16px;
+	min-height: 40px;
 	padding: 6px 0;
+}
+
+:deep(.row + .row),
+:deep(.row + .rc-toggle-row),
+:deep(.rc-toggle-row + .rc-toggle-row),
+:deep(.rc-kv + .rc-kv),
+:deep(.row + .rc-kv),
+:deep(.rc-kv + .row) {
+	border-top: 1px solid var(--a06);
+}
+
+.row__text {
+	flex: 1 1 240px;
+	min-width: 0;
+}
+
+.row > :deep(.rc-segmented-wrap),
+.row > :deep(.rc-conflict) {
+	flex: none;
+	max-width: 100%;
 }
 
 .row__buttons {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 }
 
 .row__label {
-	font-size: 12px;
+	flex: 1 1 240px;
+	min-width: 0;
+	font-size: var(--fs-md);
 	color: var(--t2);
+	overflow-wrap: anywhere;
 }
 
 .caption {
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
 	color: var(--t5);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
+	margin-top: 4px;
 }
 
-.stepper {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	color: var(--t2);
-	font-size: 12px;
-}
-
-.stepper button {
-	background: transparent;
-	border: 1px solid var(--a14);
-	border-radius: 6px;
-	color: var(--t3);
-	cursor: pointer;
-	width: 22px;
-	height: 22px;
-	line-height: 1;
-}
-
-.stepper button:hover {
-	border-color: var(--a40);
-	color: var(--t0);
-}
 
 .path {
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
+	font-family: var(--font-mono);
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t4);
-	word-break: break-all;
+	overflow-wrap: anywhere;
 	margin: 0 0 8px;
 }
 
@@ -326,18 +337,16 @@ h1 {
 	list-style: none;
 	margin: 0;
 	padding: 0;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
 }
 
 .preset-row {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	padding: 7px 0;
-	border-top: 1px solid var(--a08);
+	gap: 8px 16px;
+	padding: 6px 0;
+	min-height: 32px;
+	border-top: 1px solid var(--a06);
 }
 
 .preset-row:first-child {
@@ -346,33 +355,44 @@ h1 {
 
 .preset-row__main {
 	display: flex;
+	flex: 1 1 240px;
 	align-items: center;
 	gap: 8px;
 	min-width: 0;
 }
 
 .preset-name {
+	min-width: 0;
 	background: none;
 	border: none;
 	padding: 0;
-	font-size: 12.5px;
-	font-weight: 700;
+	font-size: var(--fs-md);
+	font-weight: 600;
 	color: var(--t0);
 	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .pill {
-	font-size: 10px;
+	flex: none;
+	font-size: var(--fs-xs);
 	font-weight: 600;
 	color: var(--blue);
-	background: rgba(69, 147, 248, .14);
-	border-radius: 5px;
-	padding: 1px 7px;
+	background: var(--tint-blue);
+	border-radius: var(--r-sm);
+	padding: 2px 7px;
+	white-space: nowrap;
 }
 
 .preset-summary {
-	font-size: 11px;
+	min-width: 0;
+	font-size: var(--fs-xs);
 	color: var(--t4);
+	background: var(--a06);
+	border-radius: var(--r-sm);
+	padding: 2px 7px;
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -380,23 +400,27 @@ h1 {
 
 .preset-row__actions {
 	display: flex;
+	flex: none;
 	align-items: center;
-	gap: 12px;
-	flex-shrink: 0;
+	gap: 4px;
 }
 
 .link {
+	flex: none;
 	background: none;
 	border: none;
-	padding: 0;
-	font-size: 11.5px;
+	border-radius: var(--r-sm);
+	min-height: var(--ctl-h);
+	padding: 0 8px;
+	font-size: var(--fs-sm);
 	color: var(--t4);
 	cursor: pointer;
+	white-space: nowrap;
 }
 
 .link:hover {
+	background: var(--a06);
 	color: var(--t0);
-	text-decoration: underline;
 }
 
 .link.danger {
@@ -406,37 +430,34 @@ h1 {
 .dat {
 	margin-top: 8px;
 	padding-top: 8px;
-	border-top: 1px solid var(--a08);
+	border-top: 1px solid var(--a06);
 }
 
 .note {
 	margin: 10px 0 0;
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
 	color: var(--t5);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
+}
+
+.note code {
+	font-family: var(--font-mono);
 }
 
 .rc-error {
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--red);
+	overflow-wrap: anywhere;
 }
 
 .status {
-	font-size: 12px;
+	flex: 1 1 240px;
+	min-width: 0;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t2);
-}
-
-.outlined {
-	background: none;
-	border: 1px solid var(--a18);
-	color: var(--t3);
-	border-radius: 8px;
-	padding: 5px 14px;
-	font-size: 12px;
-	cursor: pointer;
-}
-
-.outlined:hover {
-	border-color: var(--a40);
+	text-wrap: pretty;
 }
 </style>

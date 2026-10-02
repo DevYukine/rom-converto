@@ -30,6 +30,8 @@ const mod = computed(() => moduleFor(props.info));
 
 const view = computed(() => buildInspectView(props.info));
 
+const hasLeft = computed(() => view.value.container.length > 0 || view.value.innerFiles.length > 0);
+
 const iconUrl = computed(() => {
 	const img = pickIconImage(props.info);
 	return img ? imageToDataUrl(img) : null;
@@ -94,10 +96,10 @@ async function computeHashes() {
 async function copyValue(value: string) {
 	try {
 		await navigator.clipboard.writeText(value);
+		showToast("Copied");
 	} catch {
 		// clipboard unavailable (permission denied or no secure context); nothing to fall back to.
 	}
-	showToast("Copied");
 }
 
 // null means the kind has no title ID to offer; an empty string means it has
@@ -108,7 +110,7 @@ const canCopyTitleId = computed(() => titleIdValue.value !== null);
 function copyTitleId() {
 	const value = titleIdValue.value;
 	if (!value) return;
-	navigator.clipboard?.writeText(value).then(() => showToast("Copied"));
+	copyValue(value);
 }
 
 async function saveIcon() {
@@ -132,7 +134,7 @@ async function saveIcon() {
 
 			<div class="rc-inspect-card__main">
 				<div class="rc-inspect-card__title-row">
-					<span class="rc-inspect-card__title">{{ title }}</span>
+					<span class="rc-inspect-card__title" :title="title">{{ title }}</span>
 					<ContentTypeChip v-if="view.contentType" :type="view.contentType" />
 					<span class="rc-inspect-card__badge rc-inspect-card__badge--console">{{ consoleBadge }}</span>
 					<span class="rc-inspect-card__badge rc-inspect-card__badge--format">{{ formatBadge }}</span>
@@ -141,7 +143,7 @@ async function saveIcon() {
 				<div v-if="metaLine" class="rc-inspect-card__meta">{{ metaLine }}</div>
 				<div class="rc-inspect-card__stats">
 					<span v-for="s in statRow" :key="s.label" class="rc-inspect-card__stat">
-						{{ s.label }} <b :class="s.color ? `rc-inspect-card__stat-v--${s.color}` : ''">{{ s.value }}</b>
+						<span>{{ s.label }}</span> <b :class="s.color ? `rc-inspect-card__stat-v--${s.color}` : ''">{{ s.value }}</b>
 					</span>
 				</div>
 			</div>
@@ -154,55 +156,49 @@ async function saveIcon() {
 			</div>
 		</div>
 
-		<div class="rc-inspect-card__grid">
-			<div class="rc-inspect-card__col">
-				<h4>Container</h4>
-				<div v-if="view.container.length === 0" class="rc-inspect-card__empty">Not a container format.</div>
-				<KvRow v-for="f in view.container" :key="f.label" :label="f.label" :value="f.value" />
+		<div class="rc-inspect-card__grid" :class="{ 'rc-inspect-card__grid--single': !hasLeft }">
+			<div v-if="hasLeft" class="rc-inspect-card__col">
+				<section v-if="view.container.length > 0" class="rc-inspect-card__section">
+					<h4>Container</h4>
+					<KvRow v-for="f in view.container" :key="f.label" :label="f.label" :value="f.value" />
+				</section>
+				<InnerFilesList v-if="view.innerFiles.length > 0" :title="view.innerTitle" :items="view.innerFiles" />
 			</div>
 			<div class="rc-inspect-card__col">
-				<h4>ROM</h4>
-				<div v-if="view.rom.length === 0" class="rc-inspect-card__empty">
-					No ROM metadata detected inside this container.
-				</div>
-				<KvRow v-for="f in view.rom" :key="f.label" :label="f.label" :value="f.value" />
-			</div>
-			<div class="rc-inspect-card__col">
-				<InnerFilesList :title="view.innerTitle" :items="view.innerFiles" />
-			</div>
-			<div class="rc-inspect-card__col">
-				<h4>Hashes</h4>
-				<KvRow
-					v-for="h in view.hashes"
-					:key="h.label"
-					:label="h.label"
-					:value="h.value"
-					clickable
-					tooltip="Click to copy"
-					@click="copyValue(h.value)"
-				/>
-				<KvRow
-					v-for="h in computedHashes"
-					:key="h.label"
-					:label="h.label"
-					:value="h.value"
-					clickable
-					tooltip="Click to copy"
-					@click="copyValue(h.value)"
-				/>
-				<div v-if="hashError" class="rc-inspect-card__error">{{ hashError }}</div>
-				<button
-					v-if="computedHashes.length === 0"
-					type="button"
-					class="rc-inspect-card__hash-btn"
-					:disabled="hashing"
-					@click="computeHashes"
-				>
-					{{ hashing ? "Hashing…" : "Compute CRC32 / MD5 / SHA-1 / SHA-256" }}
-				</button>
-				<p v-if="computedHashes.length === 0 && !hashing" class="rc-inspect-card__empty">
-					Streams the whole file once; large images take a moment.
-				</p>
+				<section class="rc-inspect-card__section">
+					<h4>ROM</h4>
+					<div v-if="view.rom.length === 0" class="rc-inspect-card__empty">
+						No ROM metadata detected inside this container.
+					</div>
+					<KvRow v-for="f in view.rom" :key="f.label" :label="f.label" :value="f.value" />
+				</section>
+				<section class="rc-inspect-card__section">
+					<h4>Hashes</h4>
+					<button
+						v-for="(h, i) in [...view.hashes, ...computedHashes]"
+						:key="i"
+						type="button"
+						class="rc-inspect-card__hash-row"
+						title="Click to copy"
+						@click="copyValue(h.value)"
+					>
+						<span class="rc-inspect-card__hash-label">{{ h.label }}</span>
+						<span class="rc-inspect-card__hash-value">{{ h.value }}</span>
+					</button>
+					<div v-if="hashError" class="rc-inspect-card__error">{{ hashError }}</div>
+					<button
+						v-if="computedHashes.length === 0"
+						type="button"
+						class="rc-inspect-card__hash-btn"
+						:disabled="hashing"
+						@click="computeHashes"
+					>
+						{{ hashing ? "Hashing…" : "Compute CRC32 / MD5 / SHA-1 / SHA-256" }}
+					</button>
+					<p v-if="computedHashes.length === 0 && !hashing" class="rc-inspect-card__empty">
+						Streams the whole file once; large images take a moment.
+					</p>
+				</section>
 			</div>
 		</div>
 	</div>
@@ -210,15 +206,17 @@ async function saveIcon() {
 
 <style scoped>
 .rc-inspect-card {
+	container: inspect-card / inline-size;
+	min-width: 0;
 	border: 1px solid var(--a10);
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	background: var(--card);
 }
 
 .rc-inspect-card__banner {
 	max-height: 140px;
 	overflow: hidden;
-	border-radius: 10px 10px 0 0;
+	border-radius: var(--r-lg) var(--r-lg) 0 0;
 }
 
 .rc-inspect-card__banner img {
@@ -229,6 +227,7 @@ async function saveIcon() {
 
 .rc-inspect-card__top {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: flex-start;
 	gap: 14px;
 	padding: 16px;
@@ -236,11 +235,11 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__icon {
-	flex-shrink: 0;
+	flex: none;
 	width: 86px;
 	height: 86px;
 	border: 1px solid var(--a18);
-	border-radius: 12px;
+	border-radius: var(--r-lg);
 	background: repeating-linear-gradient(45deg, var(--check1), var(--check1) 6px, var(--check2) 6px, var(--check2) 12px);
 	display: flex;
 	align-items: center;
@@ -256,13 +255,13 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__icon-caption {
-	font-size: 9px;
-	font-family: ui-monospace, monospace;
+	font-size: var(--fs-xs);
+	font-family: var(--font-mono);
 	color: var(--t5);
 }
 
 .rc-inspect-card__main {
-	flex: 1;
+	flex: 1 1 240px;
 	min-width: 0;
 }
 
@@ -274,23 +273,27 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__title {
-	font-size: 17px;
+	width: 100%;
+	min-width: 0;
+	font-size: var(--fs-lg);
 	font-weight: 700;
 	color: var(--t0);
-	min-width: 0;
-	overflow-wrap: anywhere;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .rc-inspect-card__badge {
-	font-size: 10px;
-	font-weight: 700;
+	flex: none;
+	font-size: var(--fs-xs);
+	font-weight: 600;
 	padding: 2px 7px;
-	border-radius: 5px;
-	letter-spacing: 0.4px;
+	border-radius: var(--r-sm);
+	white-space: nowrap;
 }
 
 .rc-inspect-card__badge--format {
-	background: rgba(93, 148, 245, 0.16);
+	background: var(--tint-blue);
 	color: var(--blue);
 }
 
@@ -300,26 +303,37 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__badge--media {
-	background: rgba(163, 113, 247, 0.16);
+	background: var(--tint-purple);
 	color: var(--purple);
 }
 
 .rc-inspect-card__meta {
 	margin-top: 4px;
-	font-size: 12px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t4);
+	overflow-wrap: anywhere;
+	text-wrap: pretty;
 }
 
 .rc-inspect-card__stats {
 	margin-top: 8px;
 	display: flex;
 	flex-wrap: wrap;
-	gap: 14px;
-	font-size: 11.5px;
+	gap: 6px 14px;
+	font-size: var(--fs-sm);
 	color: var(--t4);
 }
 
+.rc-inspect-card__stat {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 4px;
+	white-space: nowrap;
+}
+
 .rc-inspect-card__stat b {
+	font-variant-numeric: tabular-nums;
 	color: var(--t2);
 	font-weight: 600;
 }
@@ -335,7 +349,7 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__actions {
-	flex-shrink: 0;
+	flex: none;
 	display: flex;
 	flex-direction: column;
 	align-items: stretch;
@@ -345,45 +359,116 @@ async function saveIcon() {
 .rc-inspect-card__link {
 	background: none;
 	border: none;
+	border-radius: var(--r-sm);
 	color: var(--blue);
-	font-size: 11px;
+	font-size: var(--fs-sm);
 	cursor: pointer;
-	padding: 0;
+	min-height: var(--ctl-h);
+	padding: 0 8px;
 	text-align: center;
+	white-space: nowrap;
+}
+
+.rc-inspect-card__link:hover {
+	background: var(--a06);
 }
 
 .rc-inspect-card__grid {
 	display: grid;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
+	grid-template-columns: minmax(0, 1fr);
+	align-items: start;
 	gap: 16px 24px;
 	padding: 14px 16px;
 }
 
-@media (max-width: 900px) {
+@container inspect-card (min-width: 640px) {
 	.rc-inspect-card__grid {
-		grid-template-columns: 1fr;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.rc-inspect-card__grid--single {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.rc-inspect-card__grid--single .rc-inspect-card__col {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 16px 24px;
+		align-items: start;
 	}
 }
 
+.rc-inspect-card__col {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+}
+
 .rc-inspect-card__col h4 {
-	margin: 0 0 6px;
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
-	color: var(--t4);
+	margin: 0 0 8px;
+	font-size: var(--fs-lg);
+	font-weight: 600;
+	color: var(--t1);
+}
+
+.rc-inspect-card__section :deep(.rc-kv + .rc-kv) {
+	border-top: 1px solid var(--a06);
+}
+
+.rc-inspect-card__section :deep(.rc-kv__value) {
+	font-family: inherit;
+	font-variant-numeric: tabular-nums;
+}
+
+.rc-inspect-card__hash-row {
+	display: grid;
+	grid-template-columns: 64px minmax(0, 1fr);
+	align-items: start;
+	gap: 12px;
+	width: 100%;
+	padding: 8px 0;
+	background: none;
+	border: none;
+	border-radius: var(--r-sm);
+	color: var(--t3);
+	text-align: left;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
+	cursor: pointer;
+}
+
+.rc-inspect-card__hash-row + .rc-inspect-card__hash-row {
+	border-top: 1px solid var(--a06);
+}
+
+.rc-inspect-card__hash-row:hover {
+	background: var(--a04);
+}
+
+.rc-inspect-card__hash-label {
+	color: var(--t5);
+	white-space: nowrap;
+}
+
+.rc-inspect-card__hash-value {
+	min-width: 0;
+	font-family: var(--font-mono);
+	overflow-wrap: anywhere;
 }
 
 .rc-inspect-card__hash-btn {
 	margin-top: 4px;
-	border: 1px solid var(--a25);
-	border-radius: 6px;
-	padding: 5px 10px;
-	font-size: 11px;
-	color: var(--t0);
+	border: 1px solid var(--a18);
+	border-radius: var(--r-sm);
+	height: var(--ctl-h);
+	padding: 0 10px;
+	font-size: var(--fs-sm);
+	color: var(--t2);
 	font-weight: 500;
 	background: transparent;
 	cursor: pointer;
+	white-space: nowrap;
 }
 
 .rc-inspect-card__hash-btn:disabled {
@@ -392,14 +477,17 @@ async function saveIcon() {
 }
 
 .rc-inspect-card__error {
-	font-size: 11px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--red);
 	overflow-wrap: anywhere;
 }
 
 .rc-inspect-card__empty {
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t5);
 	margin: 4px 0 0;
+	text-wrap: pretty;
 }
 </style>

@@ -46,8 +46,10 @@ function toggle() {
 .rc-toggle-row {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
+	flex-wrap: wrap;
+	min-height: 40px;
+	padding: 6px 0;
+	gap: 16px;
 }
 
 .rc-toggle-row--disabled {
@@ -55,23 +57,25 @@ function toggle() {
 }
 
 .rc-toggle-row__text {
+	flex: 1 1 0;
 	min-width: 0;
 }
 
 .rc-toggle-row__desc {
 	margin: 2px 0 0;
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
 	color: var(--t5);
-	line-height: 1.45;
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 
 .rc-toggle {
 	position: relative;
-	flex-shrink: 0;
-	width: 30px;
-	height: 17px;
+	flex: none;
+	width: 32px;
+	height: 18px;
 	border: none;
-	border-radius: 10px;
+	border-radius: var(--r-lg);
 	background: var(--a18);
 	cursor: pointer;
 	padding: 0;
@@ -82,22 +86,22 @@ function toggle() {
 }
 
 .rc-toggle--on {
-	background: #3b82f6;
+	background: var(--fill);
 }
 
 .rc-toggle__knob {
 	position: absolute;
 	top: 2px;
 	left: 2px;
-	width: 13px;
-	height: 13px;
+	width: 14px;
+	height: 14px;
 	border-radius: 50%;
 	background: var(--knobOff);
 	transition: left 0.15s;
 }
 
 .rc-toggle--on .rc-toggle__knob {
-	left: 15px;
+	left: 16px;
 	background: #fff;
 }
 </style>

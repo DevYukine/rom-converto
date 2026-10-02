@@ -7,7 +7,7 @@ export const vpk: KindModule<"vpk"> = {
 		const rom: InspectField[] = [];
 		add(rom, "Title", info.title);
 		add(rom, "Title ID", info.title_id);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category ?? "Game"));
 		add(rom, "Content ID", info.content_id);
 		add(rom, "Version", info.app_ver);
 		add(rom, "Size", formatBytes(info.total_size));
@@ -16,7 +16,7 @@ export const vpk: KindModule<"vpk"> = {
 	},
 	title: (info) => info.title || info.title_id || "Vita package",
 	size: (info) => info.total_size,
-	console: () => "VITA",
+	console: () => "PS Vita",
 	format: () => "VPK",
 	meta: (info) => [
 		info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.category_label ?? info.category),

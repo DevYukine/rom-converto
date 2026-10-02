@@ -8,32 +8,32 @@ export const dol: KindModule<"dol"> = {
 		const rom: InspectField[] = [];
 		if (info.container.toUpperCase() !== "ISO") {
 			add(container, "Container", info.container.toUpperCase());
-			add(container, "Compressed Size", formatBytes(info.physical_bytes));
+			add(container, "Compressed size", formatBytes(info.physical_bytes));
 		}
 		const banner = englishFirst(info.banner?.titles, (b) => b.language);
 		add(rom, "Title", banner?.long_game_name || banner?.short_game_name || info.game_name);
 		add(rom, "Title ID", info.game_id);
-		add(rom, "Content Type", "Game");
+		add(rom, "Content type", "Game");
 		add(rom, "Version", `v${info.disc_version}`);
 		add(rom, "Region", info.region);
 		add(rom, "Languages", info.banner?.titles.map((t) => languageDisplayName(t.language)).join(", "));
 		add(rom, "Publisher", banner?.long_maker || formatMaker(info.maker_code, info.maker_name));
 		add(rom, "Size", formatBytes(info.physical_bytes));
-		add(rom, "Disc Number", info.disc_number);
-		add(rom, "Apploader Date", info.apploader_date);
-		add(rom, "Audio Streaming", info.audio_streaming ? "yes" : "no");
+		add(rom, "Disc number", info.disc_number);
+		add(rom, "Apploader date", info.apploader_date);
+		add(rom, "Audio streaming", info.audio_streaming ? "yes" : "no");
 		const innerFiles = info.fst_root.map((e) => ({ name: e.name, detail: e.is_dir ? "dir" : formatBytes(e.size) }));
 		if (info.fst_file_count + info.fst_dir_count > info.fst_root.length) {
 			innerFiles.push({ name: `${info.fst_file_count} files, ${info.fst_dir_count} dirs`, detail: "" });
 		}
-		return { container, rom, innerTitle: "Disc Files", innerFiles };
+		return { container, rom, innerTitle: "Disc files", innerFiles };
 	},
 	title(info) {
 		const t = englishFirst(info.banner?.titles, (b) => b.language);
 		return t?.long_game_name || t?.short_game_name || info.game_name || info.game_id;
 	},
 	size: (info) => info.physical_bytes,
-	console: () => "GAMECUBE",
+	console: () => "GameCube",
 	format(info) {
 		const container = info.container.toUpperCase();
 		return container === "ISO" || container === "GCM" ? "DISC" : container;
