@@ -78,6 +78,32 @@ pub(crate) fn is_safe_dirent_name(name: &str) -> bool {
     true
 }
 
+/// True when `path`, joined onto a folder, lexically names a file inside it:
+/// relative, never climbing above the folder with `..`, and every named
+/// component passing [`is_safe_dirent_name`] (empty and `.` components are
+/// skipped). Components split on the host's separators, the way the OS
+/// resolves them. A Unix component holding `\` is refused on purpose, as in
+/// the zip-slip rule: a sheet written on Windows means it as a separator.
+/// A symlinked folder inside can still lead out.
+pub(crate) fn is_safe_relative_path(path: &str) -> bool {
+    if path.starts_with(['/', '\\']) {
+        return false;
+    }
+    let mut depth = 0usize;
+    for component in path.split(std::path::is_separator) {
+        match component {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(parent) => depth = parent,
+                None => return false,
+            },
+            name if is_safe_dirent_name(name) => depth += 1,
+            _ => return false,
+        }
+    }
+    depth > 0
+}
+
 /// Compute `offset + size` when that extent stays within `len`: `Some(end)`
 /// when the addition does not overflow and `end <= len`, else `None`. The
 /// error-type-agnostic core of [`validate_extent`] for callers that map an
@@ -485,9 +511,40 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{extent_end, place_in_dir_mirrored, publish_temp, scratch_output_path};
+    use super::{
+        extent_end, is_safe_relative_path, place_in_dir_mirrored, publish_temp, scratch_output_path,
+    };
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn safe_relative_paths_follow_host_separators() {
+        for (path, expected) in [
+            ("game (Track 1).bin", true),
+            ("track.bin", true),
+            ("./track.bin", true),
+            ("disc 1/track.bin", true),
+            ("sub/../track.bin", true),
+            ("../other.bin", false),
+            ("disc/../../other.bin", false),
+            ("sub/..", false),
+            (r"..\other.bin", false),
+            ("/etc/passwd", false),
+            (r"\\server\share\x.bin", false),
+            (r"\x.bin", false),
+            (".", false),
+            ("", false),
+            ("a\0.bin", false),
+            (r"a\b/../../../other.bin", false),
+            (r"disc 1\track.bin", cfg!(windows)),
+            (r"a\b/../../other.bin", cfg!(windows)),
+            ("Game: Subtitle.bin", !cfg!(windows)),
+            ("C:x.bin", !cfg!(windows)),
+            ("a.bin:stream", !cfg!(windows)),
+        ] {
+            assert_eq!(is_safe_relative_path(path), expected, "{path:?}");
+        }
+    }
 
     #[test]
     fn no_progress_set_phase_is_a_no_op() {

@@ -1973,7 +1973,7 @@ async fn remove_source(
 /// Deletes a placed unit's source files (the cue plus every bin of a set;
 /// a dry run applies the same gates and only reports what it would delete),
 /// never touching a file that is also one of the unit's outputs. A bin
-/// outside the input root (an absolute or `..` FILE reference) and a bin
+/// outside the input root (reached through a symlinked folder) and a bin
 /// another scanned unit claims are never removed: the returned note lines
 /// say why each kept source stayed, and a split WUD set is released
 /// all-or-nothing (one kept part keeps the whole set, so no orphaned
@@ -8200,8 +8200,8 @@ mod tests {
         assert!(!cue.exists());
     }
 
-    /// A bin referenced through a `..`-climbing spelling is outside the
-    /// input root whatever its spelling reads like: it is kept.
+    /// A bin with a `..`-climbing spelling is kept as defence in depth.
+    /// The `DatUnit` is built directly; the parser rejects this FILE spelling.
     #[cfg(unix)]
     #[tokio::test]
     async fn remove_sources_keeps_a_parent_climbing_bin() {
@@ -8214,7 +8214,7 @@ mod tests {
         std::fs::write(&cue, b"cue").unwrap();
         std::fs::write(&orphan, b"orphan").unwrap();
 
-        // The cue's FILE line climbs out of the input root: sub/../../outside.
+        // Build the rejected FILE spelling directly, bypassing the parser.
         let climbing = dir
             .join("sub")
             .join("..")

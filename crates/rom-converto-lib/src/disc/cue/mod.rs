@@ -2,7 +2,7 @@
 
 use crate::disc::cue::error::{CueError, CueResult};
 use crate::disc::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
-use crate::util::bounded_line;
+use crate::util::{bounded_line, is_safe_relative_path};
 use std::io::{BufRead, BufReader, Cursor};
 use std::path::{Path, PathBuf};
 
@@ -69,6 +69,9 @@ impl CueParser {
                             .ok_or(CueError::MissingOpeningQuote)?
                             .to_string()
                     };
+                    if !is_safe_relative_path(&filename) {
+                        return Err(CueError::UnsafeFilePath(filename));
+                    }
                     let file_type = self.parse_file_type(
                         parts
                             .last()
@@ -216,6 +219,37 @@ mod tests {
 
     fn parser() -> CueParser {
         CueParser::new("/dev/null")
+    }
+
+    fn parse_file_line(line: &str) -> CueResult<CueSheet> {
+        parser().parse_bytes(
+            format!("{line}\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n").as_bytes(),
+        )
+    }
+
+    #[test]
+    fn file_paths_inside_the_sheet_folder_are_stored_verbatim() {
+        for (line, filename) in [
+            (r#"FILE "game (Track 1).bin" BINARY"#, "game (Track 1).bin"),
+            ("FILE sub/../track.bin BINARY", "sub/../track.bin"),
+        ] {
+            let sheet = parse_file_line(line).unwrap();
+            assert_eq!(sheet.files[0].filename, filename);
+        }
+    }
+
+    #[test]
+    fn file_paths_escaping_the_sheet_folder_are_rejected() {
+        for line in [
+            r#"FILE "../other.bin" BINARY"#,
+            "FILE ../other.bin BINARY",
+            r#"FILE "a.bin" "/../../etc/passwd" BINARY"#,
+        ] {
+            assert!(
+                matches!(parse_file_line(line), Err(CueError::UnsafeFilePath(_))),
+                "{line}"
+            );
+        }
     }
 
     #[test]
