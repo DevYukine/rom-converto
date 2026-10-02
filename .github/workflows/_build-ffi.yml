@@ -79,6 +79,8 @@ jobs:
           force-use-cross: ${{ matrix.force_cross }}
           # Keep in sync with the image digests in Cross.toml.
           cross-version: v0.2.5
+          # Keep separate from the CLI build cache; see _build-cli.yml.
+          rust-cache-parameters: '{"key":"ffi-${{ hashFiles(''Cross.toml'') }}","save-if":"${{ github.event_name != ''pull_request'' }}"}'
 
       - name: Package library
         shell: bash

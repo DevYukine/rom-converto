@@ -87,6 +87,9 @@ jobs:
           force-use-cross: ${{ matrix.force_cross }}
           # Keep in sync with the image digests in Cross.toml.
           cross-version: v0.2.5
+          # The FFI build has the same job id, so it needs a distinct key.
+          # Cross.toml is hashed so a container image bump starts a fresh cache.
+          rust-cache-parameters: '{"key":"cli-${{ hashFiles(''Cross.toml'') }}","save-if":"${{ github.event_name != ''pull_request'' }}"}'
 
       - name: Package executable
         shell: bash

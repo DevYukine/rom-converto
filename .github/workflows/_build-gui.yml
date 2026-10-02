@@ -134,15 +134,12 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            gui-${{ inputs.release && 'release' || 'commit' }}-${{ matrix.target }}-cargo-
-            gui-${{ matrix.target }}-cargo-
+          # Both macOS targets build on the same runner arch, so the target
+          # must be part of the key.
+          key: gui-${{ matrix.target }}
+          save-if: ${{ github.event_name != 'pull_request' }}
 
       - name: Install frontend dependencies
         working-directory: crates/rom-converto-gui
