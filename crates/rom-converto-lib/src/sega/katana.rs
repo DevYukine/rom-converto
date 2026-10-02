@@ -2,8 +2,8 @@
 //! that points at the GD-ROM track the header lives in.
 
 use super::{SegaDiscSystem, probe_sega_disc};
-use crate::util::bounded_line;
 use crate::util::bytes::ascii_trim;
+use crate::util::{bounded_line, is_safe_relative_path};
 use anyhow::{Context, Result, anyhow};
 
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,8 @@ pub fn parse(head: &[u8]) -> Result<KatanaInfo> {
 ///
 /// # Errors
 /// Returns an error when the index is malformed, lists fewer than three
-/// tracks, or the third track's file holds no Dreamcast IP header.
+/// tracks, names a track file outside the sheet's folder, or the third
+/// track's file holds no Dreamcast IP header.
 pub fn parse_gdi(path: &Path) -> Result<KatanaInfo> {
     let file = File::open(path).with_context(|| format!("retro info: read {}", path.display()))?;
     let index = parse_index_reader(BufReader::new(file))?;
@@ -163,6 +164,9 @@ fn parse_track(line: &str) -> Result<GdiTrack> {
         }
         None => fields.get(4).ok_or_else(bad)?.to_string(),
     };
+    if !is_safe_relative_path(&filename) {
+        return Err(anyhow!("katana: unsafe gdi track file name {filename:?}"));
+    }
 
     Ok(GdiTrack {
         number: number.parse().map_err(|_| bad())?,
@@ -303,6 +307,17 @@ pub(crate) mod tests {
         assert_eq!(index.tracks[2].track_type, 4);
         assert_eq!(index.tracks[2].sector_size, 2048);
         assert_eq!(index.tracks[2].filename, "track03.bin");
+    }
+
+    #[test]
+    fn rejects_gdi_track_paths_outside_the_sheet_folder() {
+        for (line, filename) in [
+            ("3 45000 4 2048 ../track03.bin 0", "../track03.bin"),
+            ("3 45000 4 2048 /track03.bin 0", "/track03.bin"),
+        ] {
+            let error = parse_track(line).unwrap_err().to_string();
+            assert!(error.contains(&format!("{filename:?}")), "{error}");
+        }
     }
 
     #[test]
