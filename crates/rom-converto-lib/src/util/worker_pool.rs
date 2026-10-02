@@ -39,8 +39,7 @@
 //! are synchronous by design and pay no async runtime cost.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::sync::mpsc::{Receiver, SyncSender, channel, sync_channel};
 use std::thread;
 
@@ -520,20 +519,21 @@ where
 /// `body` drives the pool and sends each ordered output chunk into the
 /// channel; the channel is closed and the writer joined before this
 /// returns, and a panicked writer surfaces as `on_panic`.
-pub fn with_writer_thread<E, F>(
-    writer: &mut BufWriter<File>,
+pub fn with_writer_thread<W, E, F>(
+    writer: &mut W,
     capacity: usize,
     on_panic: E,
     body: F,
 ) -> Result<(), E>
 where
+    W: Write + Send,
     E: Send + From<std::io::Error>,
     F: FnOnce(&SyncSender<Vec<u8>>) -> Result<(), E>,
 {
     let (tx, rx) = sync_channel::<Vec<u8>>(capacity);
 
     thread::scope(|s| {
-        let writer_slot: &mut BufWriter<File> = writer;
+        let writer_slot = writer;
         let handle = s.spawn(move || -> Result<(), E> {
             while let Ok(bytes) = rx.recv() {
                 writer_slot.write_all(&bytes)?;

@@ -130,8 +130,8 @@ pub async fn convert_disc_to_chd_batch(
 }
 
 /// Extract every `.chd` in `input_dir` beside its input: CD-mode CHDs
-/// become `.cue` + `.bin`, DVD-mode CHDs become `.iso` (the output
-/// extension is derived per file by [`extract_from_chd`]). A failure
+/// become `.cue` plus one `.bin` per track, DVD-mode CHDs become `.iso`
+/// (the output extension is derived per file by [`extract_from_chd`]). A failure
 /// on one file is logged and skipped rather than aborting the batch.
 pub async fn extract_from_chd_batch(
     progress: &dyn ProgressReporter,

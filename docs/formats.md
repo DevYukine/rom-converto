@@ -24,8 +24,8 @@ and `info` extensions in the installed build.
 | PS Vita (`vita`) | `.pkg` | extracted files | extract |
 
 `.dax` is a legacy, decode-only input for CSO commands. It cannot be created.
-CHD extraction recreates `.bin` plus `.cue` for CD media and an `.iso` for DVD
-media, so its reverse operation is named `extract`.
+CHD extraction recreates a `.cue` plus one `.bin` per track for CD media and an `.iso`
+for DVD media, so its reverse operation is named `extract`.
 
 ## Large files and memory
 

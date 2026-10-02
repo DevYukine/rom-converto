@@ -1048,7 +1048,7 @@ fn chd_extract_ext(input: &Path) -> &'static str {
 
 /// An explicit path keeps its extension or gets the missing mode extension;
 /// a contradicting extension is refused. A derived name appends it unless present.
-/// A target or CD target's `.bin` resolving to the input is rejected as an invalid argument.
+/// A target or any CD track bin resolving to the input is rejected as an invalid argument.
 fn chd_extract_target(
     output: PathBuf,
     source: &Path,
@@ -1084,10 +1084,12 @@ fn chd_extract_target(
         output.into()
     };
     if let Ok(input_identity) = FileIdentity::probe(input) {
-        let bin = (flavor == crate::disc::chd::reader::ChdFlavor::Cd)
-            .then(|| target.with_extension("bin"));
-        for candidate in std::iter::once(target.as_path()).chain(bin.as_deref()) {
-            if FileIdentity::probe(candidate).is_ok_and(|identity| identity == input_identity) {
+        let bins = (flavor == crate::disc::chd::reader::ChdFlavor::Cd)
+            .then(|| crate::disc::chd::extract::possible_track_bins(&target));
+        for candidate in std::iter::once(std::borrow::Cow::Borrowed(target.as_path()))
+            .chain(bins.into_iter().flatten().map(std::borrow::Cow::Owned))
+        {
+            if FileIdentity::probe(&candidate).is_ok_and(|identity| identity == input_identity) {
                 return Err(invalid_arg(format!(
                     "{} is the input file; extracting would overwrite it",
                     candidate.display()
@@ -2565,8 +2567,8 @@ pub(crate) async fn prepare_output_quiet(
     .await
 }
 
-/// File taking `output`'s slot: a CD-mode `chd.extract` also writes the `.bin`
-/// its cue sheet names, so an existing `.bin` alone occupies the slot.
+/// File taking `output`'s slot: a CD-mode `chd.extract` also writes one bin per
+/// track, so any existing `<stem>.bin` or `<stem> (Track N).bin` occupies the slot.
 fn output_occupant(operation: &str, output: &Path) -> Option<PathBuf> {
     if output.exists() {
         Some(output.to_path_buf())
@@ -2575,8 +2577,7 @@ fn output_occupant(operation: &str, output: &Path) -> Option<PathBuf> {
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("cue"))
     {
-        let bin = output.with_extension("bin");
-        bin.exists().then_some(bin)
+        crate::disc::chd::extract::possible_track_bins(output).find(|bin| bin.exists())
     } else {
         None
     }
@@ -4085,6 +4086,27 @@ mod tests {
             std::fs::read(renamed_cue.with_extension("bin")).unwrap(),
             payload
         );
+        assert!(!chds.join("cd.cue").exists());
+        assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
+    }
+
+    #[tokio::test]
+    async fn chd_extract_conflict_policy_covers_track_bins() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd_path, _) = write_cd_chd(dir.path()).await;
+        let chds = chd_path.parent().unwrap();
+
+        let existing_bin = b"keep this track bin unchanged";
+        let bin_path = chds.join("cd (Track 2).bin");
+        std::fs::write(&bin_path, existing_bin).unwrap();
+        let extract = json!({
+            "operation": "chd.extract",
+            "input": chd_path,
+            "options": { "on_conflict": "error" }
+        });
+        let res = run_json(&extract.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(res.message.contains(bin_path.to_str().unwrap()), "{res:?}");
         assert!(!chds.join("cd.cue").exists());
         assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
     }

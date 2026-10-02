@@ -943,9 +943,14 @@ mod tests {
             }
             for preexisting in [false, true] {
                 let output = dir.path().join(format!("{failure}-{preexisting}.cue"));
-                let bin_path = output.with_extension("bin");
+                let bin_paths = [1, 2].map(|track| {
+                    dir.path()
+                        .join(format!("{failure}-{preexisting} (Track {track}).bin"))
+                });
                 if preexisting {
-                    std::fs::write(&bin_path, existing_bin).unwrap();
+                    for bin_path in &bin_paths {
+                        std::fs::write(bin_path, existing_bin).unwrap();
+                    }
                 }
                 let files_before = std::fs::read_dir(dir.path()).unwrap().count();
                 let cancel = CancelToken::new();
@@ -959,10 +964,12 @@ mod tests {
                 if !failure {
                     assert!(matches!(err, ChdError::Cancelled(_)));
                 }
-                if preexisting {
-                    assert_eq!(std::fs::read(&bin_path).unwrap(), existing_bin);
-                } else {
-                    assert!(!bin_path.exists());
+                for bin_path in &bin_paths {
+                    if preexisting {
+                        assert_eq!(std::fs::read(bin_path).unwrap(), existing_bin);
+                    } else {
+                        assert!(!bin_path.exists());
+                    }
                 }
                 assert!(!output.exists());
                 assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), files_before);
@@ -1127,9 +1134,22 @@ mod tests {
         (cue_path, bin)
     }
 
+    async fn restored_bins(cue: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        let sheet = crate::disc::cue::CueParser::new(cue).parse().await.unwrap();
+        let dir = cue.parent().unwrap();
+        sheet
+            .files
+            .into_iter()
+            .map(|file| {
+                let bytes = std::fs::read(dir.join(&file.filename)).unwrap();
+                (file.filename, bytes)
+            })
+            .collect()
+    }
+
     /// Compresses `cue_path`, checks the CHT2 text and logical size,
     /// verifies, and extracts; returns the restored cue text after
-    /// asserting the restored bin equals `bin`.
+    /// asserting the restored bins concatenated equal `bin`.
     async fn cue_round_trip(
         dir: &std::path::Path,
         cue_path: PathBuf,
@@ -1177,14 +1197,19 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), bin);
+        let restored: Vec<u8> = restored_bins(&out_cue)
+            .await
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(restored, bin);
         std::fs::read_to_string(out_cue).unwrap()
     }
 
     /// Every bin of a multi-file cue is ingested in FILE order, each
     /// stored pregap lands in its track's `FRAMES:` with a `V`-flagged
-    /// `PGTYPE:`, and extraction restores the concatenated bins plus a
-    /// cue that puts the pregaps back as `INDEX 00`.
+    /// `PGTYPE:`, and extraction restores each source bin plus a cue
+    /// that puts the pregaps back as `INDEX 00`.
     #[tokio::test]
     async fn multi_bin_cue_round_trips_every_track() {
         let dir = tempfile::tempdir().unwrap();
@@ -1201,12 +1226,24 @@ mod tests {
             12 + 8 + 8,
         )
         .await;
+        let restored = restored_bins(&dir.path().join("restored.cue")).await;
+        assert_eq!(
+            restored
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+                .collect::<Vec<_>>(),
+            [
+                ("restored (Track 1).bin", &bin[..10 * 2352]),
+                ("restored (Track 2).bin", &bin[10 * 2352..17 * 2352]),
+                ("restored (Track 3).bin", &bin[17 * 2352..]),
+            ]
+        );
         assert!(
-            cue.contains("  TRACK 02 AUDIO\r\n    INDEX 00 00:00:10\r\n    INDEX 01 00:00:13\r\n"),
+            cue.contains("FILE \"restored (Track 2).bin\" BINARY\r\n  TRACK 02 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:00:03\r\n"),
             "cue: {cue}"
         );
         assert!(
-            cue.contains("  TRACK 03 AUDIO\r\n    INDEX 00 00:00:17\r\n    INDEX 01 00:00:19\r\n"),
+            cue.contains("FILE \"restored (Track 3).bin\" BINARY\r\n  TRACK 03 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:00:02\r\n"),
             "cue: {cue}"
         );
         assert!(!cue.contains("PREGAP"), "cue: {cue}");
@@ -1230,8 +1267,12 @@ mod tests {
             12 + 8,
         )
         .await;
+        let restored = restored_bins(&dir.path().join("restored.cue")).await;
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].1, bin[..10 * 2352]);
+        assert_eq!(restored[1].1, bin[10 * 2352..]);
         assert!(
-            cue.contains("  TRACK 02 AUDIO\r\n    INDEX 00 00:00:10\r\n    INDEX 01 00:00:12\r\n"),
+            cue.contains("  TRACK 02 AUDIO\r\n    INDEX 00 00:00:00\r\n    INDEX 01 00:00:02\r\n"),
             "cue: {cue}"
         );
     }
@@ -1309,7 +1350,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(std::fs::read(out_cue.with_extension("bin")).unwrap(), bin);
+        let restored: Vec<u8> = restored_bins(&out_cue)
+            .await
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(restored, bin);
     }
 
     /// Cross-checks the CD-iso path against the reference tool; set
@@ -1432,10 +1478,12 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(
-            std::fs::read(restored_cue.with_extension("bin")).unwrap(),
-            bin
-        );
+        let restored: Vec<u8> = restored_bins(&restored_cue)
+            .await
+            .into_iter()
+            .flat_map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(restored, bin);
 
         let our_chd = dir.join("our.chd");
         convert_to_chd(

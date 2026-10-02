@@ -84,8 +84,10 @@ Most commands that write files take `--on-conflict <POLICY>`:
 - `overwrite-invalid`: keep an existing output that verifies valid or cannot be verified; rewrite one that fails its integrity check.
 
 `-f`, `--force` means `--on-conflict overwrite`. The two flags conflict. `wup decrypt`
-cannot rename an output directory, so `rename` acts as `error`. For `chd extract` and
-`cue merge`, the policy applies to the main path and its sidecars.
+cannot rename an output directory, so `rename` acts as `error`. For `cue merge`, the
+policy applies to the main path and its sidecars. For CD `chd extract`, the cue and
+every bin name it can write (`<name>.bin` or any `<name> (Track N).bin`) are checked
+together, so any existing one occupies the slot.
 
 `overwrite-invalid` runs the same integrity check the `verify` command does before
 deciding. What it checks depends on the format:
@@ -491,7 +493,7 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.iso`, or `.avi` to `.chd`; CD, DVD, and LaserDisc media are auto-detected |
 | `migrate <INPUT> [OUTPUT]` | Rewrite a CHD v1 to v4 as v5; defaults to `<name>.v5.chd` |
-| `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.bin` + `.cue` (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
+| `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.cue` plus one `.bin` per track (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
 | `verify <INPUT>` | Verify SHA-1 integrity of a v5 CHD; migrate older versions first |
 | `to-cso <INPUT> [OUTPUT]` | Extract a DVD-mode `.chd` straight to `.cso` (default) or `.zso`, through a temporary ISO |
 | `info <INPUT>` | Inspect CHD v1 to v5 metadata and stored hashes. See [info](#info) |
@@ -551,15 +553,20 @@ afterward, whether the run succeeds, fails, or is cancelled.
 `extract` does not support LaserDisc CHDs yet; it errors out naming the limitation rather than
 writing a partial file.
 
-For a CD-mode CHD, an explicit OUTPUT names the `.cue` with a same-named `.bin` beside it;
-a CD output with another extension or a DVD output with `.cue` or `.chd` is rejected as an invalid
+For a CD-mode CHD, an explicit OUTPUT names the `.cue` with one `.bin` per track beside it.
+A single track uses `<name>.bin`. Multiple tracks use `<name> (Track 1).bin`,
+`<name> (Track 2).bin`, and so on, with two-digit numbers such as `(Track 01)` for
+discs with 10 or more tracks. This is Redump naming. The cue lists one FILE per track.
+CHD track metadata does not retain original filenames, so extraction derives them from OUTPUT.
+Run `cue merge` on the result to get a single `.bin`.
+A CD output with another extension or a DVD output with `.cue` or `.chd` is rejected as an invalid
 argument before anything is written, including dry runs. An explicit OUTPUT with no extension
 gets `.cue` (CD) or `.iso` (DVD); text after its last dot counts as the extension, so dotted
 names need an explicit extension. An explicit OUTPUT that is an existing directory is rejected;
 set `output_dir` (`--output-dir <DIR>`) to extract into a folder. A name built from
 `--output-template` gets the mode's extension unless it already ends with it.
-A target, or a CD target's `.bin`, that resolves to the input file itself is rejected as an
-invalid argument.
+A target, or any bin a CD target can write, that resolves to the input file itself is
+rejected as an invalid argument.
 
 `info` on an LD-mode CHD prints an LD block (fps, field size, interlacing, audio, frame count)
 decoded from the `AVAV` metadata, plus a VBI summary (CAV picture numbers, CLV timecodes,

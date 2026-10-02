@@ -30,8 +30,8 @@ pub struct ChdTrackDigest {
 ///
 /// The per-track shaping matches [`extract_from_chd`] exactly (CHT2
 /// `FRAMES:` counts, per-frame datasize slicing), so each track's
-/// digest equals the corresponding slice of the extracted bin and
-/// `whole` equals the extracted bin's digest.
+/// digest equals that track's extracted bin digest and `whole` equals
+/// the digest of all extracted bins concatenated in track order.
 ///
 /// Synchronous: intended to run inside the caller's `spawn_blocking`.
 /// Progress is relayed through the shared `bytes_done` counter, same

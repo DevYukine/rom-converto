@@ -217,13 +217,15 @@ where
 pub(crate) fn backup_existing(
     path: &std::path::Path,
 ) -> std::io::Result<Option<tempfile::TempPath>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
+    let file_type = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.file_type(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if !file_type.is_file() && !file_type.is_symlink() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            format!("not a regular file: {}", path.display()),
+            format!("not a file or symlink: {}", path.display()),
         ));
     }
     let backup = scratch_output_path(path)?;
@@ -244,6 +246,68 @@ pub(crate) fn restore_temp(
             Err(error)
         }
     }
+}
+
+fn restore_output(
+    path: &std::path::Path,
+    backup: Option<tempfile::TempPath>,
+) -> std::io::Result<()> {
+    if path.exists()
+        && let Err(err) = std::fs::remove_file(path)
+    {
+        if let Some(backup) = backup {
+            let _ = backup.keep();
+        }
+        return Err(err);
+    }
+    if let Some(backup) = backup {
+        restore_temp(backup, path)?;
+    }
+    Ok(())
+}
+
+/// Publish all members or none: a failure rolls back published files and
+/// restores every overwritten target, leaving unpublished targets untouched.
+pub(crate) fn publish_set(
+    members: Vec<(tempfile::TempPath, &std::path::Path)>,
+    overwrite: bool,
+) -> std::io::Result<()> {
+    let mut backups: Vec<(&std::path::Path, Option<tempfile::TempPath>)> =
+        Vec::with_capacity(members.len());
+    for (_, path) in &members {
+        let backup = if overwrite {
+            match backup_existing(path) {
+                Ok(backup) => backup,
+                Err(err) => {
+                    let mut restore_error = None;
+                    for (path, backup) in backups {
+                        if let Err(err) = restore_output(path, backup) {
+                            restore_error.get_or_insert(err);
+                        }
+                    }
+                    return Err(restore_error.unwrap_or(err));
+                }
+            }
+        } else {
+            None
+        };
+        backups.push((path, backup));
+    }
+
+    for (index, (temp, path)) in members.into_iter().enumerate() {
+        if let Err(err) = publish_temp(temp, path, overwrite) {
+            let mut restore_error = None;
+            for (member, (path, backup)) in backups.into_iter().enumerate() {
+                if (overwrite || member < index)
+                    && let Err(err) = restore_output(path, backup)
+                {
+                    restore_error.get_or_insert(err);
+                }
+            }
+            return Err(restore_error.unwrap_or(err));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -512,7 +576,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        extent_end, is_safe_relative_path, place_in_dir_mirrored, publish_temp, scratch_output_path,
+        extent_end, is_safe_relative_path, place_in_dir_mirrored, publish_set, publish_temp,
+        scratch_output_path,
     };
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
@@ -623,6 +688,149 @@ mod tests {
         std::fs::write(&overwrite, b"new").unwrap();
         publish_temp(overwrite, &output, true).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"new");
+    }
+
+    #[test]
+    fn publish_set_restores_every_backup_when_a_later_backup_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.bin");
+        let second = dir.path().join("second.bin");
+        let cue = dir.path().join("game.cue");
+        std::fs::write(&first, b"old first").unwrap();
+        std::fs::write(&second, b"old second").unwrap();
+        std::fs::create_dir(&cue).unwrap();
+        let first_temp = scratch_output_path(&first).unwrap();
+        let second_temp = scratch_output_path(&second).unwrap();
+        let cue_temp = scratch_output_path(&cue).unwrap();
+        let scratch_paths = [
+            first_temp.to_path_buf(),
+            second_temp.to_path_buf(),
+            cue_temp.to_path_buf(),
+        ];
+
+        assert!(
+            publish_set(
+                vec![
+                    (first_temp, &first),
+                    (second_temp, &second),
+                    (cue_temp, &cue),
+                ],
+                true,
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(first).unwrap(), b"old first");
+        assert_eq!(std::fs::read(second).unwrap(), b"old second");
+        assert!(cue.is_dir());
+        assert!(scratch_paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn publish_set_restores_published_and_unpublished_outputs_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = ["first.bin", "second.bin", "third.bin", "game.cue"]
+            .into_iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        let old: [&[u8]; 4] = [b"first", b"second", b"third", b"cue"];
+        for (path, bytes) in paths.iter().zip(old) {
+            std::fs::write(path, bytes).unwrap();
+        }
+        let temps: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                let temp = scratch_output_path(path).unwrap();
+                std::fs::write(&temp, b"new").unwrap();
+                temp
+            })
+            .collect();
+        let scratch_paths: Vec<_> = temps.iter().map(|temp| temp.to_path_buf()).collect();
+        std::fs::remove_file(&temps[2]).unwrap();
+
+        assert!(
+            publish_set(
+                temps
+                    .into_iter()
+                    .zip(paths.iter().map(PathBuf::as_path))
+                    .collect(),
+                true,
+            )
+            .is_err()
+        );
+        for (path, bytes) in paths.iter().zip(old) {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        assert!(scratch_paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn publish_set_no_clobber_rolls_back_without_touching_later_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.bin");
+        let second = dir.path().join("second.bin");
+        let third = dir.path().join("third.bin");
+        let cue = dir.path().join("game.cue");
+        std::fs::write(&third, b"raced third").unwrap();
+        std::fs::write(&cue, b"existing cue").unwrap();
+        let first_temp = scratch_output_path(&first).unwrap();
+        let second_temp = scratch_output_path(&second).unwrap();
+        let third_temp = scratch_output_path(&third).unwrap();
+        let cue_temp = scratch_output_path(&cue).unwrap();
+
+        assert!(
+            publish_set(
+                vec![
+                    (first_temp, &first),
+                    (second_temp, &second),
+                    (third_temp, &third),
+                    (cue_temp, &cue),
+                ],
+                false,
+            )
+            .is_err()
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read(third).unwrap(), b"raced third");
+        assert_eq!(std::fs::read(cue).unwrap(), b"existing cue");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_set_overwrites_or_restores_symlinks_without_touching_targets() {
+        for dangling in [false, true] {
+            for fail in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let target = dir.path().join("target.bin");
+                if !dangling {
+                    std::fs::write(&target, b"original target").unwrap();
+                }
+                let bin = dir.path().join("game.bin");
+                std::os::unix::fs::symlink(&target, &bin).unwrap();
+                let cue = dir.path().join("game.cue");
+                let bin_temp = scratch_output_path(&bin).unwrap();
+                std::fs::write(&bin_temp, b"new bin").unwrap();
+                let cue_temp = scratch_output_path(&cue).unwrap();
+                if fail {
+                    std::fs::remove_file(&cue_temp).unwrap();
+                }
+                let result = publish_set(vec![(bin_temp, &bin), (cue_temp, &cue)], true);
+                if fail {
+                    assert!(result.is_err());
+                    assert_eq!(std::fs::read_link(&bin).unwrap(), target);
+                    assert!(!cue.exists());
+                } else {
+                    result.unwrap();
+                    assert!(std::fs::symlink_metadata(&bin).unwrap().is_file());
+                    assert_eq!(std::fs::read(&bin).unwrap(), b"new bin");
+                }
+                if dangling {
+                    assert!(!target.exists());
+                } else {
+                    assert_eq!(std::fs::read(&target).unwrap(), b"original target");
+                }
+            }
+        }
     }
 
     #[test]

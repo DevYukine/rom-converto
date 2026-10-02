@@ -27,7 +27,7 @@ use crate::util::hash::MultiHasher;
 use crate::util::pread::file_read_exact_at;
 use crate::util::worker_pool::{Pool, PoolChannelClosed, Worker, drive, with_writer_thread};
 use sha1::{Digest, Sha1};
-use std::io::BufWriter;
+use std::io::{BufWriter, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -262,9 +262,9 @@ pub(crate) struct HunkExtractArgs<'a> {
 /// Drive the extract pipeline: pool of decompressors reading a
 /// shared file via positional reads, reorder-buffered drive,
 /// dedicated writer thread for the output bin.
-pub(crate) fn extract_hunks(
+pub(crate) fn extract_hunks<W: Write + Send>(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
-    writer: &mut BufWriter<std::fs::File>,
+    writer: &mut W,
     args: HunkExtractArgs<'_>,
 ) -> ChdResult<()> {
     let HunkExtractArgs {
@@ -342,16 +342,17 @@ pub(crate) fn extract_hunks_dvd(
 
 /// Shared extract scaffold; `shape` turns one decoded hunk into the
 /// bytes that belong in the output stream.
-fn run_extract_pipeline<F>(
+fn run_extract_pipeline<W, F>(
     pool: &Pool<ChdExtractWork, ChdExtractedOut, ChdError>,
     map: &[MapEntry],
-    writer: &mut BufWriter<std::fs::File>,
+    writer: &mut W,
     admission: crate::util::worker_pool::Admission,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
     mut shape: F,
 ) -> ChdResult<()>
 where
+    W: Write + Send,
     F: FnMut(u64, ChdExtractedOut) -> ChdResult<Vec<u8>>,
 {
     let hunk_count = map.len() as u64;

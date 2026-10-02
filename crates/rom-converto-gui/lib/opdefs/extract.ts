@@ -252,7 +252,7 @@ const chd: OpDef = {
 		},
 		...recursiveFields(),
 	],
-	note: "CD-mode CHDs extract to .bin + .cue, DVD-mode (PS2/PSP) to a single .iso. The mode is read from the file.",
+	note: "CD-mode CHDs extract to .cue plus one .bin per track, DVD-mode (PS2/PSP) to .iso. The mode is read from the file.",
 	outputRows: outputRowsWithReport(),
 	actionNote: "Extraction never overwrites the compressed source.",
 	// No explicit output: only the backend can read the CHD's mode and name a

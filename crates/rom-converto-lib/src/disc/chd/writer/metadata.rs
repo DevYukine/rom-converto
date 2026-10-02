@@ -279,7 +279,7 @@ mod tests {
         assert!(text.contains("POSTGAP:150"), "metadata: {text}");
 
         let tracks = parse_chd_track_metadata(&text).unwrap();
-        let cue = generate_cue_sheet("game.bin", &tracks);
+        let cue = generate_cue_sheet(&["game.bin".to_string()], &tracks);
         let index_pos = cue.find("INDEX 01").expect("INDEX 01 present");
         let postgap_pos = cue.find("    POSTGAP 00:02:00\r\n").expect("POSTGAP line");
         assert!(index_pos < postgap_pos, "cue: {cue}");
@@ -287,7 +287,10 @@ mod tests {
         let block = generate_cd_metadata(&sheet(None, None), &[300]).unwrap();
         let text = cht2_text(&block);
         assert!(text.contains("POSTGAP:0"), "metadata: {text}");
-        let cue = generate_cue_sheet("game.bin", &parse_chd_track_metadata(&text).unwrap());
+        let cue = generate_cue_sheet(
+            &["game.bin".to_string()],
+            &parse_chd_track_metadata(&text).unwrap(),
+        );
         assert!(!cue.contains("POSTGAP"), "cue: {cue}");
     }
 }

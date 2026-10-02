@@ -132,62 +132,6 @@ fn normalize_for_compare(path: &Path) -> PathBuf {
     }
 }
 
-fn restore_output(path: &Path, backup: Option<tempfile::TempPath>) -> std::io::Result<()> {
-    if path.exists()
-        && let Err(err) = std::fs::remove_file(path)
-    {
-        if let Some(backup) = backup {
-            let _ = backup.keep();
-        }
-        return Err(err);
-    }
-    if let Some(backup) = backup {
-        crate::util::restore_temp(backup, path)?;
-    }
-    Ok(())
-}
-
-fn publish_pair(
-    bin_temp: tempfile::TempPath,
-    bin_path: &Path,
-    cue_temp: tempfile::TempPath,
-    cue_path: &Path,
-    force: bool,
-) -> std::io::Result<()> {
-    let bin_backup = if force {
-        crate::util::backup_existing(bin_path)?
-    } else {
-        None
-    };
-    let cue_backup = if force {
-        match crate::util::backup_existing(cue_path) {
-            Ok(backup) => backup,
-            Err(err) => {
-                restore_output(bin_path, bin_backup)?;
-                return Err(err);
-            }
-        }
-    } else {
-        None
-    };
-
-    if let Err(err) = crate::util::publish_temp(bin_temp, bin_path, force) {
-        if force {
-            restore_output(bin_path, bin_backup)?;
-            restore_output(cue_path, cue_backup)?;
-        }
-        return Err(err);
-    }
-    if let Err(err) = crate::util::publish_temp(cue_temp, cue_path, force) {
-        restore_output(bin_path, bin_backup)?;
-        if force {
-            restore_output(cue_path, cue_backup)?;
-        }
-        return Err(err);
-    }
-    Ok(())
-}
-
 /// Cancellable twin of [`merge_bin`].
 pub async fn merge_bin(
     progress: &dyn ProgressReporter,
@@ -340,11 +284,11 @@ pub async fn merge_bin(
         if cancel_bg.is_cancelled() {
             return Err(Cancelled.into());
         }
-        publish_pair(
-            output_bin_tmp,
-            &output_bin_owned,
-            output_cue_tmp,
-            &output_cue_owned,
+        crate::util::publish_set(
+            vec![
+                (output_bin_tmp, &output_bin_owned),
+                (output_cue_tmp, &output_cue_owned),
+            ],
             force,
         )?;
         Ok(())
@@ -666,7 +610,7 @@ mod tests {
     }
 
     #[test]
-    fn pair_publish_rolls_back_first_no_clobber_write() {
+    fn set_publish_rolls_back_first_no_clobber_write() {
         let dir = tempfile::tempdir().unwrap();
         let bin_path = dir.path().join("merged.bin");
         let cue_path = dir.path().join("merged.cue");
@@ -676,7 +620,10 @@ mod tests {
         std::fs::write(&bin_temp, b"new bin").unwrap();
         std::fs::write(&cue_temp, b"new cue").unwrap();
 
-        assert!(publish_pair(bin_temp, &bin_path, cue_temp, &cue_path, false).is_err());
+        assert!(
+            crate::util::publish_set(vec![(bin_temp, &bin_path), (cue_temp, &cue_path)], false,)
+                .is_err()
+        );
         assert!(!bin_path.exists());
         assert_eq!(std::fs::read(cue_path).unwrap(), b"raced cue");
     }

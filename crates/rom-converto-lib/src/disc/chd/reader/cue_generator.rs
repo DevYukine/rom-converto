@@ -102,17 +102,18 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
     Ok(tracks)
 }
 
-pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) -> String {
+pub(crate) fn generate_cue_sheet(bin_names: &[String], tracks: &[ChdTrackInfo]) -> String {
     // The line content and indentation below follow the upstream
     // `output_track_metadata`. CRLF endings follow its older builds
     // (0.289 writes LF) and are kept so existing extracts stay
-    // byte-identical. A `V` prefix on PGTYPE marks a pregap stored
-    // inside the track's own frames, so it is written as INDEX 00
-    // rather than a PREGAP line.
-    let mut cue = format!("FILE \"{bin_filename}\" BINARY\r\n");
-    let mut frame_offset: u32 = 0;
+    // byte-identical for single-track discs. Each track gets its own FILE.
+    // A `V` prefix on PGTYPE marks a pregap stored inside the track's
+    // own frames, so it is written as INDEX 00 rather than a PREGAP line.
+    debug_assert_eq!(bin_names.len(), tracks.len());
+    let mut cue = String::new();
 
-    for track in tracks {
+    for (bin_name, track) in bin_names.iter().zip(tracks) {
+        cue.push_str(&format!("FILE \"{bin_name}\" BINARY\r\n"));
         let cue_type = chd_type_to_cue_type(&track.track_type);
         cue.push_str(&format!(
             "  TRACK {:02} {}\r\n",
@@ -122,7 +123,7 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
         let stored_pregap =
             track.pregap > 0 && track.pgtype.as_deref().is_some_and(|t| t.starts_with('V'));
         if stored_pregap {
-            let msf = Msf::from_lba(frame_offset);
+            let msf = Msf::from_lba(0);
             cue.push_str(&format!(
                 "    INDEX 00 {:02}:{:02}:{:02}\r\n",
                 msf.minutes, msf.seconds, msf.frames
@@ -135,11 +136,7 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
             ));
         }
 
-        let index01 = if stored_pregap {
-            frame_offset + track.pregap
-        } else {
-            frame_offset
-        };
+        let index01 = if stored_pregap { track.pregap } else { 0 };
         let msf = Msf::from_lba(index01);
         cue.push_str(&format!(
             "    INDEX 01 {:02}:{:02}:{:02}\r\n",
@@ -155,8 +152,6 @@ pub(crate) fn generate_cue_sheet(bin_filename: &str, tracks: &[ChdTrackInfo]) ->
                 msf.minutes, msf.seconds, msf.frames
             ));
         }
-
-        frame_offset += track.frames;
     }
 
     cue
@@ -299,7 +294,7 @@ mod tests {
             pregap: 0,
             ..ChdTrackInfo::default()
         }];
-        let cue = generate_cue_sheet("game.bin", &tracks);
+        let cue = generate_cue_sheet(&["game.bin".to_string()], &tracks);
         assert!(cue.starts_with("FILE \"game.bin\" BINARY\r\n"));
         assert!(cue.contains("TRACK 01 MODE1/2352"));
         assert!(cue.contains("INDEX 01 00:00:00"));
@@ -324,11 +319,16 @@ mod tests {
                 ..ChdTrackInfo::default()
             },
         ];
-        let cue = generate_cue_sheet("game.bin", &tracks);
-        assert!(cue.contains("TRACK 02 AUDIO"));
-        assert!(cue.contains("PREGAP 00:02:00")); // 150 frames = 2 seconds
-        // Track 2 starts at frame 300 = 00:04:00
-        assert!(cue.contains("INDEX 01 00:04:00"));
+        let cue = generate_cue_sheet(
+            &[
+                "game (Track 1).bin".to_string(),
+                "game (Track 2).bin".to_string(),
+            ],
+            &tracks,
+        );
+        assert!(cue.contains(
+            "FILE \"game (Track 2).bin\" BINARY\r\n  TRACK 02 AUDIO\r\n    PREGAP 00:02:00\r\n    INDEX 01 00:00:00\r\n"
+        ));
     }
 
     #[test]
@@ -350,15 +350,19 @@ mod tests {
                 ..ChdTrackInfo::default()
             },
         ];
-        let cue = generate_cue_sheet("game.bin", &tracks);
-        // Stored pregap: INDEX 00 at frame 300 = 00:04:00, INDEX 01
-        // at frame 450 = 00:06:00, no PREGAP line.
-        assert!(cue.contains("    INDEX 00 00:04:00\r\n    INDEX 01 00:06:00\r\n"));
+        let cue = generate_cue_sheet(
+            &[
+                "game (Track 1).bin".to_string(),
+                "game (Track 2).bin".to_string(),
+            ],
+            &tracks,
+        );
+        assert!(cue.contains("    INDEX 00 00:00:00\r\n    INDEX 01 00:02:00\r\n"));
         assert!(!cue.contains("PREGAP"));
     }
 
     #[test]
-    fn generate_cue_frame_offset_advances() {
+    fn generate_cue_tracks_start_in_their_own_files() {
         let tracks = vec![
             ChdTrackInfo {
                 track_number: 1,
@@ -375,13 +379,18 @@ mod tests {
                 ..ChdTrackInfo::default()
             },
         ];
-        let cue = generate_cue_sheet("game.bin", &tracks);
-        // Track 1 at 00:00:00, track 2 at 00:01:00 (75 frames = 1 second)
-        let lines: Vec<&str> = cue.lines().collect();
-        let idx_lines: Vec<&&str> = lines.iter().filter(|l| l.contains("INDEX 01")).collect();
-        assert_eq!(idx_lines.len(), 2);
-        assert!(idx_lines[0].contains("00:00:00"));
-        assert!(idx_lines[1].contains("00:01:00"));
+        let cue = generate_cue_sheet(
+            &[
+                "game (Track 1).bin".to_string(),
+                "game (Track 2).bin".to_string(),
+            ],
+            &tracks,
+        );
+        assert_eq!(
+            cue,
+            "FILE \"game (Track 1).bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n\
+             FILE \"game (Track 2).bin\" BINARY\r\n  TRACK 02 AUDIO\r\n    INDEX 01 00:00:00\r\n"
+        );
     }
 
     #[test]

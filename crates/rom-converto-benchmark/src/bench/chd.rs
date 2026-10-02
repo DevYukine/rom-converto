@@ -76,10 +76,10 @@ pub fn run(ctx: &BenchCtx, cue: Option<PathBuf>) -> Result<()> {
         .arg("-f");
     run_timed(&mut cmd)?;
 
-    let ext_cue = dir.join("chdman_out.cue");
-    let ext_bin = dir.join("chdman_out.bin");
-    let rc_cue = dir.join("romconverto_out.cue");
-    let rc_bin = dir.join("romconverto_out.bin");
+    let ext_dir = dir.join("chdman_extract");
+    let rc_dir = dir.join("romconverto_extract");
+    let ext_cue = ext_dir.join("chdman_out.cue");
+    let rc_cue = rc_dir.join("romconverto_out.cue");
     let mut ext_size = 0u64;
     let mut rc_size = 0u64;
     let (ext_stats, rc_stats) = run_sided(
@@ -87,24 +87,28 @@ pub fn run(ctx: &BenchCtx, cue: Option<PathBuf>) -> Result<()> {
         KILL,
         has_ext,
         &mut || {
-            remove_if_exists(&ext_cue);
-            remove_if_exists(&ext_bin);
+            if ext_dir.exists() {
+                std::fs::remove_dir_all(&ext_dir)?;
+            }
+            std::fs::create_dir_all(&ext_dir)?;
             let mut cmd = Command::new(chdman.as_deref().expect("chdman"));
-            cmd.args(["extractcd", "--force", "-i"])
+            cmd.args(["extractcd", "--splitbin", "--force", "-i"])
                 .arg(&shared_chd)
                 .arg("-o")
                 .arg(&ext_cue);
             let elapsed = run_timed(&mut cmd)?;
-            ext_size = file_size(&ext_bin)?;
+            ext_size = bin_file_size(&ext_dir)?;
             Ok(elapsed)
         },
         &mut || {
-            remove_if_exists(&rc_cue);
-            remove_if_exists(&rc_bin);
+            if rc_dir.exists() {
+                std::fs::remove_dir_all(&rc_dir)?;
+            }
+            std::fs::create_dir_all(&rc_dir)?;
             let mut cmd = ctx.rc();
             cmd.args(["chd", "extract"]).arg(&shared_chd).arg(&rc_cue);
             let elapsed = run_timed(&mut cmd)?;
-            rc_size = file_size(&rc_bin)?;
+            rc_size = bin_file_size(&rc_dir)?;
             Ok(elapsed)
         },
     )?;
@@ -138,6 +142,18 @@ pub fn run(ctx: &BenchCtx, cue: Option<PathBuf>) -> Result<()> {
     }
     table.print();
     Ok(())
+}
+
+fn bin_file_size(dir: &Path) -> Result<u64> {
+    let mut size = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "bin") && entry.file_type()?.is_file() {
+            size += file_size(&path)?;
+        }
+    }
+    Ok(size)
 }
 
 /// Runs a `chdman info` parse check on a rom-converto CHD, as CHD.md documents.
