@@ -4272,7 +4272,6 @@ version = "0.23.0"
 dependencies = [
  "aes",
  "anyhow",
- "async-recursion",
  "base64 0.22.1",
  "binrw",
  "block-padding",

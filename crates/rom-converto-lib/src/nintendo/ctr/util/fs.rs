@@ -1,9 +1,7 @@
 use crate::nintendo::ctr::error::{NintendoCTRError, NintendoCTRResult};
-use async_recursion::async_recursion;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-#[async_recursion]
 pub async fn get_all_files(dir_path: &Path) -> NintendoCTRResult<Vec<PathBuf>> {
     let mut dir = fs::read_dir(dir_path).await?;
     let mut files = Vec::new();
@@ -12,7 +10,7 @@ pub async fn get_all_files(dir_path: &Path) -> NintendoCTRResult<Vec<PathBuf>> {
         let path = entry.path();
 
         if path.is_dir() {
-            files.append(&mut get_all_files(&path).await?);
+            files.append(&mut Box::pin(get_all_files(&path)).await?);
         } else {
             files.push(path);
         }
