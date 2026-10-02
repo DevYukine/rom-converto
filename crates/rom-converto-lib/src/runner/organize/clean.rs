@@ -146,9 +146,9 @@ impl BackupSpot {
         }
     }
 
-    /// True when `path` (whose own location is `location`) is inside the
-    /// backup dir or is the backup dir's own entry.
-    fn covers(&self, path: &Path, location: &Path) -> bool {
+    /// True when `location` is inside the backup dir or is the backup dir's
+    /// own entry.
+    fn covers(&self, location: &Path) -> bool {
         if location.starts_with(&self.dir) || location == self.entry {
             return true;
         }
@@ -159,13 +159,17 @@ impl BackupSpot {
                 return true;
             }
         }
-        #[cfg(unix)]
-        if let Some(link) = self.link_inode {
-            use std::os::unix::fs::MetadataExt;
-            return std::fs::symlink_metadata(path)
-                .is_ok_and(|meta| (meta.dev(), meta.ino()) == link);
-        }
         false
+    }
+
+    /// True when `path` is the backup dir's own entry by the link's inode,
+    /// whatever its spelling.
+    #[cfg(unix)]
+    fn is_entry_link(&self, path: &Path) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        self.link_inode.is_some_and(|link| {
+            std::fs::symlink_metadata(path).is_ok_and(|meta| (meta.dev(), meta.ino()) == link)
+        })
     }
 }
 
@@ -297,10 +301,17 @@ fn clean_output_pass(
             let location = super::entry_location(&candidate.path);
             if backup
                 .as_ref()
-                .is_some_and(|backup| backup.covers(&candidate.path, &location))
+                .is_some_and(|backup| backup.covers(&location))
             {
                 // Already moved into the backup dir (or the backup dir's
                 // own entry): never re-collected.
+                continue;
+            }
+            #[cfg(unix)]
+            if backup
+                .as_ref()
+                .is_some_and(|backup| backup.is_entry_link(&candidate.path))
+            {
                 continue;
             }
             // Nothing whose own location is under the input root is a clean
@@ -424,9 +435,16 @@ fn delete_stale_playlists_pass(
         }
         if backup
             .as_ref()
-            .is_some_and(|backup| backup.covers(path, &location))
+            .is_some_and(|backup| backup.covers(&location))
         {
             // Already moved into the backup dir: never re-collected.
+            continue;
+        }
+        #[cfg(unix)]
+        if backup
+            .as_ref()
+            .is_some_and(|backup| backup.is_entry_link(path))
+        {
             continue;
         }
         let Ok(meta) = std::fs::symlink_metadata(path) else {
@@ -1770,8 +1788,9 @@ mod tests {
         let empty_deep = root.path().join("a").join("b");
         fs::create_dir_all(&empty_deep).unwrap();
         let kept = write(root.path().join("full").join("rom.nes"), b"rom");
-        let linked_target = tempfile::tempdir().unwrap();
 
+        #[cfg(unix)]
+        let linked_target = tempfile::tempdir().unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(linked_target.path(), root.path().join("linked")).unwrap();
 
@@ -2169,18 +2188,20 @@ mod tests {
 
         let spot = BackupSpot::of(&backup);
         let location = super::super::entry_location(&backup);
-        assert!(spot.covers(&backup, &location));
+        assert!(spot.covers(&location));
         // A spelling whose computed location disagrees is still the same
         // link by its own inode.
-        assert!(spot.covers(&backup, Path::new("/somewhere/else/.bak")));
+        assert!(!spot.covers(Path::new("/somewhere/else/.bak")));
+        assert!(spot.is_entry_link(&backup));
         // An unrelated file is not covered.
         let other = write(base.path().join("GC").join("Old.zip"), b"x");
-        assert!(!spot.covers(&other, &super::super::entry_location(&other)));
+        assert!(!spot.covers(&super::super::entry_location(&other)));
+        assert!(!spot.is_entry_link(&other));
 
         // A case-variant spelling names the same entry on a folding volume.
         if base.path().join("gc").exists() {
             let variant = BackupSpot::of(&base.path().join("GC").join(".BAK"));
-            assert!(variant.covers(&backup, &location));
+            assert!(variant.covers(&location));
         }
     }
 
