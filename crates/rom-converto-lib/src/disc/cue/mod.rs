@@ -2,7 +2,7 @@
 
 use crate::disc::cue::error::{CueError, CueResult};
 use crate::disc::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
-use crate::util::bounded_line;
+use crate::util::{bounded_line, is_safe_relative_path};
 use std::io::{BufRead, BufReader, Cursor};
 use std::path::{Path, PathBuf};
 
@@ -69,7 +69,9 @@ impl CueParser {
                             .ok_or(CueError::MissingOpeningQuote)?
                             .to_string()
                     };
-                    validate_file_path(&filename)?;
+                    if !is_safe_relative_path(&filename) {
+                        return Err(CueError::UnsafeFilePath(filename));
+                    }
                     let file_type = self.parse_file_type(
                         parts
                             .last()
@@ -194,32 +196,6 @@ impl CueParser {
     }
 }
 
-/// Rejects a `FILE` name that could resolve outside the sheet's folder once
-/// joined onto it: a leading separator (root- or UNC-relative), a `..` that
-/// climbs above the folder, a NUL byte, a name naming no file, or on Windows
-/// a drive/colon prefix. Both separators count on every platform.
-fn validate_file_path(path: &str) -> CueResult<()> {
-    let unsafe_path = || CueError::UnsafeFilePath(path.to_string());
-    if path.starts_with('/') || path.starts_with('\\') {
-        return Err(unsafe_path());
-    }
-    let mut depth = 0usize;
-    for component in path.split(['/', '\\']).filter(|c| !c.is_empty()) {
-        if component.contains('\0') || (cfg!(windows) && component.contains(':')) {
-            return Err(unsafe_path());
-        }
-        match component {
-            "." => {}
-            ".." => depth = depth.checked_sub(1).ok_or_else(unsafe_path)?,
-            _ => depth += 1,
-        }
-    }
-    if depth == 0 {
-        return Err(unsafe_path());
-    }
-    Ok(())
-}
-
 /// Sums the on-disk size of the FILE entries a CUE sheet references, resolved
 /// relative to the CUE's own directory. Used to estimate output size for space
 /// preflight checks (raw sectors are larger than the ISO/output they produce,
@@ -252,16 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn file_paths_inside_the_sheet_folder_parse() {
-        for line in [
-            r#"FILE "game (Track 1).bin" BINARY"#,
-            "FILE track.bin BINARY",
-            r#"FILE "./track.bin" BINARY"#,
-            r#"FILE "disc 1/track.bin" BINARY"#,
-            r#"FILE "disc 1\track.bin" BINARY"#,
-            r#"FILE "sub/../track.bin" BINARY"#,
+    fn file_paths_inside_the_sheet_folder_are_stored_verbatim() {
+        for (line, filename) in [
+            (r#"FILE "game (Track 1).bin" BINARY"#, "game (Track 1).bin"),
+            ("FILE sub/../track.bin BINARY", "sub/../track.bin"),
         ] {
-            assert!(parse_file_line(line).is_ok(), "{line}");
+            let sheet = parse_file_line(line).unwrap();
+            assert_eq!(sheet.files[0].filename, filename);
         }
     }
 
@@ -270,26 +243,8 @@ mod tests {
         for line in [
             r#"FILE "../other.bin" BINARY"#,
             "FILE ../other.bin BINARY",
-            r#"FILE "disc/../../other.bin" BINARY"#,
-            r#"FILE "sub/.." BINARY"#,
-            r#"FILE "..\other.bin" BINARY"#,
-            r#"FILE "/etc/passwd" BINARY"#,
-            r#"FILE "\\server\share\x.bin" BINARY"#,
             r#"FILE "a.bin" "/../../etc/passwd" BINARY"#,
-            r#"FILE "." BINARY"#,
-            r#"FILE "" BINARY"#,
         ] {
-            assert!(
-                matches!(parse_file_line(line), Err(CueError::UnsafeFilePath(_))),
-                "{line}"
-            );
-        }
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn drive_prefixed_file_paths_are_rejected_on_windows() {
-        for line in [r#"FILE "C:\x.bin" BINARY"#, r#"FILE "C:x.bin" BINARY"#] {
             assert!(
                 matches!(parse_file_line(line), Err(CueError::UnsafeFilePath(_))),
                 "{line}"

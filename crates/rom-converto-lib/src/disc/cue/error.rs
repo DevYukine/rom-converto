@@ -37,8 +37,8 @@ pub enum CueError {
     #[error("missing closing quote")]
     MissingClosingQuote,
 
-    /// A `FILE` name would resolve outside the sheet's own folder.
-    #[error("FILE path escapes the cue sheet's folder: {0}")]
+    /// A `FILE` path cannot safely name a file inside the sheet's folder.
+    #[error("unsafe FILE path {0:?}: it must name a file inside the cue sheet's folder")]
     UnsafeFilePath(String),
 }
 
