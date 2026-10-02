@@ -134,6 +134,9 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache Rust dependencies
+        # Release builds run on main, whose cache scope is separate and
+        # evicted between releases; skip the cache there.
+        if: ${{ !inputs.release }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Both macOS targets build on the same runner arch, so the target
