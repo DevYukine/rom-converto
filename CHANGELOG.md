@@ -1,3 +1,12 @@
+## [0.23.2](https://github.com/DevYukine/rom-converto/compare/v0.23.1...v0.23.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **chd:** extract CD images to one bin per track ([97b8ae3](https://github.com/DevYukine/rom-converto/commit/97b8ae3d01c6b63c0d9d032221524a286f7b3dd9))
+
+
+
 ## [0.23.1](https://github.com/DevYukine/rom-converto/compare/v0.23.0...v0.23.1) (2026-10-02)
 
 
@@ -114,25 +123,6 @@
 ### Performance Improvements
 
 * **nx:** peek nca content type before opening ncz in info control scan ([5183d4f](https://github.com/DevYukine/rom-converto/commit/5183d4f070f6f65e55d1aa55a132c3c26e300989))
-
-
-
-# [0.20.0](https://github.com/DevYukine/rom-converto/compare/v0.19.0...v0.20.0) (2026-09-02)
-
-
-### Bug Fixes
-
-* **gui:** compute queue drawer MB/s from elapsed time instead of bytes done ([fdc7d2b](https://github.com/DevYukine/rom-converto/commit/fdc7d2bef56cf2176ff276e82be9b10bac0d33e6))
-
-
-### Features
-
-* **info:** overhaul inspect view with uniform sections, inner files, icons, and encryption state ([41864bc](https://github.com/DevYukine/rom-converto/commit/41864bc1fbe1a1088865b66dbc83c350865136a7))
-
-
-### Performance Improvements
-
-* **chd:** disable flacenc per-call thread spawning in flac hunk trials ([fc5b111](https://github.com/DevYukine/rom-converto/commit/fc5b1113acb027f5391c82176393c534ab5239d5))
 
 
 
