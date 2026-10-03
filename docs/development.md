@@ -60,16 +60,24 @@ The GitHub workflow runs these Rust checks:
 ```sh
 cargo fmt --all -- --check
 cargo check -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
-cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi
+cargo test -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -p rom-converto-gui
 cargo clippy -p rom-converto-lib -p rom-converto-cli -p rom-converto-benchmark -p rom-converto-ffi -p rom-converto-gui -- -W clippy::unwrap-used -D warnings
 ```
 
-Frontend unit tests use Vitest:
+It also regenerates the TypeScript bindings and fails when the committed files
+differ, so run this after changing an exported type or a `cli_echo` table:
+
+```sh
+cargo test -p rom-converto-gui --features ts-export ts_export
+```
+
+Frontend unit tests use Vitest, and CI also typechecks the frontend:
 
 ```sh
 cd crates/rom-converto-gui
 pnpm install --frozen-lockfile
 pnpm test
+pnpm typecheck
 ```
 
 `pnpm build` generates the Nuxt static frontend. CI packages the GUI with Tauri

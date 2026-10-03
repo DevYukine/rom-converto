@@ -139,7 +139,7 @@ See results for [3DS](benchmark/3DS.md), [GameCube](benchmark/GameCube.md), [Wii
 
 ## Contributing
 
-Issues and pull requests are welcome. Keep changes focused and run the checks in the [development guide](docs/development.md). Use [Conventional Commits](https://www.conventionalcommits.org/); releases and the changelog are generated from commit history.
+Issues and pull requests are welcome. Keep changes focused, follow the conventions in [AGENTS.md](AGENTS.md), and run the checks in the [development guide](docs/development.md). Use [Conventional Commits](https://www.conventionalcommits.org/); releases and the changelog are generated from commit history.
 
 ## License
 
