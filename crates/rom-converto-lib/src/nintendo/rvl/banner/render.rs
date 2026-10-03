@@ -396,6 +396,16 @@ fn transform_uv(srt: &TextureSrt, uv: [f32; 2]) -> [f32; 2] {
 fn sample(texture: &Texture, uv: [f32; 2], wrap_s: u8, wrap_t: u8) -> [f32; 4] {
     let x = uv[0] * texture.width as f32 - 0.5;
     let y = uv[1] * texture.height as f32 - 0.5;
+    let x = if x.is_nan() {
+        0.0
+    } else {
+        x.clamp(-1.0e9, 1.0e9)
+    };
+    let y = if y.is_nan() {
+        0.0
+    } else {
+        y.clamp(-1.0e9, 1.0e9)
+    };
     let (x0, y0) = (x.floor(), y.floor());
     let (fx, fy) = (x - x0, y - y0);
 
@@ -511,4 +521,33 @@ fn scaling(sx: f32, sy: f32) -> Mat4 {
     m.0[0][0] = sx;
     m.0[1][1] = sy;
     m
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_handles_extreme_coordinates() {
+        let texture = Texture {
+            width: 1,
+            height: 1,
+            rgba: vec![32, 64, 128, 255],
+        };
+        for coordinate in [
+            1.0e30,
+            -1.0e30,
+            f32::MAX,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            0.5,
+        ] {
+            for uv in [[coordinate, 0.5], [0.5, coordinate]] {
+                for mode in 0..=2 {
+                    assert_eq!(sample(&texture, uv, mode, mode), [32.0, 64.0, 128.0, 255.0]);
+                }
+            }
+        }
+    }
 }
