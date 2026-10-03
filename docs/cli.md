@@ -876,7 +876,7 @@ Playmatch instance and defaults to the public one at
 
 ```sh
 rom-converto organize <INPUT> --output-dir <DIR> [--output-template <TEMPLATE>] [--dat]
-rom-converto organize <INPUT> --output-dir <DIR> [--move] [--playlists] [--max-depth N]
+rom-converto organize <INPUT> --output-dir <DIR> [--move] [--playlists] [--multi-disc-dirs] [--max-depth N]
 rom-converto organize <INPUT> --output-dir <DIR> [--on-conflict POLICY | -f] [--report FILE]
 rom-converto organize <INPUT> --output-dir <DIR> [--keys PRODKEYS] [--allow-encrypted] [--api-base URL]
 rom-converto organize <INPUT> --output-dir <DIR> [--dat] [--single] [--prefer-region USA,EUR,JPN] [--dir-letter] [--clean]
@@ -1027,6 +1027,7 @@ the earliest listed code wins.
 | `--dir-letter-count <N>` | How many leading letters the folder uses, 1 through 26. Default `1`. Ignored unless `--dir-letter` is on (flag or config) |
 | `--dir-letter-limit <N>` | Cap how many items a letter folder holds; a letter that exceeds the cap is split into numbered folders. Ignored unless `--dir-letter` is on (flag or config) |
 | `--dir-letter-group` | Merge adjacent letter folders into ranges sized by the limit, such as `A-C` and `D-F`. Requires `--dir-letter-limit`. Ignored unless `--dir-letter` is on (flag or config) |
+| `--multi-disc-dirs` | Place each multi-disc set in its own folder named after the game (`PS1/Final Fantasy VII (USA)/Final Fantasy VII (USA) (Disc 1).chd`). A set is two or more outputs in the same output folder whose names share a base title and carry a Redump or TOSEC disc token (`(Disc 1)`, `Disc 1 of 2`); single-disc titles stay flat, and a set whose folder already carries the game name is not nested again. The folder sits below the letter folder when `--dir-letter` is on, and a set never splits across the numbered folders of `--dir-letter-limit` (the folder holding it may exceed the limit). With `--playlists` the `.m3u` is written inside the game folder and lists bare file names; it is only derived for chd, cue, iso, cso, zso, and rvz outputs. Clean removes files only, so turning the option off later leaves the emptied game folders behind, as with letter folders. Reshuffling an already flat library in place (INPUT is `--output-dir`, with `--move`) keeps the old flat `.m3u`, since files under INPUT are never deleted; remove it by hand |
 | `--zip-format <FORMAT>` | Zip structure for cartridge outputs: `torrentzip` (default) or `rvzstd` |
 | `--zip-exclude <GLOB>` | Copy instead of zip when the planned `.zip` output path under `--output-dir` matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (`--zip-exclude=`, or `zip_exclude = ""` in the config) is the explicit no-exclusion override |
 | `--link-mode <MODE>` | Replace the copy of an already-correct file with a `hardlink`, `symlink`, or `reflink`. `symlink` cannot be combined with `--move` (flag or config) |
@@ -1062,7 +1063,7 @@ re-zipped.
 ### Cleaning up
 
 Cleaning only considers the folders that received output this run (the
-template-level folder of each output; letter subfolders below it count as part
+template-level folder of each output; letter and multi-disc subfolders below it count as part
 of it): a run that wrote nothing cleans nothing, and folders the run did not
 write into are untouched. If any item fails to stage, resolve its output
 path, or match the DAT, clean is skipped for the whole run (a warning and a
@@ -1153,6 +1154,7 @@ report workflow of a typical ROM manager:
 | folder per DAT name | the `{dat}` token (the name of the matched DAT) |
 | mirror the input folder layout | the `{input_dir}` token |
 | letter folders (count, limit, grouping) | `--dir-letter`, `--dir-letter-count`, `--dir-letter-limit`, `--dir-letter-group` |
+| one folder per multi-disc game | `--multi-disc-dirs` |
 | header removal | `--remove-headers` |
 | one game per parent/clone group with region, language, revision and retail preferences | `--single`, `--prefer-*` |
 | language, region, name and release-type filters | `--filter-language`, `--filter-region`, `--filter-regex`, `--no-type`, `--only-type`, `--only-retail` |

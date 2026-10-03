@@ -256,6 +256,13 @@ const fields: FieldDef[] = [
 		tooltip:
 			"Merges adjacent under-full letter folders into ranges sized by the dir limit, such as A-C and D-F. Requires the dir limit.",
 	},
+	{
+		kind: "toggle",
+		key: "multiDiscDirs",
+		label: "Folders · Per multi-disc game",
+		tooltip:
+			"Places every multi-disc set in its own folder named after the game. With playlists on, the .m3u is written inside that folder.",
+	},
 
 	// --- Archive ---
 	{
@@ -448,6 +455,7 @@ export const organizeOps: OpDef[] = [
 					dat: store.dat,
 					move_source: store.moveSource,
 					playlists: store.playlists,
+					multi_disc_dirs: store.multiDiscDirs,
 					allow_encrypted: store.allowEncrypted,
 					max_depth: store.maxDepth ?? undefined,
 					keys: store.keys || null,

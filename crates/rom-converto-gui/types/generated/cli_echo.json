@@ -582,6 +582,12 @@
       "kind": "bool",
       "explicit_off": true
     },
+    "multi_disc_dirs": {
+      "flag": "--multi-disc-dirs",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": true
+    },
     "no_type": {
       "flag": "--no-type",
       "global": false,
@@ -1186,6 +1192,7 @@
       "max_depth",
       "move_delete_dirs",
       "move_source",
+      "multi_disc_dirs",
       "no_type",
       "on_conflict",
       "only_retail",

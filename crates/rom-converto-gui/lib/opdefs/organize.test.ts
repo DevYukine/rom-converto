@@ -36,6 +36,7 @@ describe("organize echo fixture", () => {
 			dat: true,
 			moveSource: true,
 			playlists: true,
+			multiDiscDirs: true,
 			allowEncrypted: true,
 			maxDepth: 2,
 			keys: "~/prod.keys",
@@ -120,6 +121,7 @@ describe("organize buildArgs", () => {
 		expect(options.dat).toBe(false);
 		expect(options.move_source).toBe(false);
 		expect(options.playlists).toBe(false);
+		expect(options.multi_disc_dirs).toBe(false);
 		expect(options.allow_encrypted).toBe(false);
 		expect(options.verify_after).toBe(false);
 		expect(options.only_retail).toBe(false);

@@ -109,6 +109,7 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "dat", label: "Rename with DAT", kind: "bool" },
 		{ key: "move_source", label: "Move sources", kind: "bool" },
 		{ key: "playlists", label: "Write playlists", kind: "bool" },
+		{ key: "multi_disc_dirs", label: "Multi-disc folders", kind: "bool" },
 		{ key: "filter_regex", label: "Name includes", kind: "lines" },
 		{ key: "filter_regex_exclude", label: "Name excludes", kind: "lines" },
 		{ key: "filter_language", label: "Languages", kind: "list" },

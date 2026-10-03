@@ -12,6 +12,7 @@ export const useOrganizeStore = defineStore("organize", () => {
   const dat = ref(false);
   const moveSource = ref(false);
   const playlists = ref(false);
+  const multiDiscDirs = ref(false);
   const allowEncrypted = ref(false);
   const maxDepth = ref<number | null>(null);
   const keys = ref("");
@@ -116,6 +117,7 @@ export const useOrganizeStore = defineStore("organize", () => {
     dat.value = false;
     moveSource.value = false;
     playlists.value = false;
+    multiDiscDirs.value = false;
     allowEncrypted.value = false;
     maxDepth.value = null;
     keys.value = "";
@@ -165,6 +167,7 @@ export const useOrganizeStore = defineStore("organize", () => {
     dat,
     moveSource,
     playlists,
+    multiDiscDirs,
     allowEncrypted,
     maxDepth,
     keys,

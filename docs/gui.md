@@ -78,8 +78,10 @@ format are copied unchanged; unrecognized files are skipped.
 
 `Rename with DAT` hashes every file and queries the Playmatch API, including
 during a dry run. `.m3u` playlists for multi-disc sets are written on real
-runs only, never during a dry run. Move deletes each source only after its
-organized copy was written successfully.
+runs only, never during a dry run. `Folders · Per multi-disc game` puts each
+multi-disc set in its own folder; with playlists on the `.m3u` goes inside
+it. Move deletes each source only after its organized copy was written
+successfully.
 
 The remaining options mirror the CLI flags, grouped as in
 [the CLI reference](cli.md#organize):

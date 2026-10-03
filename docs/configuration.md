@@ -47,7 +47,7 @@ An unknown preset is an error.
 | `[cso]` | `block_size`, `on_conflict`, `output_dir`, `report` |
 | `[wup]` | `level`, `on_conflict` |
 | `[dat]` | `api_base`, `report`, `input_checksum_min`, `input_checksum_max` |
-| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists`, `filter_regex`, `filter_regex_exclude`, `filter_language`, `filter_region`, `no_type`, `only_type`, `only_retail`, `single`, `prefer_game_regex`, `prefer_verified`, `prefer_good`, `prefer_language`, `prefer_region`, `prefer_revision`, `prefer_retail`, `prefer_parent`, `prefer_filename_regex`, `dir_letter`, `dir_letter_count`, `dir_letter_limit`, `dir_letter_group`, `zip_format`, `zip_exclude`, `link_mode`, `symlink_relative`, `remove_headers`, `trim_add_padding`, `clean`, `clean_exclude`, `clean_backup`, `move_delete_dirs` |
+| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists`, `filter_regex`, `filter_regex_exclude`, `filter_language`, `filter_region`, `no_type`, `only_type`, `only_retail`, `single`, `prefer_game_regex`, `prefer_verified`, `prefer_good`, `prefer_language`, `prefer_region`, `prefer_revision`, `prefer_retail`, `prefer_parent`, `prefer_filename_regex`, `dir_letter`, `dir_letter_count`, `dir_letter_limit`, `dir_letter_group`, `multi_disc_dirs`, `zip_format`, `zip_exclude`, `link_mode`, `symlink_relative`, `remove_headers`, `trim_add_padding`, `clean`, `clean_exclude`, `clean_backup`, `move_delete_dirs` |
 
 `[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
 `error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.

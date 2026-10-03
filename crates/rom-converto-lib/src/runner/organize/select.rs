@@ -598,9 +598,9 @@ fn same_dir_entry(a: &Path, b: &Path) -> bool {
 
 /// The map key two output paths group under: the path's lossy string,
 /// case-folded when the file system is case-insensitive. `dedupe_by_path`
-/// groups by it, and the lettered rejoin looks groups up by it, so a
+/// groups by it, and the layout rejoin looks groups up by it, so a
 /// duplicate whose spelling only folds to its group's finds the group's
-/// lettered path.
+/// laid-out path.
 pub(super) fn path_key(path: &Path, fold_case: bool) -> String {
     let path = path.to_string_lossy();
     if fold_case {

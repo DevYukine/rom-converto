@@ -176,6 +176,7 @@ pub fn apply_organize_defaults(
     fill(&mut options.dir_letter_count, defaults.dir_letter_count);
     fill(&mut options.dir_letter_limit, defaults.dir_letter_limit);
     fill(&mut options.dir_letter_group, defaults.dir_letter_group);
+    fill(&mut options.multi_disc_dirs, defaults.multi_disc_dirs);
     fill(&mut options.zip_format, defaults.zip_format);
     fill(&mut options.zip_exclude, defaults.zip_exclude);
     fill(&mut options.link_mode, defaults.link_mode);

@@ -124,6 +124,7 @@ pub(crate) async fn organize(
     let filters = select::Filters::from_options(&req.options)?;
     let preferences = select::Preferences::from_options(&req.options)?;
     let letter_layout = layout::LetterLayout::from_options(&req.options)?;
+    let multi_disc_dirs = req.options.multi_disc_dirs == Some(true);
     // `single` and the prefer_* orderings rank DAT matches; without `dat`
     // there are no matches to rank and the options would silently do
     // nothing. `prefer_filename_regex` is exempt: it also tie-breaks
@@ -249,11 +250,12 @@ pub(crate) async fn organize(
         zip_exclude.as_ref(),
         link_mode,
     );
-    // Clean manages the template-level directory of each output; letter
-    // subdirectories below it belong to this run's layout, so the dirs are
-    // captured before the letter pass rewrites `desired`. Every plan still
-    // carries its pre-letter dir here; the Keep filter is applied at clean
-    // time, after dedupe has marked the losers.
+    // Clean manages the template-level directory of each output; the layout
+    // subdirectories below it (letter and multi-disc folders) belong to this
+    // run's layout, so the dirs are captured before the layout passes
+    // rewrite `desired`. Every plan still carries its pre-layout dir here;
+    // the Keep filter is applied at clean time, after dedupe has marked the
+    // losers.
     let mut managed_dirs: Vec<Vec<PathBuf>> = plans
         .iter()
         .map(|plan| match plan.desired.as_ref() {
@@ -265,31 +267,31 @@ pub(crate) async fn organize(
             None => Vec::new(),
         })
         .collect();
-    // Dedupe the flat output paths before the letter pass: a same-path
+    // Dedupe the flat output paths before the layout passes: a same-path
     // duplicate must not inflate the letter bucket that computes chunk dirs
     // (two `Ga` plans and one `Gb` plan would chunk as G1=[Ga, Ga],
-    // G2=[Gb] instead of one G bucket over the two survivors). Without a
-    // letter layout this one pass stands; with one, the losers split out
-    // here and rejoin their group's lettered path below, so the post-letter
-    // pass can re-decide every group.
+    // G2=[Gb] instead of one G bucket over the two survivors), nor turn a
+    // lone disc into a two-member set. Without a layout pass this one pass
+    // stands; with one, the losers split out here and rejoin their group's
+    // laid-out path below, so the post-layout pass can re-decide every
+    // group.
     let fold_case = select::probe_case_insensitive(&output_dir);
     select::dedupe_by_path(&mut plans, &preferences, fold_case);
-    if let Some(layout) = letter_layout.as_ref() {
+    if letter_layout.is_some() || multi_disc_dirs {
         // Only a dedupe loser is Skip with a resolved path: every other skip
         // decision predates `resolve_paths`. The mask indexes the original
         // vector, which keeps its order; execution and rows follow input
-        // order under letter layouts too.
+        // order under layout passes too.
         let losers: Vec<bool> = plans
             .iter()
             .map(|plan| plan.desired.is_some() && matches!(plan.decision, Decision::Skip(_)))
             .collect();
-        // Each survivor's flat path maps to its lettered path, so a
+        // Each survivor's flat path maps to its laid-out path, so a
         // duplicate can follow its group. Keyed like `dedupe_by_path`
         // groups, so a duplicate whose spelling only folds to its group's
-        // finds the lettered path too. The keys are snapshotted BEFORE the
-        // letter pass; a survivor without a desired path (a skip decided
-        // before `resolve_paths`) maps to `None` and never shifts the
-        // pairing.
+        // finds the laid-out path too. The keys are snapshotted BEFORE the
+        // passes; a survivor without a desired path (a skip decided before
+        // `resolve_paths`) maps to `None` and never shifts the pairing.
         let flat: Vec<Option<String>> = plans
             .iter()
             .map(|plan| {
@@ -298,23 +300,28 @@ pub(crate) async fn organize(
                     .map(|d| select::path_key(d, fold_case))
             })
             .collect();
-        // `apply_letter_dirs` only rewrites Keep plans, so the losers need
-        // not split out of the vector: the pass letters the winners in
-        // place.
-        layout::apply_letter_dirs(&mut plans, layout);
-        let mut lettered: HashMap<String, PathBuf> = HashMap::new();
+        // The passes only rewrite Keep plans, so the losers need not split
+        // out of the vector: the winners are laid out in place. Letters
+        // first, so a game folder sits below its letter folder.
+        if let Some(layout) = letter_layout.as_ref() {
+            layout::apply_letter_dirs(&mut plans, layout);
+        }
+        if multi_disc_dirs {
+            layout::apply_multi_disc_dirs(&mut plans, fold_case);
+        }
+        let mut laid_out: HashMap<String, PathBuf> = HashMap::new();
         for (key, (plan, &loser)) in flat.iter().zip(plans.iter().zip(&losers)) {
             if let (Some(key), Some(desired)) = (key, plan.desired.as_ref())
                 && !loser
             {
-                lettered.insert(key.clone(), desired.clone());
+                laid_out.insert(key.clone(), desired.clone());
             }
         }
-        // The duplicates rejoin their group at the group's (lettered) path,
-        // and the post-letter pass re-decides every group: `in_place` only
-        // recognizes a unit that already sits at its output once the letter
-        // dir is part of that path, and such a unit must win its group. A
-        // loser's group winner is a Keep plan dedupe kept: it was lettered,
+        // The duplicates rejoin their group at the group's (laid-out) path,
+        // and the post-layout pass re-decides every group: `in_place` only
+        // recognizes a unit that already sits at its output once the layout
+        // dirs are part of that path, and such a unit must win its group. A
+        // loser's group winner is a Keep plan dedupe kept: it was laid out,
         // so the lookup cannot miss.
         for (plan, &loser) in plans.iter_mut().zip(&losers) {
             if !loser {
@@ -323,22 +330,33 @@ pub(crate) async fn organize(
             let group = plan
                 .desired
                 .as_ref()
-                .and_then(|d| lettered.get(&select::path_key(d, fold_case)))
+                .and_then(|d| laid_out.get(&select::path_key(d, fold_case)))
                 .expect("group winner survived the split")
                 .clone();
             plan.desired = Some(group);
             plan.decision = Decision::Keep;
         }
         // A flat template resolves straight into the output dir, which clean
-        // walks non-recursively: the post-letter dirs written below it (e.g.
-        // out/A) become managed too, so stale files inside written letter
-        // dirs are still cleaned. Runs after the rejoin, over every plan, so
-        // a rejoined winner's letter dir is managed as well.
+        // walks non-recursively: the layout dirs written below it (e.g.
+        // out/A and out/A/Game) become managed too, so stale files inside
+        // written layout dirs are still cleaned. Runs after the rejoin, over
+        // every plan, so a rejoined winner's layout dirs are managed as well.
         for (plan, dirs) in plans.iter().zip(&mut managed_dirs) {
-            if dirs.first().is_some_and(|dir| dir == &output_dir)
-                && let Some(parent) = plan.desired.as_ref().and_then(|desired| desired.parent())
-            {
-                dirs.push(parent.to_path_buf());
+            if !dirs.first().is_some_and(|dir| dir == &output_dir) {
+                continue;
+            }
+            let Some(below) = plan
+                .desired
+                .as_ref()
+                .and_then(|desired| desired.parent())
+                .and_then(|parent| parent.strip_prefix(&output_dir).ok())
+            else {
+                continue;
+            };
+            let mut dir = output_dir.clone();
+            for component in below.components() {
+                dir.push(component);
+                dirs.push(dir.clone());
             }
         }
         select::dedupe_by_path(&mut plans, &preferences, fold_case);
@@ -3696,6 +3714,101 @@ mod tests {
         );
     }
 
+    /// `multi_disc_dirs` puts a set in a folder named after the game and
+    /// the playlist inside it; a lone disc stays flat. A second run over
+    /// the organized tree finds every unit already in place.
+    #[tokio::test]
+    async fn multi_disc_dirs_group_a_set_with_its_playlist() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        for name in [
+            "Grouped Game (Disc 1).rvz",
+            "Grouped Game (Disc 2).rvz",
+            "Solo Game (Disc 1).rvz",
+        ] {
+            std::fs::write(lib.path().join(name), gcm_bytes()).unwrap();
+        }
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.multi_disc_dirs = Some(true);
+        req.options.playlists = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        let console = out.path().join("GameCube");
+        let folder = console.join("Grouped Game");
+        assert!(folder.join("Grouped Game (Disc 1).rvz").is_file());
+        assert!(folder.join("Grouped Game (Disc 2).rvz").is_file());
+        assert!(console.join("Solo Game (Disc 1).rvz").is_file());
+        assert_eq!(data.playlists.len(), 1, "{:?}", data.rows);
+        assert_eq!(data.playlists[0].output, folder.join("Grouped Game.m3u"));
+        assert_eq!(
+            std::fs::read_to_string(folder.join("Grouped Game.m3u")).unwrap(),
+            "Grouped Game (Disc 1).rvz\nGrouped Game (Disc 2).rvz\n"
+        );
+
+        let mut req = organize_request(out.path(), Some(out.path()), false);
+        req.options.multi_disc_dirs = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        assert_eq!(data.rows.len(), 3, "{:?}", data.rows);
+        for row in &data.rows {
+            assert_eq!(row.status, FileStatus::Skipped, "{row:?}");
+            assert_eq!(row.detail.as_deref(), Some("already in place"), "{row:?}");
+        }
+    }
+
+    /// A duplicated disc (the same `(Disc 1)` in two input folders) loses
+    /// dedupe and must follow its winner into the game folder instead of
+    /// derailing the rejoin: one output lands in the folder and the loser
+    /// is a `duplicate output` skip.
+    #[tokio::test]
+    async fn multi_disc_dirs_keep_a_duplicate_disc_on_its_winner() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("Game (Disc 1).rvz"), gcm_bytes()).unwrap();
+        std::fs::write(lib.path().join("Game (Disc 2).rvz"), gcm_bytes()).unwrap();
+        let other = lib.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("Game (Disc 1).rvz"), gcm_bytes()).unwrap();
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.multi_disc_dirs = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        let folder = out.path().join("GameCube").join("Game");
+        assert!(folder.join("Game (Disc 1).rvz").is_file());
+        assert!(folder.join("Game (Disc 2).rvz").is_file());
+        assert_eq!(data.ok, 2, "{:?}", data.rows);
+        let loser = data
+            .rows
+            .iter()
+            .find(|row| row.status == FileStatus::Skipped)
+            .expect("duplicate skip row");
+        assert_eq!(
+            loser.detail.as_deref(),
+            Some(
+                format!(
+                    "duplicate output {}",
+                    folder.join("Game (Disc 1).rvz").display()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(loser.output, None, "the loser never ran");
+    }
+
     /// A stripped console header is named on the successful row, and the
     /// zip member carries the headerless extension.
     #[tokio::test]
@@ -6050,6 +6163,40 @@ mod tests {
         assert!(
             !letter_dir.join("stale.sav").exists(),
             "stale files inside a written letter dir must be cleaned"
+        );
+    }
+
+    /// With a flat template, letter and game folders both sit below the
+    /// output dir: every layout dir between the output and the file is
+    /// managed, so a stale file in the letter dir above a game folder is
+    /// cleaned as well.
+    #[tokio::test]
+    async fn clean_reaches_stale_files_above_game_folders() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("Game (Disc 1).xiso"), b"not a real xiso").unwrap();
+        std::fs::write(lib.path().join("Game (Disc 2).xiso"), b"not a real xiso").unwrap();
+        let letter_dir = out.path().join("G");
+        std::fs::create_dir_all(&letter_dir).unwrap();
+        std::fs::write(letter_dir.join("stale.sav"), b"stale").unwrap();
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.clean = Some(true);
+        req.options.dir_letter = Some(true);
+        req.options.multi_disc_dirs = Some(true);
+        req.options.output_template = Some("{basename}.{ext}".to_string());
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        assert_eq!(data.failed, 0, "{:?}", data.rows);
+        assert!(letter_dir.join("Game").join("Game (Disc 1).xiso").exists());
+        assert!(letter_dir.join("Game").join("Game (Disc 2).xiso").exists());
+        assert!(
+            !letter_dir.join("stale.sav").exists(),
+            "stale files in the letter dir above a game folder must be cleaned"
         );
     }
 

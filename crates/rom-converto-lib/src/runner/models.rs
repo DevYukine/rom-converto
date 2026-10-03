@@ -722,6 +722,7 @@ pub struct RunOptions {
     pub dir_letter_count: Option<usize>,
     pub dir_letter_limit: Option<usize>,
     pub dir_letter_group: Option<bool>,
+    pub multi_disc_dirs: Option<bool>,
     pub zip_format: Option<String>,
     pub zip_exclude: Option<String>,
     pub link_mode: Option<String>,

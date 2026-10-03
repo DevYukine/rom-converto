@@ -163,6 +163,10 @@ pub struct OrganizeCommand {
     #[arg(long, require_equals = true, default_missing_value = "true", num_args = 0..=1)]
     pub dir_letter_group: Option<bool>,
 
+    /// Place each multi-disc set in its own folder named after the game. With --playlists the .m3u is written inside that folder. Bare flag or =true enables; =false disables, overriding the config
+    #[arg(long, require_equals = true, default_missing_value = "true", num_args = 0..=1)]
+    pub multi_disc_dirs: Option<bool>,
+
     /// Zip archive format: torrentzip (default) or rvzstd
     #[arg(long, value_parser = ["torrentzip", "rvzstd"])]
     pub zip_format: Option<String>,
@@ -260,6 +264,7 @@ impl OrganizeCommand {
             dir_letter_count: self.dir_letter_count,
             dir_letter_limit: self.dir_letter_limit,
             dir_letter_group: self.dir_letter_group,
+            multi_disc_dirs: self.multi_disc_dirs,
             zip_format: self.zip_format.clone(),
             zip_exclude: self.zip_exclude.clone(),
             link_mode: self.link_mode.clone(),
@@ -488,6 +493,7 @@ mod tests {
         assert_eq!(options.prefer_parent, None);
         assert_eq!(options.dir_letter, None);
         assert_eq!(options.dir_letter_group, None);
+        assert_eq!(options.multi_disc_dirs, None);
         assert_eq!(options.symlink_relative, None);
         assert_eq!(options.trim_add_padding, None);
         assert_eq!(options.clean, None);
@@ -570,6 +576,7 @@ mod tests {
             filter_regex_exclude: Some(vec!["Beta".to_string()]),
             filter_region: Some(vec!["JPN".to_string()]),
             move_source: Some(flag),
+            multi_disc_dirs: Some(flag),
             no_type: Some(vec!["demo".to_string()]),
             only_retail: Some(flag),
             only_type: Some(vec!["bios".to_string()]),
