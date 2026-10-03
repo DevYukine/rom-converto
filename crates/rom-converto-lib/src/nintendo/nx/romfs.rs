@@ -97,19 +97,29 @@ impl<'a> RomfsReader<'a> {
         Ok(Self { image, header })
     }
 
+    fn table(&self, offset: u64, size: u64) -> NxResult<&[u8]> {
+        let start = usize::try_from(offset).map_err(|_| NxError::InvalidNcaHeader)?;
+        let size = usize::try_from(size).map_err(|_| NxError::InvalidNcaHeader)?;
+        let end = start.checked_add(size).ok_or(NxError::InvalidNcaHeader)?;
+        self.image.get(start..end).ok_or(NxError::InvalidNcaHeader)
+    }
+
     /// Walks the file metadata table and returns every file entry it
     /// finds, following each entry's sibling offset (falling back to
     /// the next fixed-layout record when the sibling link is absent).
     pub fn list_files(&self) -> NxResult<Vec<RomfsFile>> {
-        let meta_off = self.header.file_meta_table_offset as usize;
-        let meta_size = self.header.file_meta_table_size as usize;
-        if meta_off + meta_size > self.image.len() {
-            return Err(NxError::InvalidNcaHeader);
-        }
-        let table = &self.image[meta_off..meta_off + meta_size];
+        let table = self.table(
+            self.header.file_meta_table_offset,
+            self.header.file_meta_table_size,
+        )?;
+        let meta_size = table.len();
 
         let mut out = Vec::new();
         let mut visited = std::collections::HashSet::new();
+        // Real entries are disjoint, so their combined footprint can
+        // never exceed the table; an overlapping chain would otherwise
+        // re-copy the same bytes for every visited entry.
+        let mut budget: usize = 0;
         let mut cursor: u32 = 0;
         while (cursor as usize) < meta_size && cursor != INVALID_OFFSET {
             if !visited.insert(cursor) {
@@ -118,6 +128,12 @@ impl<'a> RomfsReader<'a> {
                 break;
             }
             let entry = parse_file_entry(table, cursor as usize)?;
+            budget = budget
+                .checked_add(0x20 + entry.name_length as usize)
+                .ok_or(NxError::InvalidNcaHeader)?;
+            if budget > meta_size {
+                return Err(NxError::InvalidNcaHeader);
+            }
             let next = entry.next_sibling;
             let name_padded = entry.name_length_padded();
             out.push(RomfsFile {
@@ -168,30 +184,44 @@ impl<'a> RomfsReader<'a> {
         parent_dir_offset: u32,
         name: &str,
     ) -> NxResult<Option<RomfsFile>> {
-        let hash_off = self.header.file_hash_table_offset as usize;
-        let hash_size = self.header.file_hash_table_size as usize;
-        if hash_size < 4 || hash_off + hash_size > self.image.len() {
+        if self.header.file_hash_table_size < 4 {
             return Ok(None);
         }
-        let buckets = hash_size / 4;
+        let hash_table = self.table(
+            self.header.file_hash_table_offset,
+            self.header.file_hash_table_size,
+        )?;
+        let buckets = hash_table.len() / 4;
         let bucket = (compute_file_hash(parent_dir_offset, name) as usize) % buckets;
-        let bucket_off = hash_off + bucket * 4;
+        let bucket_off = bucket * 4;
         let mut entry_offset = u32::from_le_bytes([
-            self.image[bucket_off],
-            self.image[bucket_off + 1],
-            self.image[bucket_off + 2],
-            self.image[bucket_off + 3],
+            hash_table[bucket_off],
+            hash_table[bucket_off + 1],
+            hash_table[bucket_off + 2],
+            hash_table[bucket_off + 3],
         ]);
 
-        let meta_off = self.header.file_meta_table_offset as usize;
-        let meta_size = self.header.file_meta_table_size as usize;
-        if meta_off + meta_size > self.image.len() {
-            return Err(NxError::InvalidNcaHeader);
-        }
-        let meta_table = &self.image[meta_off..meta_off + meta_size];
+        let meta_table = self.table(
+            self.header.file_meta_table_offset,
+            self.header.file_meta_table_size,
+        )?;
+        let mut visited = std::collections::HashSet::new();
+        // Real entries are disjoint, so their combined footprint can
+        // never exceed the table; an overlapping chain would otherwise
+        // re-copy the same bytes for every visited entry.
+        let mut budget: usize = 0;
 
         while entry_offset != INVALID_OFFSET {
+            if !visited.insert(entry_offset) {
+                return Err(NxError::InvalidNcaHeader);
+            }
             let entry = parse_file_entry(meta_table, entry_offset as usize)?;
+            budget = budget
+                .checked_add(0x20 + entry.name_length as usize)
+                .ok_or(NxError::InvalidNcaHeader)?;
+            if budget > meta_table.len() {
+                return Err(NxError::InvalidNcaHeader);
+            }
             if entry.parent_dir_offset == parent_dir_offset && entry.name == name {
                 return Ok(Some(RomfsFile {
                     name: entry.name,
@@ -207,13 +237,26 @@ impl<'a> RomfsReader<'a> {
 
     /// Reads a file's raw data bytes out of the image, at
     /// `header.file_data_offset + file.data_offset`.
+    ///
+    /// # Errors
+    /// Returns an error if the file's extent overflows or falls outside
+    /// the image.
     pub fn read_file(&self, file: &RomfsFile) -> NxResult<Vec<u8>> {
-        let start = self.header.file_data_offset + file.data_offset;
-        let end = start + file.data_size;
-        if end > self.image.len() as u64 {
-            return Err(NxError::InvalidNcaHeader);
-        }
-        Ok(self.image[start as usize..end as usize].to_vec())
+        let start = self
+            .header
+            .file_data_offset
+            .checked_add(file.data_offset)
+            .ok_or(NxError::InvalidNcaHeader)?;
+        let end = start
+            .checked_add(file.data_size)
+            .ok_or(NxError::InvalidNcaHeader)?;
+        let start = usize::try_from(start).map_err(|_| NxError::InvalidNcaHeader)?;
+        let end = usize::try_from(end).map_err(|_| NxError::InvalidNcaHeader)?;
+        let data = self
+            .image
+            .get(start..end)
+            .ok_or(NxError::InvalidNcaHeader)?;
+        Ok(data.to_vec())
     }
 }
 
@@ -450,5 +493,97 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn rejects_overflowing_file_extent() {
+        let image = build_test_romfs();
+        let reader = RomfsReader::new(&image).unwrap();
+        let mut file = reader.find_root_file("control.nacp").unwrap().unwrap();
+        file.data_size = u64::MAX;
+        assert!(matches!(
+            reader.read_file(&file),
+            Err(NxError::InvalidNcaHeader)
+        ));
+        file.data_offset = u64::MAX;
+        file.data_size = 0;
+        assert!(matches!(
+            reader.read_file(&file),
+            Err(NxError::InvalidNcaHeader)
+        ));
+    }
+
+    #[test]
+    fn rejects_overflowing_listing_table() {
+        let mut image = build_test_romfs();
+        image[0x30..0x38].copy_from_slice(&0u64.to_le_bytes());
+        image[0x40..0x48].copy_from_slice(&u64::MAX.to_le_bytes());
+        let reader = RomfsReader::new(&image).unwrap();
+        assert!(matches!(
+            reader.list_files(),
+            Err(NxError::InvalidNcaHeader)
+        ));
+        assert!(matches!(
+            reader.find_root_file("control.nacp"),
+            Err(NxError::InvalidNcaHeader)
+        ));
+    }
+
+    #[test]
+    fn rejects_overflowing_hash_lookup_tables() {
+        for size_offset in [0x30, 0x40] {
+            let mut image = build_test_romfs();
+            image[size_offset..size_offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+            let reader = RomfsReader::new(&image).unwrap();
+            assert!(matches!(
+                reader.find_via_hash_table(0, "control.nacp"),
+                Err(NxError::InvalidNcaHeader)
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_self_linked_hash_entry() {
+        let mut image = build_test_romfs();
+        let header = RomfsHeader::parse(&image).unwrap();
+        let hash_offset = header.file_hash_table_offset as usize;
+        let buckets = header.file_hash_table_size as usize / 4;
+        let bucket = compute_file_hash(0, "missing.bin") as usize % buckets;
+        let bucket_offset = hash_offset + bucket * 4;
+        image[bucket_offset..bucket_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+        let next_hash_offset = header.file_meta_table_offset as usize + 0x18;
+        image[next_hash_offset..next_hash_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+        let reader = RomfsReader::new(&image).unwrap();
+        assert!(matches!(
+            reader.find_root_file("missing.bin"),
+            Err(NxError::InvalidNcaHeader)
+        ));
+    }
+
+    #[test]
+    fn rejects_overlapping_stride_four_entries() {
+        let mut image = build_test_romfs();
+        let header = RomfsHeader::parse(&image).unwrap();
+        let base = header.file_meta_table_offset as usize;
+        // Three entries at 0x00/0x04/0x08 overlap, so each u32 word
+        // serves up to three fields at once (e.g. word 0x1c is entry
+        // 0's name_length and entry 4's next_hash). Every parse stays
+        // in bounds, but the claimed extents are mutually exclusive,
+        // so the byte budget trips on the third entry instead of
+        // re-copying the same overlapping bytes.
+        let words: [u32; 10] = [0, 4, 8, 12, 0, 0, 4, 8, 12, 16];
+        for (index, value) in words.iter().enumerate() {
+            let at = base + index * 4;
+            image[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let reader = RomfsReader::new(&image).unwrap();
+        assert!(matches!(
+            reader.list_files(),
+            Err(NxError::InvalidNcaHeader)
+        ));
+        assert!(matches!(
+            reader.find_root_file("control.nacp"),
+            Err(NxError::InvalidNcaHeader)
+        ));
     }
 }
