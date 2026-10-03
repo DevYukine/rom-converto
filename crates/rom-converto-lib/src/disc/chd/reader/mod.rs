@@ -95,6 +95,9 @@ pub(crate) fn open_chd_sync_with_metadata_hash(
     if header.hunk_bytes > CHD_HUNK_BYTES_MAX {
         return Err(ChdError::InvalidHunkSize);
     }
+    if header.unit_bytes == 0 || header.hunk_bytes % header.unit_bytes != 0 {
+        return Err(ChdError::InvalidHunkSize);
+    }
     let hunk_count = u32::try_from(header.logical_bytes.div_ceil(header.hunk_bytes as u64))
         .map_err(|_| ChdError::MapDecompressionError)?;
 
@@ -289,6 +292,38 @@ mod tests {
         let handle = open_chd_sync(&path).unwrap();
         assert!(handle.map.is_empty());
         assert_eq!(handle.header.logical_bytes, 0);
+    }
+
+    #[test]
+    fn rejects_zero_unit_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zero-unit.chd");
+        let mut bytes = minimal_chd(&path, 2048);
+        let mut header = ChdHeaderV5::read(&mut Cursor::new(&bytes)).unwrap();
+        header.unit_bytes = 0;
+        header.write(&mut Cursor::new(&mut bytes)).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(matches!(
+            open_chd_sync(&path),
+            Err(ChdError::InvalidHunkSize)
+        ));
+    }
+
+    #[test]
+    fn rejects_unit_bytes_that_do_not_divide_hunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unaligned-unit.chd");
+        let mut bytes = minimal_chd(&path, 2048);
+        let mut header = ChdHeaderV5::read(&mut Cursor::new(&bytes)).unwrap();
+        header.unit_bytes = 3000;
+        header.write(&mut Cursor::new(&mut bytes)).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(matches!(
+            open_chd_sync(&path),
+            Err(ChdError::InvalidHunkSize)
+        ));
     }
 
     #[test]

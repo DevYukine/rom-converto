@@ -412,14 +412,26 @@ impl HuffmanDecoder {
         // Same canonical-code algorithm as HuffmanEncoder::assign_canonical_codes.
         let mut bithisto = [0u32; BITHISTO_LEN];
         for &bits in bit_lengths.iter() {
-            if (bits as usize) <= CANONICAL_MAX_BITS {
-                bithisto[bits as usize] += 1;
+            if bits > HUFFMAN_MAX_BITS {
+                return Err(ChdError::MapDecompressionError);
+            }
+            bithisto[bits as usize] += 1;
+        }
+
+        let mut curstart = 0u32;
+        for num_bits in 1..=HUFFMAN_MAX_BITS {
+            curstart = (curstart << 1) + bithisto[num_bits as usize];
+            if curstart > 1u32 << num_bits {
+                return Err(ChdError::MapDecompressionError);
             }
         }
 
         let mut curstart = 0u32;
         for codelen in (1..=CANONICAL_MAX_BITS).rev() {
             let nextstart = (curstart + bithisto[codelen]) >> 1;
+            if codelen != 1 && nextstart * 2 != curstart + bithisto[codelen] {
+                return Err(ChdError::MapDecompressionError);
+            }
             bithisto[codelen] = curstart;
             curstart = nextstart;
         }
@@ -444,9 +456,10 @@ impl HuffmanDecoder {
             let shift = HUFFMAN_MAX_BITS - num_bits;
             let base_index = (code as usize) << shift;
             let count = 1usize << shift;
-            for i in 0..count {
-                lookup[base_index + i] = (symbol as u8, num_bits);
-            }
+            lookup
+                .get_mut(base_index..base_index + count)
+                .ok_or(ChdError::MapDecompressionError)?
+                .fill((symbol as u8, num_bits));
         }
 
         Ok(Self { lookup })
@@ -610,7 +623,9 @@ pub(crate) fn decompress_v5_map(
                 }
             }
             COMPRESSION_PARENT_SELF => {
-                let self_unit = (hunknum as u64 * hunk_bytes as u64) / unit_bytes as u64;
+                let self_unit = (hunknum as u64 * hunk_bytes as u64)
+                    .checked_div(unit_bytes as u64)
+                    .ok_or(ChdError::MapDecompressionError)?;
                 last_parent = self_unit;
                 MapEntry {
                     compression: COMPRESSION_PARENT,
@@ -626,7 +641,9 @@ pub(crate) fn decompress_v5_map(
                 crc16: 0,
             },
             COMPRESSION_PARENT_1 => {
-                last_parent += (hunk_bytes / unit_bytes) as u64;
+                last_parent += hunk_bytes
+                    .checked_div(unit_bytes)
+                    .ok_or(ChdError::MapDecompressionError)? as u64;
                 MapEntry {
                     compression: COMPRESSION_PARENT,
                     length: 0,
@@ -732,5 +749,51 @@ mod tests {
         let map_data = vec![0u8; MAP_HEADER_SIZE];
         let result = decompress_v5_map(&map_data, u32::MAX, 2048, 2048);
         assert!(matches!(result, Err(ChdError::MapDecompressionError)));
+    }
+
+    #[test]
+    fn decompress_v5_map_rejects_oversubscribed_huffman_tree() {
+        let compressed = [0x11u8; HUFFMAN_CODES];
+        let mut map_data = vec![0u8; MAP_HEADER_SIZE];
+        BigEndian::write_u32(&mut map_data[..4], compressed.len() as u32);
+        map_data.extend_from_slice(&compressed);
+
+        assert!(matches!(
+            decompress_v5_map(&map_data, 1, 2048, 2048),
+            Err(ChdError::MapDecompressionError)
+        ));
+    }
+
+    #[test]
+    fn decompress_v5_map_rejects_zero_unit_bytes_for_parent_symbols() {
+        for symbol in [COMPRESSION_PARENT_SELF, COMPRESSION_PARENT_1] {
+            let mut codes = [(0u32, 0u8); HUFFMAN_CODES];
+            codes[0] = (0, 1);
+            codes[symbol as usize] = (1, 1);
+            let mut bitbuf = BitWriter::new();
+            export_tree_rle(&mut bitbuf, &codes);
+            bitbuf.write(1 << 7, 8);
+            let compressed = bitbuf.finish();
+            let mut map_data = vec![0u8; MAP_HEADER_SIZE];
+            BigEndian::write_u32(&mut map_data[..4], compressed.len() as u32);
+            map_data.extend_from_slice(&compressed);
+
+            assert!(matches!(
+                decompress_v5_map(&map_data, 1, 2048, 0),
+                Err(ChdError::MapDecompressionError)
+            ));
+        }
+    }
+
+    #[test]
+    fn huffman_decoder_rejects_incomplete_or_overlong_code_lengths() {
+        for length in [2, HUFFMAN_MAX_BITS + 1] {
+            let mut lengths = [0u8; HUFFMAN_CODES];
+            lengths[0] = length;
+            assert!(matches!(
+                HuffmanDecoder::from_bit_lengths(&lengths),
+                Err(ChdError::MapDecompressionError)
+            ));
+        }
     }
 }
