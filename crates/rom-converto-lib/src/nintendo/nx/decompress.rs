@@ -19,7 +19,7 @@ use crate::nintendo::nx::models::hfs0::{
 };
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::ncz::ncz_to_nca;
-use crate::nintendo::nx::util::write_zeros;
+use crate::nintendo::nx::util::{strip_suffix_ignore_case, write_zeros};
 use crate::util::positional_reader::PositionalReader;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
@@ -344,16 +344,6 @@ fn renamed_to_decompressed(name: &str) -> String {
     name.to_string()
 }
 
-fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
-    if s.len() >= suffix.len() {
-        let split = s.len() - suffix.len();
-        if s[split..].eq_ignore_ascii_case(suffix) {
-            return Some(&s[..split]);
-        }
-    }
-    None
-}
-
 fn copy_range<W: Write>(file: &File, abs_offset: u64, size: u64, out: &mut W) -> NxResult<u64> {
     const CHUNK: usize = 4 * 1024 * 1024;
     let mut buf = vec![0u8; CHUNK];
@@ -453,6 +443,11 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::Read;
+
+    #[test]
+    fn renamed_to_decompressed_never_splits_code_points() {
+        assert_eq!(renamed_to_decompressed("éaaaa.ncz"), "éaaaa.nca");
+    }
 
     fn build_synthetic_nca(plaintext_len: usize) -> Vec<u8> {
         const ENC_AES_CTR: u8 = 3;

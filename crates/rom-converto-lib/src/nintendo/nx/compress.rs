@@ -33,7 +33,7 @@ use crate::nintendo::nx::models::nca::{CONTENT_TYPE_PROGRAM, CONTENT_TYPE_PUBLIC
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
 use crate::nintendo::nx::models::ticket::Ticket;
 use crate::nintendo::nx::ncz::compress::{NcaToNczOptions, NczMode, nca_to_ncz};
-use crate::nintendo::nx::util::write_zeros;
+use crate::nintendo::nx::util::{strip_suffix_ignore_case, write_zeros};
 use crate::nintendo::nx::walker::NcaWalker;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
@@ -622,16 +622,6 @@ fn renamed_to_compressed(name: &str) -> String {
     name.to_string()
 }
 
-fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
-    if s.len() >= suffix.len() {
-        let split = s.len() - suffix.len();
-        if s[split..].eq_ignore_ascii_case(suffix) {
-            return Some(&s[..split]);
-        }
-    }
-    None
-}
-
 fn copy_range<W: Write>(file: &File, abs_offset: u64, size: u64, out: &mut W) -> NxResult<u64> {
     const CHUNK: usize = 4 * 1024 * 1024;
     let mut buf = vec![0u8; CHUNK];
@@ -647,4 +637,16 @@ fn copy_range<W: Write>(file: &File, abs_offset: u64, size: u64, out: &mut W) ->
         written += take as u64;
     }
     Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renamed_to_compressed_never_splits_code_points() {
+        // The multibyte prefix sits on no ".cnmt.nca" boundary, so the
+        // rename must fall through to the plain ".nca" strip.
+        assert_eq!(renamed_to_compressed("éaaaa.nca"), "éaaaa.ncz");
+    }
 }

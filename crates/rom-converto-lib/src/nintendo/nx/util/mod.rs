@@ -20,6 +20,13 @@ pub(crate) fn write_zeros<W: Write>(out: &mut W, len: u64) -> NxResult<()> {
     Ok(())
 }
 
+/// Strips an ASCII case-insensitive suffix without splitting a UTF-8 code point.
+pub(crate) fn strip_suffix_ignore_case<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+    let split = s.len().checked_sub(suffix.len())?;
+    let tail = s.get(split..)?;
+    tail.eq_ignore_ascii_case(suffix).then(|| &s[..split])
+}
+
 pub(crate) use pfs0_copy::{Pfs0Source, copy_range, write_pfs0_from_sources};
 
 /// Longest name a PFS0/HFS0 string table entry may hold, in bytes.
@@ -56,6 +63,15 @@ pub(crate) fn read_table_name(table: &[u8], offset: usize, budget: &mut usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_suffix_ignore_case_handles_non_ascii_boundaries() {
+        assert_eq!(strip_suffix_ignore_case("éaaaa.nca", ".cnmt.nca"), None);
+        assert_eq!(
+            strip_suffix_ignore_case("Foo.CNMT.NCA", ".cnmt.nca"),
+            Some("Foo")
+        );
+    }
 
     #[test]
     fn read_table_name_rejects_name_longer_than_limit() {
