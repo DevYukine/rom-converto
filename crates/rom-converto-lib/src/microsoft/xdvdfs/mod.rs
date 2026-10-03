@@ -9,7 +9,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use serde::{Deserialize, Serialize};
 
-pub use dirent::{DirEntry, walk_dir_tables, walk_root_table};
+pub use dirent::{DirEntry, MAX_DIR_DEPTH, walk_dir_tables, walk_root_table};
 pub use error::{XdvdfsError, XdvdfsResult};
 
 /// Bytes per sector, used for every sector-relative address in the format.

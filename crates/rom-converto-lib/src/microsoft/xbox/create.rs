@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::XisoCreateOptions;
 use super::error::{XboxError, XboxResult};
 use crate::microsoft::xdvdfs::{
-    ATTR_ARCHIVE, ATTR_DIRECTORY, SECTOR_SIZE, VOLUME_DESCRIPTOR_SECTOR, VOLUME_MAGIC,
-    XBOX_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables,
+    ATTR_ARCHIVE, ATTR_DIRECTORY, MAX_DIR_DEPTH, SECTOR_SIZE, VOLUME_DESCRIPTOR_SECTOR,
+    VOLUME_MAGIC, XBOX_PROBE_BASES, XdvdfsVolume, data_offset, walk_dir_tables,
 };
 use crate::util::CancelToken;
 use crate::util::Cancelled;
@@ -114,7 +114,7 @@ pub(super) struct PreparedInput {
 
 pub(super) fn prepare_input(input: &Path) -> XboxResult<PreparedInput> {
     let (image, nodes) = if fs::metadata(input)?.is_dir() {
-        (None, scan_dir(input)?)
+        (None, scan_dir(input, 0)?)
     } else {
         let (file, nodes) = scan_image(input)?;
         (Some(file), nodes)
@@ -198,7 +198,12 @@ pub(super) fn create_blocking(
 }
 
 /// Reads a host directory tree, rejecting names the format cannot carry.
-fn scan_dir(dir: &Path) -> XboxResult<Vec<Node>> {
+fn scan_dir(dir: &Path, depth: usize) -> XboxResult<Vec<Node>> {
+    if depth > MAX_DIR_DEPTH {
+        return Err(XboxError::DirectoryTooDeep {
+            path: dir.display().to_string(),
+        });
+    }
     let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
 
@@ -225,7 +230,7 @@ fn scan_dir(dir: &Path) -> XboxResult<Vec<Node>> {
             right: None,
             payload: if meta.is_dir() {
                 Payload::Dir(DirTable {
-                    nodes: scan_dir(&path)?,
+                    nodes: scan_dir(&path, depth + 1)?,
                     ..DirTable::default()
                 })
             } else {
@@ -759,5 +764,19 @@ mod tests {
         lay_out(&mut table, "").unwrap();
         let order: Vec<&str> = table.nodes.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(order, ["high", "A"]);
+    }
+
+    #[test]
+    fn scan_dir_rejects_host_trees_nested_past_the_depth_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut deep = dir.path().to_path_buf();
+        for _ in 0..MAX_DIR_DEPTH + 1 {
+            deep.push("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        assert!(matches!(
+            scan_dir(dir.path(), 0),
+            Err(XboxError::DirectoryTooDeep { .. })
+        ));
     }
 }

@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::microsoft::xdvdfs::XdvdfsError;
+use crate::microsoft::xdvdfs::{MAX_DIR_DEPTH, XdvdfsError};
 
 /// Errors from Original Xbox XISO creation and extraction.
 #[derive(Debug, Error)]
@@ -29,6 +29,9 @@ pub enum XboxError {
         "directory table for {path} needs {used} bytes, past the 262,140 the u16 entry offsets can address"
     )]
     DirTableTooLarge { path: String, used: u64 },
+
+    #[error("directory nesting at {path} exceeds the {MAX_DIR_DEPTH}-level depth cap")]
+    DirectoryTooDeep { path: String },
 
     #[error("image would need {sectors} sectors, past the u32 sector numbers XDVDFS records")]
     ImageTooLarge { sectors: u64 },

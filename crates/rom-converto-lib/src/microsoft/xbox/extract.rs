@@ -81,7 +81,9 @@ pub(super) fn extract_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsoft::xdvdfs::{SECTOR_SIZE, VOLUME_DESCRIPTOR_SECTOR, VOLUME_MAGIC};
+    use crate::microsoft::xdvdfs::{
+        ATTR_DIRECTORY, SECTOR_SIZE, VOLUME_DESCRIPTOR_SECTOR, VOLUME_MAGIC,
+    };
 
     fn build_descriptor(root_sector: u32, root_size: u32) -> Vec<u8> {
         let mut d = vec![0u8; 0x800];
@@ -133,5 +135,67 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, XboxError::UnsafeName { .. }), "{err}");
+    }
+
+    /// A directory dirent whose payload table lives at `child`, named for
+    /// its chain position `i`.
+    fn encode_dir_dirent(child: u32, i: u32) -> Vec<u8> {
+        let name = format!("d{i}");
+        let mut e = Vec::with_capacity(14 + name.len());
+        e.extend_from_slice(&0u16.to_le_bytes()); // left
+        e.extend_from_slice(&0u16.to_le_bytes()); // right
+        e.extend_from_slice(&child.to_le_bytes()); // start_sector
+        e.extend_from_slice(&(SECTOR_SIZE as u32).to_le_bytes()); // size
+        e.push(ATTR_DIRECTORY);
+        e.push(name.len() as u8);
+        e.extend_from_slice(name.as_bytes());
+        e
+    }
+
+    #[test]
+    fn deeply_nested_directory_chain_is_rejected() {
+        // 130 single-entry directories, each in its own sector, ending in an
+        // empty directory: acyclic, so only the depth cap can reject it.
+        const CHAIN: u32 = 130;
+        let root_sector = 40u32;
+        let dir_sector = |i: u32| root_sector + 1 + i;
+
+        let mut image = vec![0u8; ((root_sector + 1 + CHAIN) as u64 * SECTOR_SIZE) as usize];
+        let descriptor_off = (VOLUME_DESCRIPTOR_SECTOR as u64 * SECTOR_SIZE) as usize;
+        image[descriptor_off..descriptor_off + 0x800]
+            .copy_from_slice(&build_descriptor(root_sector, SECTOR_SIZE as u32));
+
+        let mut root = vec![0xFFu8; SECTOR_SIZE as usize];
+        let entry = encode_dir_dirent(dir_sector(0), 0);
+        root[0..entry.len()].copy_from_slice(&entry);
+        let root_off = (root_sector as u64 * SECTOR_SIZE) as usize;
+        image[root_off..root_off + root.len()].copy_from_slice(&root);
+
+        for i in 0..CHAIN {
+            let mut table = vec![0xFFu8; SECTOR_SIZE as usize];
+            if i + 1 < CHAIN {
+                let entry = encode_dir_dirent(dir_sector(i + 1), i + 1);
+                table[0..entry.len()].copy_from_slice(&entry);
+            }
+            let off = (dir_sector(i) as u64 * SECTOR_SIZE) as usize;
+            image[off..off + table.len()].copy_from_slice(&table);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let image_path = dir.path().join("deep.iso");
+        std::fs::write(&image_path, &image).unwrap();
+        let output_dir = dir.path().join("out");
+
+        let err = extract_blocking(
+            &image_path,
+            &output_dir,
+            Arc::new(AtomicU64::new(0)),
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, XboxError::Xdvdfs(XdvdfsError::InvalidDirent { .. })),
+            "{err}"
+        );
     }
 }

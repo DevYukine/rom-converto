@@ -11,6 +11,10 @@ use super::{ATTR_DIRECTORY, XdvdfsVolume, data_offset};
 /// Matches `xbox::create`'s `MAX_DIRTAB_BYTES`.
 const MAX_DIRTAB_SIZE: u32 = 262_140;
 
+/// Deepest directory nesting a walk follows: real images nest only a few
+/// levels; the cap keeps every recursive consumer within a small stack budget.
+pub const MAX_DIR_DEPTH: usize = 128;
+
 /// Unicode codepoints for Windows-1252 bytes 0x80-0x9F, in order.
 /// Undefined positions (0x81, 0x8D, 0x8F, 0x90, 0x9D) map to their C1
 /// control codepoint, matching the WHATWG "windows-1252" encoding used by
@@ -225,6 +229,12 @@ where
             if entry.is_directory() {
                 let mut child_path = path.clone();
                 child_path.push(entry.name_str());
+                if child_path.len() > MAX_DIR_DEPTH {
+                    return Err(XdvdfsError::InvalidDirent {
+                        offset: sector as usize,
+                        reason: "directory nesting too deep",
+                    });
+                }
                 children.push((child_path, entry.start_sector, entry.size));
             }
             visit(&path, entry)
