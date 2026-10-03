@@ -4309,6 +4309,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rsa",
+ "rustix",
  "serde",
  "serde_json",
  "sevenz-rust2",

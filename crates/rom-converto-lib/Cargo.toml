@@ -91,5 +91,11 @@ libz-sys = { version = "^1", features = ["static"] }
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libc = "^0.2"
 
+# organize --clean holds each cleaned directory open and removes its entries
+# descriptor-relative, so a directory swapped for a symlink mid-pass cannot
+# redirect a removal, and backup moves reserve their slot atomically.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "^1.1", features = ["fs"] }
+
 [features]
 ts-export = ["dep:ts-rs"]

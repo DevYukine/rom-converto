@@ -7,10 +7,22 @@ use crate::util::{CancelToken, Cancelled, ConflictPolicy, FileStatus, ProgressRe
 use anyhow::{Context, Result};
 use globset::{GlobSet, GlobSetBuilder};
 #[cfg(unix)]
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
+#[cfg(unix)]
+use rustix::io::Errno;
+#[cfg(unix)]
 use std::collections::HashSet;
 use std::collections::{BTreeSet, HashMap};
+#[cfg(unix)]
+use std::ffi::{OsStr, OsString};
 use std::io::ErrorKind;
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
+use std::os::unix::io::{AsFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
+#[cfg(unix)]
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// Options for cleaning the output directory.
@@ -173,10 +185,158 @@ impl BackupSpot {
     }
 }
 
-/// One stale-file candidate: its path and on-disk size.
+/// One stale-file candidate: its walked spelling (for rows and
+/// `clean_exclude` globs) and its on-disk size, plus on unix the written
+/// dir's root descriptor and the relative chain to the entry, re-opened
+/// at removal so only one fd per written dir stays open across the pass.
 struct Candidate {
     path: PathBuf,
     size: u64,
+    /// The written dir's root descriptor, verified at open: the entry is
+    /// re-anchored through it, never through a re-resolved path.
+    #[cfg(unix)]
+    root: Rc<CleanDir>,
+    /// The component chain from the root to the entry's parent.
+    #[cfg(unix)]
+    parents: Vec<OsString>,
+    /// The entry's name in its parent.
+    #[cfg(unix)]
+    name: OsString,
+    /// The entry's (device, inode) at collection, rechecked before removal.
+    #[cfg(unix)]
+    identity: (u64, u64),
+}
+
+#[cfg(unix)]
+impl Candidate {
+    /// The entry's location: the root's verified canonical spelling with
+    /// the chain and name appended (what a re-opened chain rebuilds).
+    fn location(&self) -> PathBuf {
+        let mut location = self.root.canonical.clone();
+        for name in &self.parents {
+            location.push(name);
+        }
+        location.push(&self.name);
+        location
+    }
+
+    /// Re-opens the entry's parent from the written dir's root descriptor,
+    /// no-follow per component: collection keeps only the root fd alive
+    /// per written dir, so the chain is walked again at removal time.
+    /// `Ok(None)` when a component raced away or became a symlink — the
+    /// entry is then skipped like one that vanished between walk and
+    /// removal.
+    fn open_parent(&self) -> std::io::Result<Option<CleanDir>> {
+        let mut dir = CleanDir {
+            canonical: self.root.canonical.clone(),
+            fd: self.root.fd.as_fd().try_clone_to_owned()?,
+        };
+        for name in &self.parents {
+            match dir.open_child(name)? {
+                Some(child) => dir = child,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(dir))
+    }
+}
+
+/// A cleaned directory held open without following symlinks: its entries
+/// are enumerated, judged, and removed through this descriptor, so a
+/// directory swapped for a symlink after the checks cannot redirect a
+/// removal to wherever the new link points.
+#[cfg(unix)]
+struct CleanDir {
+    /// The directory's canonical path, verified against the descriptor at
+    /// open: a candidate's location is built from it, never re-resolved.
+    canonical: PathBuf,
+    fd: OwnedFd,
+}
+
+#[cfg(unix)]
+impl CleanDir {
+    /// Opens the directory at `path` no-follow. `Ok(None)` when the path
+    /// raced away or is now a symlink — a written directory replaced by a
+    /// link is never entered, its contents belong to the link's target.
+    /// Other errors are the caller's failed clean row.
+    fn open(path: &Path) -> std::io::Result<Option<Self>> {
+        let fd = match rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            // The path is gone, or is now a symlink: platforms disagree
+            // between `ELOOP` and `ENOTDIR` for that refusal.
+            Err(Errno::NOENT | Errno::LOOP | Errno::NOTDIR) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        // The canonical spelling is resolved once, and the descriptor must
+        // still be the directory it names: a swap on either side of the
+        // open is skipped instead of cleaned through a stranger.
+        let canonical = match std::fs::canonicalize(path) {
+            Ok(canonical) => canonical,
+            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let opened = rustix::fs::fstat(&fd)?;
+        let spelled = match rustix::fs::stat(&canonical) {
+            Ok(spelled) => spelled,
+            Err(Errno::NOENT) => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+        if (opened.st_dev, opened.st_ino) != (spelled.st_dev, spelled.st_ino) {
+            return Ok(None);
+        }
+        Ok(Some(Self { canonical, fd }))
+    }
+
+    /// Opens the child directory `name`, no-follow through this (already
+    /// verified) descriptor. `Ok(None)` when the entry raced away or
+    /// became a symlink since the walk read it.
+    fn open_child(&self, name: &OsStr) -> std::io::Result<Option<Self>> {
+        match rustix::fs::openat(
+            &self.fd,
+            name,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => Ok(Some(Self {
+                canonical: self.canonical.join(name),
+                fd,
+            })),
+            // Gone, or now a symlink (`ELOOP`/`ENOTDIR` per platform).
+            Err(Errno::NOENT | Errno::LOOP | Errno::NOTDIR) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// The entry's own metadata: never traverses a symlink, and never
+    /// re-resolves the walked spelling.
+    fn stat(&self, name: &OsStr) -> std::io::Result<Stat> {
+        rustix::fs::statat(&self.fd, name, AtFlags::SYMLINK_NOFOLLOW).map_err(std::io::Error::from)
+    }
+
+    /// The entry's link text, through the held directory.
+    fn link_text(&self, name: &OsStr) -> std::io::Result<PathBuf> {
+        let text =
+            rustix::fs::readlinkat(&self.fd, name, Vec::new()).map_err(std::io::Error::from)?;
+        Ok(PathBuf::from(OsStr::from_bytes(text.to_bytes())))
+    }
+
+    /// Unlinks the entry, whatever kind it is (the link itself, never its
+    /// target).
+    fn unlink(&self, name: &OsStr) -> std::io::Result<()> {
+        rustix::fs::unlinkat(&self.fd, name, AtFlags::empty()).map_err(std::io::Error::from)
+    }
+}
+
+/// `st_dev`/`st_ino` widths differ per platform (`dev_t` is `i32` on
+/// Apple, `u64` on Linux), so the identity is widened explicitly.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_cast)]
+fn stat_identity(meta: &Stat) -> (u64, u64) {
+    (meta.st_dev as u64, meta.st_ino as u64)
 }
 
 /// Removes files under the output directory that this run did not write or
@@ -268,6 +428,8 @@ fn clean_output_pass(
     for dir in written_dirs {
         // A symlinked "written dir" is never entered: its contents belong
         // to whatever the link points at, not to this run's output tree.
+        // (Unix re-checks this atomically at the no-follow open below.)
+        #[cfg(not(unix))]
         if std::fs::symlink_metadata(dir)
             .map(|meta| meta.is_symlink())
             .unwrap_or(false)
@@ -284,7 +446,41 @@ fn clean_output_pass(
         covered.push((dir.clone(), recursive));
         let mut candidates = Vec::new();
         let mut read_errors = Vec::new();
-        collect_candidates(dir, recursive, &mut candidates, &mut read_errors, cancel)?;
+        // The written dir is held open once, no-follow, and verified
+        // against its canonical spelling: it is the root every candidate
+        // is re-anchored through, so a parent replaced by a symlink
+        // mid-pass cannot redirect the removal, and only one fd per
+        // written dir is ever held (the chain re-opens at removal time).
+        #[cfg(unix)]
+        let held = match CleanDir::open(dir) {
+            Ok(Some(held)) => Rc::new(held),
+            Ok(None) => continue,
+            Err(err) => {
+                progress.warn(&format!("could not clean {}: {err}", dir.display()));
+                rows.push(failed_clean_row(dir.clone(), err, dry_run));
+                continue;
+            }
+        };
+        #[cfg(unix)]
+        collect_candidates(
+            dir,
+            &held,
+            &held,
+            &[],
+            recursive,
+            &mut candidates,
+            &mut read_errors,
+            cancel,
+        )?;
+        #[cfg(not(unix))]
+        collect_candidates(
+            dir,
+            None,
+            recursive,
+            &mut candidates,
+            &mut read_errors,
+            cancel,
+        )?;
         // A directory that could not be read is one failed clean row: its
         // contents stay untouched, and the pass continues elsewhere.
         for (path, err) in read_errors {
@@ -295,9 +491,13 @@ fn clean_output_pass(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            // The entry's own location (its canonical parent plus its name)
-            // decides everything below, so a link is judged by where it
-            // sits and its target is never followed.
+            // The entry's own location (the root's verified canonical
+            // spelling plus the chain and name) decides everything below,
+            // so a link is judged by where it sits and its target is never
+            // followed.
+            #[cfg(unix)]
+            let location = candidate.location();
+            #[cfg(not(unix))]
             let location = super::entry_location(&candidate.path);
             if backup
                 .as_ref()
@@ -330,9 +530,33 @@ fn clean_output_pass(
             {
                 continue;
             }
+            // The chain from the written dir's root is re-opened no-follow
+            // now, and the entry is judged and removed through it: every
+            // check below is anchored to descriptors, never to a
+            // re-resolved path.
+            #[cfg(unix)]
+            let held_parent = match candidate.open_parent() {
+                Ok(Some(dir)) => dir,
+                // A component raced away or became a link: the entry is
+                // skipped like one that vanished between walk and removal.
+                Ok(None) => continue,
+                Err(err) => {
+                    progress.warn(&format!(
+                        "could not clean {}: {err}",
+                        candidate.path.display()
+                    ));
+                    rows.push(failed_clean_row(candidate.path.clone(), err, dry_run));
+                    continue;
+                }
+            };
+            #[cfg(unix)]
+            let anchor = Some((&held_parent, candidate.name.as_os_str(), candidate.identity));
+            #[cfg(not(unix))]
+            let anchor = None;
             if let Some(row) = remove_candidate(
                 &candidate.path,
                 candidate.size,
+                anchor,
                 options,
                 &mut backup_made,
                 dry_run,
@@ -456,7 +680,9 @@ fn delete_stale_playlists_pass(
         if glob_matches(&options.exclude, output_dir, path) {
             continue;
         }
-        if let Some(row) = remove_candidate(path, meta.len(), options, &mut backup_made, dry_run) {
+        if let Some(row) =
+            remove_candidate(path, meta.len(), None, options, &mut backup_made, dry_run)
+        {
             if row.status == FileStatus::Failed {
                 progress.warn(&format!(
                     "could not clean {}: {}",
@@ -470,14 +696,46 @@ fn delete_stale_playlists_pass(
     Ok(rows)
 }
 
+/// The walked anchor for descriptor-relative removal: the held directory,
+/// the entry's name in it, and the entry's identity at collection.
+#[cfg(unix)]
+type DirAnchor<'a> = (&'a CleanDir, &'a OsStr, (u64, u64));
+/// No anchor on platforms without directory descriptors: removals and
+/// backup moves go by pathname.
+#[cfg(not(unix))]
+type DirAnchor<'a> = ();
+
+/// Backup slots tried for one name before giving up: the move reserves
+/// each slot atomically, so a hostile backup directory planted with
+/// lookalike names cannot spin the pass; the row reports the failure.
+const BACKUP_SLOT_LIMIT: usize = 1000;
+
+/// True when the anchored entry still is the file the checks judged: a
+/// name replaced (or removed) between the checks and the removal is
+/// skipped, never removed.
+fn entry_unchanged(anchor: Option<DirAnchor<'_>>) -> bool {
+    #[cfg(unix)]
+    if let Some((dir, name, identity)) = anchor {
+        return dir
+            .stat(name)
+            .is_ok_and(|meta| stat_identity(&meta) == identity);
+    }
+    #[cfg(not(unix))]
+    let _ = anchor;
+    true
+}
+
 /// Removes one stale path, or moves it into the backup dir when one is
 /// configured: the one removal step both cleaning passes share. A dry run
-/// only plans the row. `Ok(None)` means the file raced away between walk and
-/// removal: nothing this pass did to it, so it produces no row. A failure is
-/// the caller's failed clean row, never a pass-level abort.
+/// only plans the row. `Ok(None)` means the file raced away between walk
+/// and removal: nothing this pass did to it, so it produces no row. A
+/// failure is the caller's failed clean row, never a pass-level abort. A
+/// walked `anchor` removes the entry through its held directory; anchor
+/// less callers (the stale-playlist pass) remove by pathname.
 fn remove_candidate(
     path: &Path,
     size: u64,
+    anchor: Option<DirAnchor<'_>>,
     options: &CleanOptions,
     backup_made: &mut bool,
     dry_run: bool,
@@ -494,7 +752,8 @@ fn remove_candidate(
                         .planned_backups
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
-                    let target = backup_target(backup, path, &planned, options.backup_folds_case);
+                    let (target, _) =
+                        backup_target(backup, path, &planned, options.backup_folds_case);
                     planned.insert(target.clone());
                     format!("would back up to {}", target.display())
                 }
@@ -502,6 +761,8 @@ fn remove_candidate(
             }),
             None,
         ))
+    } else if !entry_unchanged(anchor) {
+        Ok((None, None))
     } else if let Some(backup) = &options.backup {
         if !*backup_made {
             if let Err(err) = std::fs::create_dir_all(backup)
@@ -513,21 +774,37 @@ fn remove_candidate(
             }
             *backup_made = true;
         }
-        let target = backup_target(backup, path, &BTreeSet::new(), false);
-        match move_to_backup(path, &target) {
-            Ok(BackupOutcome::BackedUp) => Ok((
-                Some(format!("backed up to {}", target.display())),
-                Some(target.clone()),
-            )),
-            // Raced away between walk and backup: already gone.
-            Ok(BackupOutcome::AlreadyGone) => Ok((None, None)),
-            Err(err) => Err(err),
+        // The free-slot probe is only the first guess: the move itself
+        // reserves the slot atomically, and a slot occupied after the
+        // probe comes back as `AlreadyExists` for the next one (the probe
+        // reports its slot, so occupied slots are never re-tried).
+        let (mut target, mut slot) = backup_target(backup, path, &BTreeSet::new(), false);
+        loop {
+            match move_to_backup_held(path, &target, anchor) {
+                Ok(BackupOutcome::BackedUp) => {
+                    break Ok((
+                        Some(format!("backed up to {}", target.display())),
+                        Some(target.clone()),
+                    ));
+                }
+                // Raced away between walk and backup: already gone.
+                Ok(BackupOutcome::AlreadyGone) => break Ok((None, None)),
+                Err(err) if err.kind() == ErrorKind::AlreadyExists && slot < BACKUP_SLOT_LIMIT => {
+                    slot += 1;
+                    target = backup_slot(backup, path, slot);
+                }
+                Err(err) => {
+                    break Err(err).with_context(|| {
+                        format!("backing up {} to {}", path.display(), target.display())
+                    });
+                }
+            }
         }
     } else {
-        match remove_entry(path) {
-            Ok(()) => Ok((Some("deleted".to_string()), None)),
+        match remove_entry_held(path, anchor) {
+            Ok(true) => Ok((Some("deleted".to_string()), None)),
             // Raced away between walk and delete: already gone.
-            Err(err) if err.kind() == ErrorKind::NotFound => Ok((None, None)),
+            Ok(false) => Ok((None, None)),
             Err(err) => Err(err.into()),
         }
     };
@@ -569,12 +846,22 @@ fn failed_clean_row(path: PathBuf, err: impl std::fmt::Display, dry_run: bool) -
 
 /// Gathers the removable entries under `dir`: plain files plus symlinks (the
 /// link itself; its target is never read or touched). Directories descend
-/// only when `recursive`, and symlinked directories are never followed. A
-/// directory that cannot be read is recorded in `errors` (one failed clean
-/// row for the caller) instead of aborting the walk; only cancellation
-/// returns `Err`.
+/// only when `recursive`, and symlinked directories are never followed. On
+/// unix every entry's type, size, and identity come from the held
+/// descriptor (see [`CleanDir`]), so the walked spelling is only reported,
+/// never resolved again; candidates keep only the written dir's root
+/// descriptor (`root`, with the `parents` chain to the entry) and the walk
+/// itself holds `held` just while descending. Elsewhere the entry's own
+/// path is the only handle. A directory that cannot be read is recorded in
+/// `errors` (one failed clean row for the caller) instead of aborting the
+/// walk; only cancellation returns `Err`.
+#[allow(clippy::too_many_arguments)]
 fn collect_candidates(
     dir: &Path,
+    #[cfg(unix)] root: &Rc<CleanDir>,
+    #[cfg(unix)] held: &Rc<CleanDir>,
+    #[cfg(unix)] parents: &[OsString],
+    #[cfg(not(unix))] _held: Option<()>,
     recursive: bool,
     out: &mut Vec<Candidate>,
     errors: &mut Vec<(PathBuf, std::io::Error)>,
@@ -594,19 +881,82 @@ fn collect_candidates(
             return Err(Cancelled.into());
         }
         let Ok(entry) = entry else { continue };
-        let path = entry.path();
-        // symlink_metadata never traverses the link: a symlinked dir stays
-        // unentered and a symlinked file is a candidate as the link itself.
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if meta.is_symlink() || meta.is_file() {
-            out.push(Candidate {
-                path,
-                size: meta.len(),
-            });
-        } else if meta.is_dir() && recursive {
-            collect_candidates(&path, true, out, errors, cancel)?;
+        // Names come from the path walk, but on unix everything below is
+        // decided and done through the held descriptor.
+        #[cfg(unix)]
+        {
+            let name = entry.file_name();
+            let path = dir.join(&name);
+            // The held descriptor decides what the entry is: never a
+            // re-read of the walked spelling.
+            let Ok(meta) = held.stat(&name) else {
+                continue;
+            };
+            let file_type = FileType::from_raw_mode(meta.st_mode);
+            if file_type.is_symlink() || file_type.is_file() {
+                out.push(Candidate {
+                    path,
+                    size: meta.st_size as u64,
+                    root: root.clone(),
+                    parents: parents.to_vec(),
+                    name,
+                    identity: stat_identity(&meta),
+                });
+            } else if file_type.is_dir() && recursive {
+                match held.open_child(&name) {
+                    Ok(Some(child)) => {
+                        let child = Rc::new(child);
+                        let mut child_parents = parents.to_vec();
+                        child_parents.push(name);
+                        collect_candidates(
+                            &path,
+                            root,
+                            &child,
+                            &child_parents,
+                            true,
+                            out,
+                            errors,
+                            cancel,
+                        )?;
+                    }
+                    // The entry became a link (or vanished) since the stat:
+                    // judge it as it is now, never through a re-resolved
+                    // path.
+                    Ok(None) => {
+                        if let Ok(now) = held.stat(&name)
+                            && FileType::from_raw_mode(now.st_mode).is_symlink()
+                        {
+                            out.push(Candidate {
+                                path,
+                                size: now.st_size as u64,
+                                root: root.clone(),
+                                parents: parents.to_vec(),
+                                name,
+                                identity: stat_identity(&now),
+                            });
+                        }
+                    }
+                    Err(err) => errors.push((path, err)),
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let path = entry.path();
+            // symlink_metadata never traverses the link: a symlinked dir
+            // stays unentered and a symlinked file is a candidate as the
+            // link itself.
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_symlink() || meta.is_file() {
+                out.push(Candidate {
+                    path,
+                    size: meta.len(),
+                });
+            } else if meta.is_dir() && recursive {
+                collect_candidates(&path, None, true, out, errors, cancel)?;
+            }
         }
     }
     Ok(())
@@ -701,19 +1051,16 @@ impl KeepSet {
     }
 }
 
-/// The flat backup path for `file`: `name.ext`, or past a collision
-/// (an existing entry or a slot in `planned`) `name (1).ext`,
-/// `name (2).ext`, ...
-fn backup_target(
-    backup_dir: &Path,
-    file: &Path,
-    planned: &BTreeSet<PathBuf>,
-    folds_case: bool,
-) -> PathBuf {
+/// The flat backup path for `file` in slot `slot`: `name.ext`, or
+/// `name (slot).ext` past the first.
+fn backup_slot(backup_dir: &Path, file: &Path, slot: usize) -> PathBuf {
     let name = file
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file");
+    if slot == 0 {
+        return backup_dir.join(name);
+    }
     let stem = Path::new(name)
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -722,8 +1069,22 @@ fn backup_target(
         .extension()
         .map(|ext| format!(".{}", ext.to_string_lossy()))
         .unwrap_or_default();
-    let mut target = backup_dir.join(name);
-    let mut slot = 1;
+    backup_dir.join(format!("{stem} ({slot}){ext}"))
+}
+
+/// The flat backup path for `file`: `name.ext`, or past a collision
+/// (an existing entry or a slot in `planned`) `name (1).ext`,
+/// `name (2).ext`, ... The slot number comes back with the path, so a
+/// collision found on the move continues from the next slot instead of
+/// re-probing occupied ones.
+fn backup_target(
+    backup_dir: &Path,
+    file: &Path,
+    planned: &BTreeSet<PathBuf>,
+    folds_case: bool,
+) -> (PathBuf, usize) {
+    let mut slot = 0;
+    let mut target = backup_slot(backup_dir, file, slot);
     // A dangling link at the slot must count as taken, and so must a slot a
     // dry run already planned.
     let planned_slot = |target: &Path| {
@@ -735,10 +1096,10 @@ fn backup_target(
         }
     };
     while std::fs::symlink_metadata(&target).is_ok() || planned_slot(&target) {
-        target = backup_dir.join(format!("{stem} ({slot}){ext}"));
         slot += 1;
+        target = backup_slot(backup_dir, file, slot);
     }
-    target
+    (target, slot)
 }
 
 /// Outcome of a backup move: whether `file` reached `target`, or had already
@@ -746,6 +1107,7 @@ fn backup_target(
 /// the copy that reads it) counts as gone; a `NotFound` removing the source
 /// after the copy landed still leaves the backup in place, so it counts as
 /// backed up.
+#[derive(Debug)]
 enum BackupOutcome {
     /// The file now sits at the backup target.
     BackedUp,
@@ -758,14 +1120,11 @@ enum BackupOutcome {
 /// parent (exact, because that parent is canonical), and the rest of the
 /// text is appended unchanged, so the backup link keeps naming the same
 /// file without climbing through the original directory.
-fn resolved_link_text(file: &Path, text: &Path) -> PathBuf {
+fn resolved_link_text(canonical_dir: &Path, text: &Path) -> PathBuf {
     if text.is_absolute() {
         return text.to_path_buf();
     }
-    let mut base = super::entry_location(file)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
+    let mut base = canonical_dir.to_path_buf();
     let mut rest = PathBuf::new();
     let mut leading = true;
     for component in text.components() {
@@ -786,38 +1145,80 @@ fn resolved_link_text(file: &Path, text: &Path) -> PathBuf {
 /// Recreates the symlink `file` at `target`, pointing at the same file
 /// (see [`resolved_link_text`]). The link itself is copied, never its
 /// target; a Windows directory link stays a directory link.
+#[cfg(windows)]
 fn recreate_symlink(file: &Path, target: &Path) -> std::io::Result<()> {
-    let points_to = resolved_link_text(file, &std::fs::read_link(file)?);
-    #[cfg(unix)]
+    let points_to = resolved_link_text(
+        &super::entry_location(file)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default(),
+        &std::fs::read_link(file)?,
+    );
+    use std::os::windows::fs::FileTypeExt;
+    if std::fs::symlink_metadata(file)?
+        .file_type()
+        .is_symlink_dir()
     {
-        std::os::unix::fs::symlink(points_to, target)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt;
-        if std::fs::symlink_metadata(file)?
-            .file_type()
-            .is_symlink_dir()
-        {
-            std::os::windows::fs::symlink_dir(points_to, target)
-        } else {
-            std::os::windows::fs::symlink_file(points_to, target)
-        }
+        std::os::windows::fs::symlink_dir(points_to, target)
+    } else {
+        std::os::windows::fs::symlink_file(points_to, target)
     }
 }
 
-/// Removes one candidate entry. A Windows directory link (or junction) is a
-/// directory entry there and goes with `remove_dir`, which removes the link
-/// itself; everything else is a plain `remove_file`.
+/// Removes one candidate entry by pathname. A Windows directory link (or
+/// junction) is a directory entry there and goes with `remove_dir`, which
+/// removes the link itself; everything else is a plain `remove_file`.
+#[cfg(windows)]
 fn remove_entry(path: &Path) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::FileTypeExt;
-        if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink_dir()) {
-            return std::fs::remove_dir(path);
-        }
+    use std::os::windows::fs::FileTypeExt;
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink_dir()) {
+        return std::fs::remove_dir(path);
     }
     std::fs::remove_file(path)
+}
+
+/// Removes one candidate entry, returning `Ok(false)` when nothing was
+/// removed because the entry had already raced away. A walked anchor
+/// unlinks through the held directory (unix); the anchorless unix branch
+/// opens the parent itself, no-follow (as [`move_to_backup_held`] does),
+/// so a parent swapped for a symlink cannot redirect the removal;
+/// elsewhere the removal goes by pathname. A Windows directory link (or
+/// junction) is a directory entry there and goes with `remove_dir`, which
+/// removes the link itself; everything else is a plain `remove_file`.
+fn remove_entry_held(path: &Path, anchor: Option<DirAnchor<'_>>) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        let opened;
+        let (dir, name) = if let Some((dir, name, _)) = anchor {
+            (dir, name)
+        } else {
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            opened = CleanDir::open(parent)?;
+            // Gone, or now a link: whatever sits behind it is unreachable
+            // without traversing, so nothing was removed.
+            match opened.as_ref() {
+                Some(dir) => (dir, path.file_name().unwrap_or_default()),
+                None => return Ok(false),
+            }
+        };
+        match dir.unlink(name) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = anchor;
+        match remove_entry(path) {
+            Ok(()) => Ok(true),
+            Err(err) if err.kind() == ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 /// Moves `file` to `target`. A regular file is renamed, or copied and
@@ -825,40 +1226,244 @@ fn remove_entry(path: &Path) -> std::io::Result<()> {
 /// text is absolute is renamed too (the text stays correct, and no symlink
 /// privilege is needed); a relative one is recreated at `target` with the
 /// text resolved from its original directory and the original removed,
-/// never copied through. `target` is always the path the backup ends up at.
-fn move_to_backup(file: &Path, target: &Path) -> Result<BackupOutcome> {
-    let is_link = std::fs::symlink_metadata(file).is_ok_and(|meta| meta.is_symlink());
-    let relative_link = is_link && std::fs::read_link(file).is_ok_and(|text| text.is_relative());
-    if !relative_link && std::fs::rename(file, target).is_ok() {
-        return Ok(BackupOutcome::BackedUp);
+/// never copied through. `target` is always the path the backup ends up
+/// at. A walked `anchor` (unix) does every lookup descriptor-relative and
+/// reserves the destination atomically: a slot occupied after the
+/// free-slot probe fails with `AlreadyExists` instead of replacing or
+/// writing through whatever appeared there.
+fn move_to_backup_held(
+    file: &Path,
+    target: &Path,
+    anchor: Option<DirAnchor<'_>>,
+) -> std::io::Result<BackupOutcome> {
+    #[cfg(unix)]
+    {
+        if let Some((dir, name, _)) = anchor {
+            return move_to_backup_at(dir, name, target);
+        }
+        // No walked anchor: open the parent once, no-follow, so a parent
+        // swapped for a symlink cannot redirect the move.
+        let parent = file
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let dir = match CleanDir::open(parent) {
+            Ok(Some(dir)) => dir,
+            // Gone, or now a link: the outcome depends on the file itself.
+            Ok(None) => {
+                return if std::fs::symlink_metadata(file).is_err() {
+                    Ok(BackupOutcome::AlreadyGone)
+                } else {
+                    Err(std::io::Error::new(
+                        ErrorKind::NotFound,
+                        format!("no directory at {}", parent.display()),
+                    ))
+                };
+            }
+            Err(err) => return Err(err),
+        };
+        let name = file.file_name().unwrap_or_default();
+        move_to_backup_at(&dir, name, target)
     }
-    if is_link {
-        if let Err(err) = recreate_symlink(file, target) {
-            if err.kind() == ErrorKind::NotFound && std::fs::symlink_metadata(file).is_err() {
+    #[cfg(not(unix))]
+    {
+        let _ = anchor;
+        let is_link = std::fs::symlink_metadata(file).is_ok_and(|meta| meta.is_symlink());
+        let relative_link =
+            is_link && std::fs::read_link(file).is_ok_and(|text| text.is_relative());
+        if !relative_link && std::fs::rename(file, target).is_ok() {
+            return Ok(BackupOutcome::BackedUp);
+        }
+        if is_link {
+            if let Err(err) = recreate_symlink(file, target) {
+                if err.kind() == ErrorKind::NotFound && std::fs::symlink_metadata(file).is_err() {
+                    return Ok(BackupOutcome::AlreadyGone);
+                }
+                return Err(err);
+            }
+        } else {
+            let mut src = match std::fs::File::open(file) {
+                Ok(src) => src,
+                // Only a source that is really gone (it raced away before
+                // the copy could read it) is nothing to back up; a
+                // `NotFound` with the source still present names the backup
+                // side, and is a failure the row must report.
+                Err(err)
+                    if err.kind() == ErrorKind::NotFound
+                        && std::fs::symlink_metadata(file).is_err() =>
+                {
+                    return Ok(BackupOutcome::AlreadyGone);
+                }
+                Err(err) => return Err(err),
+            };
+            // The destination only opens as a fresh reservation: a slot
+            // occupied after the free-slot probe is refused, never
+            // written through.
+            if let Err(err) = copy_to_reserved(&mut src, target) {
+                if err.kind() == ErrorKind::NotFound && std::fs::symlink_metadata(file).is_err() {
+                    return Ok(BackupOutcome::AlreadyGone);
+                }
+                return Err(err);
+            }
+        }
+        // A `NotFound` here is the source vanishing after the copy landed:
+        // the backup exists, so the move still counts as done.
+        if let Err(err) = remove_entry(file)
+            && err.kind() != ErrorKind::NotFound
+        {
+            return Err(err);
+        }
+        Ok(BackupOutcome::BackedUp)
+    }
+}
+
+/// The unix core of a backup move for the entry `name` in the held
+/// directory `dir` (see [`move_to_backup_held`]). Same-filesystem moves
+/// use a no-replace rename; filesystems without one fall back to a plain
+/// rename whose failure decides. Cross-filesystem moves copy the open
+/// source into a destination reserved with `create_new`, so a name planted
+/// after the free-slot probe is never written through.
+#[cfg(unix)]
+fn move_to_backup_at(
+    dir: &CleanDir,
+    name: &OsStr,
+    target: &Path,
+) -> std::io::Result<BackupOutcome> {
+    let meta = match dir.stat(name) {
+        Ok(meta) => meta,
+        // Raced away between walk and backup: already gone.
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(BackupOutcome::AlreadyGone),
+        Err(err) => return Err(err),
+    };
+    let is_link = FileType::from_raw_mode(meta.st_mode).is_symlink();
+    let relative_link = is_link
+        && match dir.link_text(name) {
+            Ok(text) => text.is_relative(),
+            Err(err) if err.kind() == ErrorKind::NotFound => {
                 return Ok(BackupOutcome::AlreadyGone);
             }
-            return Err(err)
-                .with_context(|| format!("backing up {} to {}", file.display(), target.display()));
+            Err(err) => return Err(err),
+        };
+    if !relative_link {
+        match rustix::fs::renameat_with(
+            &dir.fd,
+            name,
+            rustix::fs::CWD,
+            target,
+            RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => return Ok(BackupOutcome::BackedUp),
+            // The slot was occupied after the probe: the caller retries the
+            // next one. The reservation is the real check.
+            Err(Errno::EXIST) => return Err(ErrorKind::AlreadyExists.into()),
+            // Backup dir on another filesystem: copy below.
+            Err(Errno::XDEV) => {}
+            // No no-replace rename on this filesystem: a plain rename's
+            // failure decides. (Apple reports ENOTSUP as `NOTSUP`,
+            // distinct from `OPNOTSUPP`; elsewhere the two are one value,
+            // so the guard form avoids an unreachable-pattern lint.)
+            Err(err)
+                if matches!(err, Errno::NOSYS | Errno::INVAL | Errno::OPNOTSUPP)
+                    || err == Errno::NOTSUP =>
+            {
+                return match rustix::fs::renameat(&dir.fd, name, rustix::fs::CWD, target) {
+                    Ok(()) => Ok(BackupOutcome::BackedUp),
+                    Err(err) => backup_move_raced(dir, name, err.into()),
+                };
+            }
+            Err(err) => return backup_move_raced(dir, name, err.into()),
         }
-    } else if let Err(err) = std::fs::copy(file, target) {
-        // Only a source that is really gone (it raced away before the copy
-        // could read it) is nothing to back up; a NotFound with the source
-        // still present names the backup side, and is a failure the row
-        // must report.
-        if err.kind() == ErrorKind::NotFound && std::fs::symlink_metadata(file).is_err() {
-            return Ok(BackupOutcome::AlreadyGone);
+    }
+    if is_link {
+        let text = match dir.link_text(name) {
+            Ok(text) => text,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Ok(BackupOutcome::AlreadyGone);
+            }
+            Err(err) => return Err(err),
+        };
+        let points_to = resolved_link_text(&dir.canonical, &text);
+        // A symlink refuses an existing target: an occupied slot comes
+        // back as `AlreadyExists` for the next-slot retry.
+        if let Err(err) = std::os::unix::fs::symlink(&points_to, target) {
+            return backup_move_raced(dir, name, err);
         }
-        return Err(err)
-            .with_context(|| format!("backing up {} to {}", file.display(), target.display()));
+        remove_moved_source(dir, name)?;
+        return Ok(BackupOutcome::BackedUp);
     }
-    // A NotFound here is the source vanishing after the copy landed: the
-    // backup exists, so the move still counts as done.
-    if let Err(err) = remove_entry(file)
-        && err.kind() != ErrorKind::NotFound
-    {
-        return Err(err).with_context(|| format!("removing backed up {}", file.display()));
-    }
+    // Cross-filesystem copy: the source opens no-follow through the held
+    // directory, the destination only as a fresh reservation.
+    let mut src = match rustix::fs::openat(
+        &dir.fd,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    ) {
+        Ok(fd) => std::fs::File::from(fd),
+        // The entry became a link after the stat: back up the link.
+        Err(Errno::LOOP) => {
+            let text = match dir.link_text(name) {
+                Ok(text) => text,
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    return Ok(BackupOutcome::AlreadyGone);
+                }
+                Err(err) => return Err(err),
+            };
+            let points_to = resolved_link_text(&dir.canonical, &text);
+            if let Err(err) = std::os::unix::fs::symlink(&points_to, target) {
+                return backup_move_raced(dir, name, err);
+            }
+            remove_moved_source(dir, name)?;
+            return Ok(BackupOutcome::BackedUp);
+        }
+        Err(err) => return backup_move_raced(dir, name, err.into()),
+    };
+    // An occupied slot comes back as `AlreadyExists` for the next-slot
+    // retry; any other failure names the backup side (the source is open,
+    // so it exists) and is a failure the row reports.
+    copy_to_reserved(&mut src, target)?;
+    remove_moved_source(dir, name)?;
     Ok(BackupOutcome::BackedUp)
+}
+
+/// A `NotFound` on a backup move counts as already gone only when the held
+/// entry itself is gone; a `NotFound` naming the backup side is a failure
+/// the row must report.
+#[cfg(unix)]
+fn backup_move_raced(
+    dir: &CleanDir,
+    name: &OsStr,
+    err: std::io::Error,
+) -> std::io::Result<BackupOutcome> {
+    if err.kind() == ErrorKind::NotFound && dir.stat(name).is_err() {
+        Ok(BackupOutcome::AlreadyGone)
+    } else {
+        Err(err)
+    }
+}
+
+/// Removes the moved source once the backup holds the entry. A `NotFound`
+/// is the source vanishing after the move landed: still a done move.
+#[cfg(unix)]
+fn remove_moved_source(dir: &CleanDir, name: &OsStr) -> std::io::Result<()> {
+    match dir.unlink(name) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
+}
+
+/// Copies `src` into a freshly created file at `target`: the destination is
+/// reserved atomically by its `create_new` open, so a name planted after
+/// the free-slot probe is refused instead of written through, and the
+/// copy's permissions come from the open source, not a re-read of the path.
+fn copy_to_reserved(src: &mut std::fs::File, target: &Path) -> std::io::Result<()> {
+    let mut dst = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)?;
+    std::io::copy(src, &mut dst)?;
+    dst.set_permissions(src.metadata()?.permissions())
 }
 
 /// Deletes source directories emptied by `move_source`, returning the removed
@@ -986,7 +1591,7 @@ mod tests {
         let live = write(out.path().join("Game.zip"), b"payload");
         let target = backup.path().join("Game.zip");
         assert!(matches!(
-            move_to_backup(&live, &target).unwrap(),
+            move_to_backup_held(&live, &target, None).unwrap(),
             BackupOutcome::BackedUp
         ));
         assert_eq!(fs::read(&target).unwrap(), b"payload");
@@ -995,7 +1600,7 @@ mod tests {
         // A vanished source counts as already gone: nothing was backed up.
         let gone = out.path().join("Raced.zip");
         assert!(matches!(
-            move_to_backup(&gone, &backup.path().join("Raced.zip")).unwrap(),
+            move_to_backup_held(&gone, &backup.path().join("Raced.zip"), None).unwrap(),
             BackupOutcome::AlreadyGone
         ));
         assert!(!backup.path().join("Raced.zip").exists());
@@ -1041,6 +1646,55 @@ mod tests {
         assert!(!deep.exists());
         assert!(gba.exists());
         assert!(root_stale.exists());
+    }
+
+    /// A stale file in every one of hundreds of subdirectories of one
+    /// written dir still cleans: the candidates hold only the written
+    /// dir's own descriptor and re-open their parent chain at removal, so
+    /// hundreds of directories do not mean hundreds of descriptors at
+    /// once (under a default 256 soft fd limit the per-candidate held
+    /// directories of the previous scheme hit EMFILE here).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleans_stale_files_spread_over_hundreds_of_directories() {
+        let out = tempfile::tempdir().unwrap();
+        let written_dir = out.path().join("GBA");
+        for i in 0..400 {
+            write(
+                written_dir.join(format!("d{i:03}")).join("Stale.zip"),
+                b"stale",
+            );
+        }
+        let mut written = BTreeSet::new();
+        written.insert(written_dir.clone());
+
+        let rows = clean_output(
+            out.path(),
+            &written,
+            keep_set(&[]),
+            Path::new("/disjoint-input-root"),
+            &options(&[], None),
+            ConflictPolicy::Error,
+            false,
+            &RecordingProgress::default(),
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 400);
+        assert!(
+            rows.iter().all(|row| row.status == FileStatus::Ok),
+            "every clean must land, none may fail"
+        );
+        for i in 0..400 {
+            assert!(
+                !written_dir
+                    .join(format!("d{i:03}"))
+                    .join("Stale.zip")
+                    .exists()
+            );
+        }
     }
 
     /// The accidental-destruction guard: with nothing written this run
@@ -1558,13 +2212,14 @@ mod tests {
     fn backup_target_never_reuses_a_dangling_slot() {
         let dir = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(dir.path().join("gone"), dir.path().join("Old.zip")).unwrap();
-        let target = backup_target(
+        let (target, slot) = backup_target(
             dir.path(),
             Path::new("/elsewhere/Old.zip"),
             &BTreeSet::new(),
             false,
         );
         assert_eq!(target, dir.path().join("Old (1).zip"));
+        assert_eq!(slot, 1);
     }
 
     /// A planned dry-run slot counts as taken: `Old.zip` is skipped for
@@ -1576,19 +2231,121 @@ mod tests {
         let planned = BTreeSet::from([dir.path().join("Old.zip")]);
         let file = Path::new("/elsewhere/Old.zip");
         assert_eq!(
-            backup_target(dir.path(), file, &planned, false),
+            backup_target(dir.path(), file, &planned, false).0,
             dir.path().join("Old (1).zip")
         );
         let lower = Path::new("/elsewhere/old.zip");
         assert_eq!(
-            backup_target(dir.path(), lower, &planned, false),
+            backup_target(dir.path(), lower, &planned, false).0,
             dir.path().join("old.zip"),
             "a case-sensitive volume keeps the two apart"
         );
         assert_eq!(
-            backup_target(dir.path(), lower, &planned, true),
+            backup_target(dir.path(), lower, &planned, true).0,
             dir.path().join("old (1).zip"),
             "a case-folding volume names the same slot"
+        );
+    }
+
+    /// A backup slot occupied after the free-slot probe is never replaced
+    /// or written through: the move refuses with `AlreadyExists` (the
+    /// next-slot retry signal), the occupant — here a symlink to a victim
+    /// file — keeps its victim untouched, and the retry lands the file in
+    /// the next slot.
+    #[cfg(unix)]
+    #[test]
+    fn a_planted_symlink_at_a_backup_slot_is_never_written_through() {
+        let out = tempfile::tempdir().unwrap();
+        let victim_dir = tempfile::tempdir().unwrap();
+        let victim = write(victim_dir.path().join("victim.gba"), b"victim");
+        let backup = out.path().join("backup");
+        let planted = backup.join("Old.zip");
+        fs::create_dir_all(&backup).unwrap();
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
+
+        // The race window: the slot is occupied after `backup_target`'s
+        // probe chose it, so the move is called on the occupied name.
+        let file = write(out.path().join("GBA").join("Old.zip"), b"stale");
+        assert!(
+            matches!(
+                move_to_backup_held(&file, &planted, None)
+                    .unwrap_err()
+                    .kind(),
+                ErrorKind::AlreadyExists
+            ),
+            "an occupied slot is refused"
+        );
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"victim",
+            "the victim behind the planted link is untouched"
+        );
+        assert!(
+            fs::symlink_metadata(&planted)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the occupant stays in its slot"
+        );
+        assert!(file.exists(), "the source is untouched by the refused move");
+
+        // The retry loop then reserves the next slot atomically: the file
+        // lands there, and the victim is still untouched.
+        let mut backup_made = false;
+        let row = remove_candidate(
+            &file,
+            5,
+            None,
+            &options(&[], Some(&backup)),
+            &mut backup_made,
+            false,
+        )
+        .unwrap();
+        let landed = backup.join("Old (1).zip");
+        assert_eq!(row.output.as_deref(), Some(landed.as_path()), "{row:?}");
+        assert_eq!(fs::read(&landed).unwrap(), b"stale");
+        assert!(!file.exists());
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"victim",
+            "the victim survives the whole backup"
+        );
+    }
+
+    /// The cross-filesystem fallback copies through a reserved destination:
+    /// `create_new` refuses an occupied slot (the next-slot retry signal)
+    /// without touching the occupant, and a free slot receives the open
+    /// source's contents and permissions.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_reservation_refuses_an_occupied_slot_and_copies_through() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let src = write(dir.path().join("Old.zip"), b"payload");
+        fs::set_permissions(&src, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut src_file = fs::File::open(&src).unwrap();
+
+        let occupied = write(dir.path().join("taken.zip"), b"mine");
+        assert!(matches!(
+            copy_to_reserved(&mut src_file, &occupied)
+                .unwrap_err()
+                .kind(),
+            ErrorKind::AlreadyExists
+        ));
+        assert_eq!(
+            fs::read(&occupied).unwrap(),
+            b"mine",
+            "the occupant is untouched"
+        );
+
+        let free = dir.path().join("free.zip");
+        copy_to_reserved(&mut src_file, &free).unwrap();
+        assert_eq!(fs::read(&free).unwrap(), b"payload");
+        assert_eq!(
+            fs::metadata(&free).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "permissions travel from the open source"
         );
     }
 
@@ -2120,13 +2877,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = write(dir.path().join("Old.zip"), b"stale");
         let target = dir.path().join("no-such-dir").join("Old.zip");
-        assert!(move_to_backup(&file, &target).is_err());
+        assert!(move_to_backup_held(&file, &target, None).is_err());
         assert!(file.exists(), "the file stays");
 
         // Only a source that is really gone counts as already gone.
         std::fs::remove_file(&file).unwrap();
         assert!(matches!(
-            move_to_backup(&file, &target),
+            move_to_backup_held(&file, &target, None),
             Ok(BackupOutcome::AlreadyGone)
         ));
     }
@@ -2141,12 +2898,12 @@ mod tests {
         let link = dir.path().join("Old.zip");
         std::os::unix::fs::symlink("../elsewhere.gba", &link).unwrap();
         let target = dir.path().join("no-such-dir").join("Old.zip");
-        assert!(move_to_backup(&link, &target).is_err());
+        assert!(move_to_backup_held(&link, &target, None).is_err());
         assert!(fs::symlink_metadata(&link).is_ok(), "the link stays");
 
         std::fs::remove_file(&link).unwrap();
         assert!(matches!(
-            move_to_backup(&link, &target),
+            move_to_backup_held(&link, &target, None),
             Ok(BackupOutcome::AlreadyGone)
         ));
     }
@@ -2166,7 +2923,7 @@ mod tests {
         let target = dir.path().join("bak").join("Old.zip");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         assert!(matches!(
-            move_to_backup(&link, &target),
+            move_to_backup_held(&link, &target, None),
             Ok(BackupOutcome::BackedUp)
         ));
         assert_eq!(fs::symlink_metadata(&target).unwrap().ino(), inode);
