@@ -359,16 +359,38 @@ impl ZArchiveReader {
     }
 }
 
+/// Blocks are at most 64 KiB, so 8 MiB caps the transient decode window far below the 128 MiB default.
+const ZSTD_WINDOW_LOG_MAX: u32 = 23;
+
 fn decode_compressed_block(bytes: &[u8]) -> WupResult<Vec<u8>> {
     // Try the bounded bulk decompressor first: it skips growing an
     // output buffer for the common single-frame, <=64 KiB case. A
     // block can also be several concatenated frames (or a skippable
     // frame first), which the bulk decompressor can't handle; on any
-    // error fall back to the streaming decoder, matching develop's
-    // unconditional `decode_all` semantics exactly, error included.
-    zstd::bulk::decompress(bytes, COMPRESSED_BLOCK_SIZE)
-        .or_else(|_| zstd::stream::decode_all(std::io::Cursor::new(bytes)))
-        .map_err(|e| WupError::InvalidZArchive(format!("zstd decode: {}", e)))
+    // error fall back to a streaming decoder whose total output is
+    // capped at COMPRESSED_BLOCK_SIZE + 1 so oversize blocks are
+    // rejected instead of materialized.
+    match zstd::bulk::decompress(bytes, COMPRESSED_BLOCK_SIZE) {
+        Ok(out) => Ok(out),
+        Err(_) => {
+            let mut out = Vec::with_capacity(COMPRESSED_BLOCK_SIZE);
+            let mut decoder = zstd::stream::read::Decoder::new(std::io::Cursor::new(bytes))
+                .map_err(|e| WupError::InvalidZArchive(format!("zstd decode: {}", e)))?;
+            decoder
+                .window_log_max(ZSTD_WINDOW_LOG_MAX)
+                .map_err(|e| WupError::InvalidZArchive(format!("zstd decode: {}", e)))?;
+            let mut decoder = decoder.take(COMPRESSED_BLOCK_SIZE as u64 + 1);
+            decoder
+                .read_to_end(&mut out)
+                .map_err(|e| WupError::InvalidZArchive(format!("zstd decode: {}", e)))?;
+            if out.len() > COMPRESSED_BLOCK_SIZE {
+                return Err(WupError::InvalidZArchive(
+                    "zstd block exceeds logical block size".into(),
+                ));
+            }
+            Ok(out)
+        }
+    }
 }
 
 fn validate_section(section: Section, archive_len: u64) -> WupResult<()> {
@@ -486,13 +508,37 @@ mod tests {
     }
 
     #[test]
-    fn compressed_block_larger_than_logical_block_is_decoded() {
+    fn compressed_block_larger_than_logical_block_is_rejected() {
         let data: Vec<u8> = (0..=u8::MAX)
             .cycle()
             .take(COMPRESSED_BLOCK_SIZE + 1)
             .collect();
         let compressed = zstd::bulk::compress(&data, 1).unwrap();
-        assert_eq!(decode_compressed_block(&compressed).unwrap(), data);
+        assert!(matches!(
+            decode_compressed_block(&compressed),
+            Err(WupError::InvalidZArchive(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_highly_compressible_frame_is_rejected_within_block_bound() {
+        // 4 MiB of zeros compresses far below the 64 KiB stored-block
+        // budget, so a hostile block passes the compressed-size checks
+        // while demanding a huge output. The streaming fallback reads
+        // at most COMPRESSED_BLOCK_SIZE + 1 bytes before rejecting, so
+        // the full frame is never materialized.
+        let data = vec![0u8; 4 * 1024 * 1024];
+        let compressed = zstd::bulk::compress(&data, 1).unwrap();
+        assert!(compressed.len() <= COMPRESSED_BLOCK_SIZE);
+        match decode_compressed_block(&compressed) {
+            Err(WupError::InvalidZArchive(msg)) => {
+                assert_eq!(msg, "zstd block exceeds logical block size");
+            }
+            other => panic!(
+                "expected oversize block rejection, got {:?}",
+                other.as_ref().map(|v| v.len())
+            ),
+        }
     }
 
     #[test]
