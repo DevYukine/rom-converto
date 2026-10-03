@@ -1,0 +1,44 @@
+name: Format request
+description: Ask for support of a new console, file format, or conversion.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [docs/formats.md](https://github.com/DevYukine/rom-converto/blob/develop/docs/formats.md) and the [open issues](https://github.com/DevYukine/rom-converto/issues) first. A spec or a reference implementation is what makes a format feasible, so links matter more than anything else here.
+  - type: input
+    id: console
+    attributes:
+      label: Console
+      placeholder: Nintendo 3DS
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: Format and extension
+      placeholder: Azahar bundle (.bcia, .bcci, .bcxi)
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Direction
+      multiple: true
+      options:
+        - Read it as input
+        - Write it as output
+        - Inspect or verify it
+        - Organize and DAT-match it
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: Specification or reference implementation
+      description: Links to a format spec, a tool that reads or writes it, or an emulator that loads it. Say so if you know of none.
+  - type: textarea
+    id: use
+    attributes:
+      label: Why it matters
+      description: Which emulator, loader, or workflow needs this format?

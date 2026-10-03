@@ -1,0 +1,62 @@
+name: Bug report
+description: A command fails, produces a wrong file, or the app misbehaves.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the [open issues](https://github.com/DevYukine/rom-converto/issues) first. Do not attach ROMs, keys, or other copyrighted files. Logs and commands contain local paths; replace anything private.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, and what went wrong? Paste the error text if there is one. In the desktop app, the failed item shows it.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact CLI command, if the problem involves one. Each page of the desktop app shows the equivalent command once a file is staged. For the library or FFI, paste the JSON request instead.
+      placeholder: rom-converto chd compress "Game (USA).cue" --output-dir out
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+      description: What should have happened instead? If another tool handles the same file, say which one.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `rom-converto --version`, or the version in the app title bar.
+      placeholder: 0.23.2
+    validations:
+      required: true
+  - type: dropdown
+    id: interface
+    attributes:
+      label: Interface
+      options:
+        - CLI
+        - Desktop app
+        - Library or FFI
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and CPU
+      placeholder: Windows 11 x64, macOS 15 arm64, Ubuntu 24.04 x64
+    validations:
+      required: true
+  - type: input
+    id: format
+    attributes:
+      label: Console and format
+      description: Describe the input file without uploading it. The DAT name works well.
+      placeholder: PS1, Redump .cue/.bin, 2 tracks, 650 MB
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Rerun the CLI command with `-vv` and paste the output inside a code block, or attach a `--debug-log log.txt` file. Batch runs can attach the `--report report.json` file. Desktop app users can rerun the page's command with the CLI, which is a separate download from Releases.

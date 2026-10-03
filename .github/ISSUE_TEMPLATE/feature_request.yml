@@ -1,0 +1,37 @@
+name: Feature request
+description: Suggest a new option, command, or improvement to the app.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a new input or output format, use the [format request](https://github.com/DevYukine/rom-converto/issues/new?template=format_request.yml) instead. Search the [open issues](https://github.com/DevYukine/rom-converto/issues) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How should it work? A sample command line or a short description of the GUI change is enough.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - CLI
+        - Desktop app
+        - Library or FFI
+        - Organize or DAT scanning
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or other tools that already do this.
