@@ -11,6 +11,7 @@ use byteorder::{LE, ReadBytesExt, WriteBytesExt};
 
 use crate::nintendo::nx::constants::{PFS0_ENTRY_SIZE, PFS0_HEADER_SIZE, PFS0_MAGIC};
 use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::nintendo::nx::util::read_table_name;
 
 /// One decoded PFS0 entry: name, offset relative to
 /// `Pfs0::data_section_offset`, and size.
@@ -34,6 +35,10 @@ pub struct Pfs0 {
 impl Pfs0 {
     /// Parse the PFS0 container at the current reader position. After
     /// the call the reader is left positioned at `data_section_offset`.
+    ///
+    /// Returns [`NxError::InvalidStringTable`] for invalid name offsets,
+    /// names longer than 1024 bytes, or aggregate name bytes exceeding
+    /// the string table's byte length.
     pub fn read<R: Read + Seek>(reader: &mut R) -> NxResult<Self> {
         let header_pos = reader.stream_position()?;
 
@@ -78,14 +83,18 @@ impl Pfs0 {
         let data_section_offset = header_pos + header_total;
         reader.seek(SeekFrom::Start(data_section_offset))?;
 
+        let mut total = 0usize;
         let files = entries
             .into_iter()
-            .map(|(data_offset, size, name_offset)| Pfs0FileRef {
-                name: read_c_string(&string_table, name_offset as usize),
-                data_offset,
-                size,
+            .map(|(data_offset, size, name_offset)| {
+                let name = read_table_name(&string_table, name_offset as usize, &mut total)?;
+                Ok(Pfs0FileRef {
+                    name,
+                    data_offset,
+                    size,
+                })
             })
-            .collect();
+            .collect::<NxResult<Vec<_>>>()?;
 
         Ok(Self {
             files,
@@ -187,15 +196,6 @@ pub struct Pfs0EntryRecord {
     pub name_offset: u32,
 }
 
-fn read_c_string(table: &[u8], offset: usize) -> String {
-    let end = table[offset..]
-        .iter()
-        .position(|&b| b == 0)
-        .map(|n| offset + n)
-        .unwrap_or(table.len());
-    String::from_utf8_lossy(&table[offset..end]).into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,6 +260,33 @@ mod tests {
         let mut cur = Cursor::new(blob);
         let err = Pfs0::read(&mut cur).unwrap_err();
         assert!(matches!(err, NxError::IncompleteSection));
+    }
+
+    #[test]
+    fn rejects_name_offset_beyond_string_table() {
+        let mut blob = write_pfs0_blob(&[("a.nca", b"")]);
+        let offset_pos = PFS0_HEADER_SIZE + 16;
+        blob[offset_pos..offset_pos + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            Pfs0::read(&mut Cursor::new(blob)),
+            Err(NxError::InvalidStringTable)
+        ));
+    }
+
+    #[test]
+    fn rejects_shared_names_exceeding_string_table() {
+        let mut blob = write_pfs0_blob(&[("shared", b"".as_slice()); 8]);
+        let table_pos = PFS0_HEADER_SIZE + 8 * PFS0_ENTRY_SIZE;
+        blob[8..12].copy_from_slice(&16u32.to_le_bytes());
+        blob.truncate(table_pos + 16);
+        for i in 0..8 {
+            let offset_pos = PFS0_HEADER_SIZE + i * PFS0_ENTRY_SIZE + 16;
+            blob[offset_pos..offset_pos + 4].copy_from_slice(&0u32.to_le_bytes());
+        }
+        assert!(matches!(
+            Pfs0::read(&mut Cursor::new(blob)),
+            Err(NxError::InvalidStringTable)
+        ));
     }
 
     #[test]

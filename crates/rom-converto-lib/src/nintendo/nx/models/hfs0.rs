@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 
 use crate::nintendo::nx::constants::{HFS0_ENTRY_SIZE, HFS0_HEADER_SIZE, HFS0_MAGIC};
 use crate::nintendo::nx::error::{NxError, NxResult};
+use crate::nintendo::nx::util::read_table_name;
 
 pub const DEFAULT_HASHED_REGION: u32 = 0x200;
 
@@ -46,6 +47,9 @@ impl Hfs0 {
     ///
     /// Returns [`NxError::Hfs0BadMagic`] if the magic doesn't match, or
     /// propagates I/O errors on a truncated header.
+    /// Returns [`NxError::InvalidStringTable`] for invalid name offsets,
+    /// names longer than 1024 bytes, or aggregate name bytes exceeding
+    /// the string table's byte length.
     pub fn read<R: Read + Seek>(reader: &mut R) -> NxResult<Self> {
         let header_pos = reader.stream_position()?;
 
@@ -93,16 +97,20 @@ impl Hfs0 {
         let data_section_offset = header_pos + header_total;
         reader.seek(SeekFrom::Start(data_section_offset))?;
 
+        let mut total = 0usize;
         let files = entries
             .into_iter()
-            .map(|(off, sz, name_off, hashed, sha)| Hfs0FileRef {
-                name: read_c_string(&string_table, name_off as usize),
-                data_offset: off,
-                size: sz,
-                hashed_region_size: hashed,
-                sha256: sha,
+            .map(|(off, sz, name_off, hashed, sha)| {
+                let name = read_table_name(&string_table, name_off as usize, &mut total)?;
+                Ok(Hfs0FileRef {
+                    name,
+                    data_offset: off,
+                    size: sz,
+                    hashed_region_size: hashed,
+                    sha256: sha,
+                })
             })
-            .collect();
+            .collect::<NxResult<Vec<_>>>()?;
 
         Ok(Self {
             files,
@@ -228,15 +236,6 @@ pub fn hash_first_chunk(data: &[u8], hashed_region_size: u32) -> [u8; 32] {
     h.finalize().into()
 }
 
-fn read_c_string(table: &[u8], offset: usize) -> String {
-    let end = table[offset..]
-        .iter()
-        .position(|&b| b == 0)
-        .map(|n| offset + n)
-        .unwrap_or(table.len());
-    String::from_utf8_lossy(&table[offset..end]).into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +291,51 @@ mod tests {
         let mut cur = Cursor::new(blob);
         let err = Hfs0::read(&mut cur).unwrap_err();
         assert!(matches!(err, NxError::IncompleteSection));
+    }
+
+    #[test]
+    fn rejects_name_offset_beyond_string_table() {
+        let specs = [Hfs0FileSpec {
+            name: "alpha".into(),
+            size: 0,
+            sha256: [0; 32],
+            hashed_region_size: 0,
+        }];
+        let mut blob = build_header(&specs, &Hfs0LayoutHints::default())
+            .unwrap()
+            .bytes;
+        let offset_pos = HFS0_HEADER_SIZE + 16;
+        blob[offset_pos..offset_pos + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(
+            Hfs0::read(&mut Cursor::new(blob)),
+            Err(NxError::InvalidStringTable)
+        ));
+    }
+
+    #[test]
+    fn rejects_shared_names_exceeding_string_table() {
+        let specs = vec![
+            Hfs0FileSpec {
+                name: "shared".into(),
+                size: 0,
+                sha256: [0; 32],
+                hashed_region_size: 0,
+            };
+            8
+        ];
+        let hints = Hfs0LayoutHints {
+            target_total_header_size: Some(HFS0_HEADER_SIZE + 8 * HFS0_ENTRY_SIZE + 16),
+            ..Default::default()
+        };
+        let mut blob = build_header(&specs, &hints).unwrap().bytes;
+        for i in 0..8 {
+            let offset_pos = HFS0_HEADER_SIZE + i * HFS0_ENTRY_SIZE + 16;
+            blob[offset_pos..offset_pos + 4].copy_from_slice(&0u32.to_le_bytes());
+        }
+        assert!(matches!(
+            Hfs0::read(&mut Cursor::new(blob)),
+            Err(NxError::InvalidStringTable)
+        ));
     }
 
     #[test]

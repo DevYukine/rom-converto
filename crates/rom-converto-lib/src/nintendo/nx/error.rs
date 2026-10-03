@@ -139,6 +139,9 @@ pub enum NxError {
     #[error("container entries overlap or run past the end of the file")]
     OverlappingEntries,
 
+    #[error("container string table is malformed")]
+    InvalidStringTable,
+
     #[error("NCA {nca} section {section} uses hash type {hash_type}, which NxEmu cannot load")]
     UnsupportedHashType {
         nca: String,
