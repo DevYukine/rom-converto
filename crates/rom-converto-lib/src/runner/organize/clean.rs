@@ -7,7 +7,7 @@ use crate::util::{CancelToken, Cancelled, ConflictPolicy, FileStatus, ProgressRe
 use anyhow::{Context, Result};
 use globset::{GlobSet, GlobSetBuilder};
 #[cfg(unix)]
-use rustix::fs::{AtFlags, FileType, Mode, OFlags, RenameFlags, Stat};
+use rustix::fs::{AtFlags, FileType, Mode, OFlags, Stat};
 #[cfg(unix)]
 use rustix::io::Errno;
 #[cfg(unix)]
@@ -1345,32 +1345,13 @@ fn move_to_backup_at(
             Err(err) => return Err(err),
         };
     if !relative_link {
-        match rustix::fs::renameat_with(
-            &dir.fd,
-            name,
-            rustix::fs::CWD,
-            target,
-            RenameFlags::NOREPLACE,
-        ) {
+        match rename_no_replace(dir, name, target) {
             Ok(()) => return Ok(BackupOutcome::BackedUp),
             // The slot was occupied after the probe: the caller retries the
             // next one. The reservation is the real check.
             Err(Errno::EXIST) => return Err(ErrorKind::AlreadyExists.into()),
             // Backup dir on another filesystem: copy below.
             Err(Errno::XDEV) => {}
-            // No no-replace rename on this filesystem: a plain rename's
-            // failure decides. (Apple reports ENOTSUP as `NOTSUP`,
-            // distinct from `OPNOTSUPP`; elsewhere the two are one value,
-            // so the guard form avoids an unreachable-pattern lint.)
-            Err(err)
-                if matches!(err, Errno::NOSYS | Errno::INVAL | Errno::OPNOTSUPP)
-                    || err == Errno::NOTSUP =>
-            {
-                return match rustix::fs::renameat(&dir.fd, name, rustix::fs::CWD, target) {
-                    Ok(()) => Ok(BackupOutcome::BackedUp),
-                    Err(err) => backup_move_raced(dir, name, err.into()),
-                };
-            }
             Err(err) => return backup_move_raced(dir, name, err.into()),
         }
     }
@@ -1424,6 +1405,43 @@ fn move_to_backup_at(
     copy_to_reserved(&mut src, target)?;
     remove_moved_source(dir, name)?;
     Ok(BackupOutcome::BackedUp)
+}
+
+/// Renames `name` in `dir` onto `target` without replacing an existing
+/// entry where the platform offers that (Linux, Android, Apple). A
+/// filesystem without the primitive, and every other unix, falls back to
+/// a plain rename whose failure decides.
+#[cfg(all(
+    unix,
+    any(target_os = "linux", target_os = "android", target_vendor = "apple")
+))]
+fn rename_no_replace(dir: &CleanDir, name: &OsStr, target: &Path) -> Result<(), Errno> {
+    match rustix::fs::renameat_with(
+        &dir.fd,
+        name,
+        rustix::fs::CWD,
+        target,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        // Apple reports ENOTSUP as `NOTSUP`, distinct from `OPNOTSUPP`;
+        // elsewhere the two are one value, so the guard form avoids an
+        // unreachable-pattern lint.
+        Err(err)
+            if matches!(err, Errno::NOSYS | Errno::INVAL | Errno::OPNOTSUPP)
+                || err == Errno::NOTSUP =>
+        {
+            rustix::fs::renameat(&dir.fd, name, rustix::fs::CWD, target)
+        }
+        other => other,
+    }
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn rename_no_replace(dir: &CleanDir, name: &OsStr, target: &Path) -> Result<(), Errno> {
+    rustix::fs::renameat(&dir.fd, name, rustix::fs::CWD, target)
 }
 
 /// A `NotFound` on a backup move counts as already gone only when the held
