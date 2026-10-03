@@ -110,7 +110,7 @@ async fn advance_to_offset(
 async fn copy_plain_section(
     cia: &mut CiaReader,
     writer: &mut BufWriter<&mut File>,
-    size: u32,
+    size: u64,
     hasher: &mut ContentHasher<'_>,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
@@ -118,7 +118,7 @@ async fn copy_plain_section(
     let mut remaining_bytes = size;
     let mut buf = vec![0u8; CHUNK_SIZE];
 
-    while remaining_bytes > CHUNK_SIZE as u32 {
+    while remaining_bytes > CHUNK_SIZE as u64 {
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
@@ -128,7 +128,7 @@ async fn copy_plain_section(
             .write_all(&buf)
             .await
             .context("writing plain chunk")?;
-        remaining_bytes -= CHUNK_SIZE as u32;
+        remaining_bytes -= CHUNK_SIZE as u64;
         progress.inc(CHUNK_SIZE as u64);
     }
 
@@ -140,7 +140,7 @@ async fn copy_plain_section(
             .write_all(tail)
             .await
             .context("writing final plain chunk")?;
-        progress.inc(remaining_bytes as u64);
+        progress.inc(remaining_bytes);
     }
 
     Ok(())
@@ -492,7 +492,7 @@ async fn write_to_file(
     advance_to_offset(writer, cia, out_base + opts.offset, hasher).await?;
 
     if !opts.encrypted {
-        copy_plain_section(cia, writer, opts.size, hasher, progress, cancel).await?;
+        copy_plain_section(cia, writer, u64::from(opts.size), hasher, progress, cancel).await?;
         return Ok(());
     }
 
@@ -1131,15 +1131,7 @@ async fn copy_twl_content(
     out.seek(SeekFrom::Start(out_pos)).await?;
     let mut writer = BufWriter::new(out);
     let mut h: ContentHasher = Some(hasher);
-    copy_plain_section(
-        cia_handle,
-        &mut writer,
-        csize as u32,
-        &mut h,
-        progress,
-        cancel,
-    )
-    .await?;
+    copy_plain_section(cia_handle, &mut writer, csize, &mut h, progress, cancel).await?;
     writer.flush().await?;
     Ok(())
 }
@@ -1898,6 +1890,43 @@ mod tests {
         let r1 = scramblekey(1, 0);
         let r2 = scramblekey(0, 1);
         assert_ne!(r1, r2);
+    }
+
+    #[tokio::test]
+    async fn copy_twl_content_rejects_truncated_content_larger_than_u32() {
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("short.srl");
+        std::fs::write(&in_path, [0u8; 16]).unwrap();
+        let mut reader = CiaReader::new(CiaReaderArgs {
+            file: File::open(&in_path).await.unwrap(),
+            encrypted: false,
+            path: in_path,
+            key: [0u8; 16],
+            cidx: 0,
+            contentoff: 0,
+            single_ncch: false,
+            from_ncsd: false,
+        });
+        let mut out = File::create(tmp.path().join("out.srl")).await.unwrap();
+        let mut hasher = Sha256::new();
+
+        let err = copy_twl_content(
+            &mut reader,
+            &mut out,
+            0,
+            0x1_0000_0000,
+            &mut hasher,
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof,
+        );
+        assert_eq!(out.metadata().await.unwrap().len(), 0);
     }
 
     #[test]
