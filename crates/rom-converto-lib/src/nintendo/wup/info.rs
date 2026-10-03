@@ -495,6 +495,7 @@ fn content_kind_from_title_id(title_id: u64) -> Option<ContentKind> {
     }
 }
 
+/// Maps parsed metadata, treating invalid company-code prefixes as unknown makers.
 fn meta_info_from_parsed(meta: MetaXml) -> WupMetaInfo {
     let region_names = meta.region.map(region_mask_names).unwrap_or_default();
     let age_ratings = meta
@@ -507,11 +508,9 @@ fn meta_info_from_parsed(meta: MetaXml) -> WupMetaInfo {
         .as_deref()
         .and_then(|c| {
             let trimmed = c.trim();
-            if trimmed.len() >= 2 {
-                crate::util::maker_codes::lookup_maker(&trimmed[..2])
-            } else {
-                None
-            }
+            trimmed
+                .get(..2)
+                .and_then(crate::util::maker_codes::lookup_maker)
         })
         .map(|s| s.to_string());
 
@@ -590,6 +589,19 @@ fn region_mask_names(mask: u32) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn meta_info_from_parsed_handles_unicode_company_codes() {
+        for (code, expected) in [("€", None), ("é1", None), ("01", Some("Nintendo"))] {
+            let meta = MetaXml {
+                company_code: Some(code.to_string()),
+                ..Default::default()
+            };
+            let mapped = meta_info_from_parsed(meta);
+            assert_eq!(mapped.company_name.as_deref(), expected, "{code}");
+            assert_eq!(mapped.company_code.as_deref(), Some(code));
+        }
+    }
 
     #[test]
     fn disc_partition_from_entry_maps_fields() {
