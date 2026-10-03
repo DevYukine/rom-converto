@@ -19,7 +19,8 @@ use super::format::{
 };
 use crate::util::ProgressReporter;
 use crate::util::worker_pool::{
-    Admission, Budget, Pool, PoolChannelClosed, Worker, parallelism, zstd_cctx_estimate,
+    Admission, Budget, Pool, PoolChannelClosed, PoolOutcome, Worker, parallelism,
+    zstd_cctx_estimate,
 };
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -407,9 +408,13 @@ impl<'p, W: Write> ZarWriter<'p, W> {
             .pool
             .as_ref()
             .ok_or(ZarError::WorkerPool(PoolChannelClosed))?;
-        let (seq, result) = pool.recv();
+        let (seq, outcome) = pool.recv();
         self.in_flight -= 1;
-        self.pending.insert(seq, result?);
+        let out = match outcome {
+            PoolOutcome::Done(result) => result?,
+            PoolOutcome::Panicked => return Err(ZarError::WorkerPool(PoolChannelClosed)),
+        };
+        self.pending.insert(seq, out);
         while let Some(out) = self.pending.remove(&self.write_seq) {
             self.emit_block(&out.payload)?;
             self.write_seq += 1;

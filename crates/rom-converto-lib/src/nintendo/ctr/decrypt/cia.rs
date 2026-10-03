@@ -29,7 +29,7 @@ use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::util::worker_pool::{Pool, parallelism};
+use crate::util::worker_pool::{Pool, PoolChannelClosed, PoolOutcome, parallelism};
 use crate::util::{CancelToken, Cancelled, ProgressReporter, extent_end};
 use anyhow::{Context, anyhow};
 use binrw::BinRead;
@@ -370,9 +370,15 @@ async fn write_romfs_section(
                 in_flight += 1;
             }
 
-            let (seq, res) = pool.recv();
+            let (seq, outcome) = pool.recv();
             in_flight -= 1;
-            pending.insert(seq, res?.data);
+            let data = match outcome {
+                PoolOutcome::Done(res) => res?.data,
+                PoolOutcome::Panicked => {
+                    return Err(NintendoCTRError::from(PoolChannelClosed).into());
+                }
+            };
+            pending.insert(seq, data);
 
             while let Some(data) = pending.remove(&write_seq) {
                 hash_bytes(hasher, &data);

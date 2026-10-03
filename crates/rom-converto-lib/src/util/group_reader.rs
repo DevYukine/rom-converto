@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 
 use super::positional_reader::seek_target;
-use super::worker_pool::{Pool, Worker, parallelism};
+use super::worker_pool::{Pool, PoolOutcome, Worker, parallelism};
 
 /// Placement of one decoded group inside the logical output stream.
 /// Spans must be contiguous and ordered: span `i + 1` starts where
@@ -52,8 +52,8 @@ pub fn in_flight_cap(max_group_bytes: u64) -> usize {
 
 /// Results for groups the reader no longer wants: the error belongs to
 /// discarded work, so it is logged instead of surfaced.
-fn log_discarded<O, E>((seq, result): (u64, Result<O, E>)) {
-    if result.is_err() {
+fn log_discarded<O, E>((seq, outcome): (u64, PoolOutcome<O, E>)) {
+    if matches!(outcome, PoolOutcome::Done(Err(_))) {
         log::debug!("group reader: dropped failed result for discarded group {seq}");
     }
 }
@@ -156,14 +156,18 @@ where
 
     /// Discard everything in flight. Worker errors for discarded groups
     /// are dropped: they belong to work the caller no longer wants.
-    fn reset_window(&mut self, base: u64) {
+    fn reset_window(&mut self, base: u64) -> io::Result<()> {
         while self.in_flight > 0 {
-            log_discarded(self.pool().recv());
+            match self.pool().recv_opt() {
+                Some(result) => log_discarded(result),
+                None => return Err(io::Error::other("worker pool disconnected")),
+            }
             self.in_flight -= 1;
         }
         self.pending.clear();
         self.window_base = base;
         self.next_submit = base;
+        Ok(())
     }
 
     fn top_up(&mut self) -> io::Result<()> {
@@ -186,7 +190,7 @@ where
         }
         if !self.pending.contains_key(&idx) && !(self.window_base..self.next_submit).contains(&idx)
         {
-            self.reset_window(idx);
+            self.reset_window(idx)?;
         }
         self.top_up()?;
         while !self.pending.contains_key(&idx) {
@@ -194,13 +198,15 @@ where
                 self.in_flight > 0,
                 "wanted group neither pending nor in flight"
             );
-            let (seq, result) = self.pool().recv();
+            let Some((seq, outcome)) = self.pool().recv_opt() else {
+                return Err(io::Error::other("worker pool disconnected"));
+            };
             self.in_flight -= 1;
             if seq < self.window_base {
-                log_discarded((seq, result));
+                log_discarded((seq, outcome));
             } else {
-                match result {
-                    Ok(bytes) => {
+                match outcome {
+                    PoolOutcome::Done(Ok(bytes)) => {
                         debug_assert!(self.pending.len() < self.window);
                         self.pending.insert(seq, bytes);
                         debug_assert!(self.pending.len() + self.in_flight <= self.window);
@@ -208,14 +214,22 @@ where
                     // The group is at or after the read position, so every
                     // later read needs it too: surface the error now
                     // instead of parking it until the group is wanted.
-                    Err(error) => {
+                    PoolOutcome::Done(Err(error)) => {
                         // The failed group is neither pending nor
                         // resubmittable while its index stays inside the
                         // submitted window; rewind so a retried read
                         // resubmits it instead of waiting forever.
                         let base = self.window_base;
-                        self.reset_window(base);
+                        let _ = self.reset_window(base);
                         return Err(io::Error::other(error));
+                    }
+                    PoolOutcome::Panicked => {
+                        // The worker panicked on this group, so it can
+                        // never complete; rewind and surface instead of
+                        // waiting on a result that will not arrive.
+                        let base = self.window_base;
+                        let _ = self.reset_window(base);
+                        return Err(io::Error::other("worker panicked while decoding a group"));
                     }
                 }
             }
@@ -283,7 +297,10 @@ where
     fn drop(&mut self) {
         if let Some(pool) = self.pool.take() {
             while self.in_flight > 0 {
-                log_discarded(pool.recv());
+                match pool.recv_opt() {
+                    Some(result) => log_discarded(result),
+                    None => break,
+                }
                 self.in_flight -= 1;
             }
             pool.shutdown();
@@ -435,6 +452,42 @@ mod tests {
         let mut out = Vec::new();
         let err = r.read_to_end(&mut out).unwrap_err();
         assert!(err.to_string().contains("decode failed"));
+    }
+
+    #[test]
+    fn worker_panic_surfaces_as_io_error_and_drop_does_not_panic() {
+        struct PanicWorker;
+        impl Worker<u64, Vec<u8>, std::io::Error> for PanicWorker {
+            fn process(&mut self, idx: u64) -> io::Result<Vec<u8>> {
+                if idx == 0 {
+                    panic!("worker exploded");
+                }
+                Ok(vec![idx as u8; 16])
+            }
+        }
+        let spans: Vec<GroupSpan> = (0..4)
+            .map(|i| GroupSpan {
+                logical_offset: i * 16,
+                logical_size: 16,
+            })
+            .collect();
+        // Several workers: the panicking job's marker must arrive even
+        // though its worker's result_tx clone is not the last one, so
+        // the read errors out instead of blocking on a channel that
+        // stays open.
+        let mut r = PipelinedGroupReader::new(
+            vec![PanicWorker, PanicWorker, PanicWorker],
+            spans,
+            3,
+            Ok::<u64, std::io::Error>,
+        );
+        let mut out = Vec::new();
+        let err = r.read_to_end(&mut out).unwrap_err();
+        assert!(err.to_string().contains("worker panicked"));
+        // The pool is short one thread, so cleanup must still finish
+        // instead of panicking again.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(r)))
+            .expect("drop must not panic");
     }
 
     /// One-shot gate: one worker blocks until another worker's result has

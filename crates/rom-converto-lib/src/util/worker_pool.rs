@@ -24,10 +24,11 @@
 //! # Error model
 //!
 //! The pool is generic over a worker error type `E`. Pool-internal
-//! failures (worker thread panic → dead channel) surface as
-//! [`PoolChannelClosed`], which the caller's error type must be able
-//! to absorb via `From<PoolChannelClosed>`. Worker errors from
-//! `process` flow through unchanged.
+//! failures surface as [`PoolChannelClosed`] once every worker has
+//! exited (the caller's error type must be able to absorb it via
+//! `From<PoolChannelClosed>`), or as [`PoolOutcome::Panicked`] when a
+//! single job's worker panicked. Worker errors from `process` flow
+//! through unchanged.
 //!
 //! # Threading model
 //!
@@ -267,9 +268,10 @@ mod admission_tests {
 }
 
 /// Pool-internal error returned by [`Pool::submit`] when a worker's
-/// inbound channel has closed (usually because the worker thread
-/// panicked). Consumers map this into their own error type via
-/// `From<PoolChannelClosed>`.
+/// inbound channel has closed, that is, its worker thread has exited.
+/// A panicked worker does not close its channel (see
+/// [`PoolOutcome::Panicked`]); consumers map this into their own error
+/// type via `From<PoolChannelClosed>`.
 #[derive(Debug, Clone, Copy)]
 pub struct PoolChannelClosed;
 
@@ -280,6 +282,19 @@ impl std::fmt::Display for PoolChannelClosed {
 }
 
 impl std::error::Error for PoolChannelClosed {}
+
+/// One result delivered on a pool's result channel: either the
+/// worker's own outcome for a submitted job, or a [`PoolOutcome::Panicked`]
+/// marker. A worker that panics stays alive and answers that job and
+/// every later one routed to it with the marker until shutdown, so
+/// exactly one result arrives per submitted job and draining the
+/// channel ends only when every worker has exited.
+pub enum PoolOutcome<O, E> {
+    /// The job ran and the worker returned its own outcome.
+    Done(Result<O, E>),
+    /// The job never produced output: its worker panicked.
+    Panicked,
+}
 
 /// Per-thread worker state. One instance lives for the lifetime of a
 /// pool thread; `process` is called once per submitted work item.
@@ -297,7 +312,7 @@ pub trait Worker<W, O, E> {
 pub struct Pool<W: Send + 'static, O: Send + 'static, E: Send + 'static> {
     n_threads: usize,
     work_txs: Vec<SyncSender<Option<(u64, W)>>>,
-    result_rx: Receiver<(u64, Result<O, E>)>,
+    result_rx: Receiver<(u64, PoolOutcome<O, E>)>,
     handles: Vec<thread::JoinHandle<()>>,
 }
 
@@ -317,7 +332,7 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     {
         assert!(!workers.is_empty(), "pool needs at least one worker");
         let n_threads = workers.len();
-        let (result_tx, result_rx) = channel::<(u64, Result<O, E>)>();
+        let (result_tx, result_rx) = channel::<(u64, PoolOutcome<O, E>)>();
         let mut work_txs = Vec::with_capacity(n_threads);
         let mut handles = Vec::with_capacity(n_threads);
 
@@ -326,13 +341,35 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
             work_txs.push(work_tx);
             let result_tx = result_tx.clone();
             let handle = thread::spawn(move || {
+                // A panic poisons this worker instead of killing it: the
+                // thread keeps receiving and answers every later item
+                // with a Panicked marker without running it, so each
+                // submit still gets exactly one result and none is
+                // dropped while the thread exits. Exiting on the
+                // shutdown sentinel re-raises the original panic.
+                let mut poisoned: Option<Box<dyn std::any::Any + Send>> = None;
                 while let Ok(Some((seq, work))) = work_rx.recv() {
-                    let result = worker.process(work);
-                    if result_tx.send((seq, result)).is_err() {
+                    let outcome = if poisoned.is_some() {
+                        PoolOutcome::Panicked
+                    } else {
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            worker.process(work)
+                        })) {
+                            Ok(result) => PoolOutcome::Done(result),
+                            Err(payload) => {
+                                poisoned = Some(payload);
+                                PoolOutcome::Panicked
+                            }
+                        }
+                    };
+                    if result_tx.send((seq, outcome)).is_err() {
                         // Result channel closed, dispatcher is
                         // unwinding. Stop silently.
                         break;
                     }
+                }
+                if let Some(payload) = poisoned {
+                    std::panic::resume_unwind(payload);
                 }
             });
             handles.push(handle);
@@ -359,8 +396,12 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     /// [`drive`]'s reorder HashMap regardless of which worker ran
     /// each item, so smart routing is safe.
     ///
-    /// Returns [`PoolChannelClosed`] only if every worker's channel
-    /// has closed, that is, all worker threads have exited.
+    /// A worker whose job panicked is not disconnected: it stays in
+    /// its poison loop and later items routed to it are answered with
+    /// [`PoolOutcome::Panicked`] instead of running, each still
+    /// yielding exactly one result. [`PoolChannelClosed`] is returned
+    /// when a slot's channel is disconnected, that is, its worker
+    /// thread has exited for a reason other than a job panic.
     pub fn submit(&self, seq: u64, work: W) -> Result<(), PoolChannelClosed> {
         use std::sync::mpsc::TrySendError;
 
@@ -376,14 +417,14 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
                 }
                 Err(TrySendError::Full(None)) => unreachable!("None sentinel is never sent here"),
                 Err(TrySendError::Disconnected(_)) => {
-                    // Move on; another worker may still be alive.
+                    // This slot's worker thread has exited; the job
+                    // would never be answered, so fail the submit.
                     pending = None;
                 }
             }
             if pending.is_none() {
-                // Only reachable on a disconnected worker; rebuild
-                // a fresh work item from the original. Since it was
-                // already consumed, the whole submit has to fail.
+                // Only reachable on a disconnected worker: its item is
+                // already consumed, so the whole submit fails.
                 return Err(PoolChannelClosed);
             }
         }
@@ -395,15 +436,23 @@ impl<W: Send + 'static, O: Send + 'static, E: Send + 'static> Pool<W, O, E> {
     }
 
     /// Block until any worker produces a result. Returns the
-    /// submission sequence number and the worker's `Result<O, E>`.
+    /// submission sequence number and the worker's outcome.
     ///
     /// Panics only if every worker has exited without producing
     /// any output, which only happens if the pool was shut down
     /// prematurely (a programming error).
-    pub fn recv(&self) -> (u64, Result<O, E>) {
+    pub fn recv(&self) -> (u64, PoolOutcome<O, E>) {
         self.result_rx
             .recv()
             .expect("worker pool result channel closed unexpectedly")
+    }
+
+    /// Block until any worker produces a result, or return `None`
+    /// once every worker has exited. A panicked worker keeps answering
+    /// with [`PoolOutcome::Panicked`] until shutdown, so `None` means
+    /// every submitted job has been delivered.
+    pub(crate) fn recv_opt(&self) -> Option<(u64, PoolOutcome<O, E>)> {
+        self.result_rx.recv().ok()
     }
 
     /// Signal all workers to exit (`None` sentinel) and join their
@@ -474,14 +523,18 @@ where
         }
 
         // Receive one result, stash, drain contiguous runs.
-        let (seq, result) = pool.recv();
+        let (seq, outcome) = pool.recv();
         in_flight -= 1;
-        match result {
-            Ok(out) => {
+        match outcome {
+            PoolOutcome::Done(Ok(out)) => {
                 pending.insert(seq, out);
             }
-            Err(e) => {
+            PoolOutcome::Done(Err(e)) => {
                 run_result = Err(e);
+                break;
+            }
+            PoolOutcome::Panicked => {
+                run_result = Err(PoolChannelClosed.into());
                 break;
             }
         }
@@ -501,10 +554,10 @@ where
     // pool down. Without this, `shutdown()` would race workers that
     // are mid-process.
     while in_flight > 0 {
-        let (_seq, result) = pool.recv();
+        let (_seq, outcome) = pool.recv();
         in_flight -= 1;
         if run_result.is_ok()
-            && let Err(e) = result
+            && let PoolOutcome::Done(Err(e)) = outcome
         {
             run_result = Err(e);
         }
@@ -548,4 +601,55 @@ where
         handle.join().unwrap_or(Err(on_panic))?;
         body_result
     })
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    /// Panics on its first job; the pool must keep answering later
+    /// items from the poisoned worker instead of dropping them.
+    struct PanicFirstWorker;
+
+    impl Worker<u64, u64, std::io::Error> for PanicFirstWorker {
+        fn process(&mut self, work: u64) -> Result<u64, std::io::Error> {
+            if work == 0 {
+                panic!("first job explodes");
+            }
+            Ok(work)
+        }
+    }
+
+    #[test]
+    fn poisoned_worker_answers_every_later_submit() {
+        const TOTAL: u64 = 64;
+        let (done_tx, done_rx) = channel::<usize>();
+        let collector = std::thread::spawn(move || {
+            let pool = Pool::spawn(vec![PanicFirstWorker, PanicFirstWorker, PanicFirstWorker]);
+            // Push well past the per-slot buffer of 2 so some submits
+            // land on the poisoned worker after its panic.
+            for seq in 0..TOTAL {
+                pool.submit(seq, seq)
+                    .expect("poisoned worker stays connected");
+            }
+            let mut panicked = 0;
+            for _ in 0..TOTAL {
+                let (_, outcome) = pool
+                    .recv_opt()
+                    .expect("worker exited before every result arrived");
+                if matches!(outcome, PoolOutcome::Panicked) {
+                    panicked += 1;
+                }
+            }
+            pool.shutdown();
+            done_tx.send(panicked).ok();
+        });
+        // A missing outcome means the pool dropped a submit and the
+        // old hang is back, so cap the wait instead of blocking forever.
+        let panicked = done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("pool hung: not every job after the panic got an outcome");
+        collector.join().expect("collector thread panicked");
+        assert!(panicked >= 1, "the panicked job's marker never arrived");
+    }
 }
