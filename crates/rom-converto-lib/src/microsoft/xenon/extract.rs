@@ -6,13 +6,14 @@
 //! a single sequential cursor can slice each decompressed block across
 //! file boundaries as results come back in order.
 
+use std::collections::HashSet;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::util::CancelToken;
 use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
-use crate::zar::format::split_path;
+use crate::zar::format::{ZarError, split_path};
 use crate::zar::{ZarEntry, ZarReader, decompress_block};
 
 use super::error::{XenonError, XenonResult};
@@ -176,12 +177,35 @@ pub fn extract_blocking(
     let mut file_count = 0u64;
     let mut dir_count = 0u64;
     let mut files: Vec<ZarEntry> = Vec::new();
+    let mut seen_files = HashSet::new();
+    let mut seen_dirs = HashSet::new();
     for entry in reader.entries()? {
         validate_entry_path(&entry.path)?;
+        // Key on the lowercased, separator-normalized path components:
+        // written names collide case-insensitively on common
+        // filesystems, and doubled or backslash separators denote the
+        // same destination. Repeated directory records are benign
+        // (create_dir_all is idempotent); any collision involving a
+        // file would overwrite content.
+        let key = split_path(&entry.path)
+            .collect::<Vec<_>>()
+            .join("/")
+            .to_ascii_lowercase();
+        let duplicate = || {
+            ZarError::CorruptStructure(format!("duplicate extraction destination: {}", entry.path))
+        };
         if entry.is_file {
+            if seen_files.contains(&key) || seen_dirs.contains(&key) {
+                return Err(duplicate().into());
+            }
+            seen_files.insert(key);
             file_count += 1;
             files.push(entry);
         } else {
+            if seen_files.contains(&key) {
+                return Err(duplicate().into());
+            }
+            seen_dirs.insert(key);
             dir_count += 1;
             std::fs::create_dir_all(output_dir.join(&entry.path))?;
         }
@@ -317,6 +341,77 @@ mod tests {
         let result = extract_blocking(&zar_path, &out_dir, &bytes_done, &cancel);
         assert!(matches!(result, Err(XenonError::UnsafePath { .. })));
         assert!(!work.path().join("evil.txt").exists());
+    }
+
+    #[test]
+    fn extract_rejects_duplicate_destinations() {
+        for (name_byte, expected_name) in [(b'a', "a.bin"), (b'A', "A.bin")] {
+            let mut buf = Vec::new();
+            let mut writer = ZarWriter::new(&mut buf, 1).unwrap();
+            writer.start_file("a.bin").unwrap();
+            writer.append_data(b"first").unwrap();
+            writer.start_file("b.bin").unwrap();
+            writer.append_data(b"second").unwrap();
+            writer.finish().unwrap();
+
+            let name_pos = {
+                let reader = ZarReader::open(std::io::Cursor::new(&buf)).unwrap();
+                let node = reader.lookup("b.bin").unwrap();
+                let offset = reader.entry(node).unwrap().name_offset() as usize;
+                let names = reader.footer().names;
+                let table = &buf[names.offset as usize..(names.offset + names.size) as usize];
+                let (_, header) = crate::zar::format::decode_name_len(table, offset).unwrap();
+                names.offset as usize + offset + header
+            };
+            buf[name_pos] = name_byte;
+
+            let work = tempfile::tempdir().unwrap();
+            let zar_path = work.path().join("archive.zar");
+            std::fs::write(&zar_path, &buf).unwrap();
+
+            let out_dir = work.path().join("out");
+            let result =
+                extract_blocking(&zar_path, &out_dir, &AtomicU64::new(0), &CancelToken::new());
+            assert!(matches!(
+                result,
+                Err(XenonError::Zar(ZarError::CorruptStructure(message)))
+                    if message == format!("duplicate extraction destination: {expected_name}")
+            ));
+            assert!(!out_dir.join("a.bin").exists());
+        }
+    }
+
+    #[test]
+    fn extract_accepts_repeated_directory_entries() {
+        let mut buf = Vec::new();
+        let mut writer = ZarWriter::new(&mut buf, 1).unwrap();
+        writer.start_file("d1/a.bin").unwrap();
+        writer.append_data(b"one").unwrap();
+        writer.start_file("d2/b.bin").unwrap();
+        writer.append_data(b"two").unwrap();
+        writer.finish().unwrap();
+
+        // Patch d2's name so two directory entries share the name d1;
+        // the writer refuses to emit such an archive itself.
+        let name_pos = {
+            let reader = ZarReader::open(std::io::Cursor::new(&buf)).unwrap();
+            let node = reader.lookup("d2").unwrap();
+            let offset = reader.entry(node).unwrap().name_offset() as usize;
+            let names = reader.footer().names;
+            let table = &buf[names.offset as usize..(names.offset + names.size) as usize];
+            let (len, header) = crate::zar::format::decode_name_len(table, offset).unwrap();
+            names.offset as usize + offset + header + len - 1
+        };
+        buf[name_pos] = b'1';
+
+        let work = tempfile::tempdir().unwrap();
+        let zar_path = work.path().join("archive.zar");
+        std::fs::write(&zar_path, &buf).unwrap();
+
+        let out_dir = work.path().join("out");
+        extract_blocking(&zar_path, &out_dir, &AtomicU64::new(0), &CancelToken::new()).unwrap();
+        assert_eq!(std::fs::read(out_dir.join("d1/a.bin")).unwrap(), b"one");
+        assert_eq!(std::fs::read(out_dir.join("d1/b.bin")).unwrap(), b"two");
     }
 
     #[test]

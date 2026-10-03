@@ -183,7 +183,9 @@ impl<R: Read + Seek> ZarReader<R> {
             }
             for child in self.children(index, &entry)? {
                 let child_entry = self.entry(child)?;
-                let name = String::from_utf8_lossy(self.name_of(child)?).into_owned();
+                let name = String::from_utf8(self.name_of(child)?.to_vec()).map_err(|_| {
+                    ZarError::CorruptStructure("entry name is not valid UTF-8".into())
+                })?;
                 let path = if prefix.is_empty() {
                     name
                 } else {
@@ -612,6 +614,30 @@ mod tests {
         assert!(matches!(
             reader.entries(),
             Err(ZarError::CorruptStructure(_))
+        ));
+    }
+
+    #[test]
+    fn entries_rejects_invalid_utf8_name() {
+        let mut buf = Vec::new();
+        let mut writer = ZarWriter::new(&mut buf, 1).expect("writer spawns");
+        writer.start_file("a.bin").expect("file opens");
+        writer.finish().expect("archive finishes");
+
+        let name_pos = {
+            let reader = ZarReader::open(Cursor::new(&buf)).expect("archive opens");
+            let node = reader.lookup("a.bin").expect("path resolves");
+            let offset = reader.entry(node).expect("node exists").name_offset() as usize;
+            let (_, header) = decode_name_len(&reader.names, offset).expect("name length decodes");
+            reader.footer().names.offset as usize + offset + header
+        };
+        buf[name_pos] = 0xFF;
+
+        let reader = ZarReader::open(Cursor::new(buf)).expect("archive opens");
+        assert!(matches!(
+            reader.entries(),
+            Err(ZarError::CorruptStructure(message))
+                if message == "entry name is not valid UTF-8"
         ));
     }
 
