@@ -223,6 +223,7 @@ impl<'p, W: Write> ZarWriter<'p, W> {
 
     /// Create the directory `path`. With `recursive`, missing parents
     /// are created too; otherwise every parent must already exist.
+    /// Existing directories are matched ASCII-case-insensitively.
     pub fn make_dir(&mut self, path: &str, recursive: bool) -> ZarResult<()> {
         let (parent, name) = self.resolve_parent(path, recursive)?;
         match self.child(parent, name.as_bytes())? {
@@ -238,6 +239,7 @@ impl<'p, W: Write> ZarWriter<'p, W> {
     /// Open `path` as the active file. Missing parent directories are
     /// created. Subsequent [`ZarWriter::append_data`] calls append to
     /// this file until the next `start_file`.
+    /// Existing entries with ASCII-case-insensitively equal names are rejected.
     pub fn start_file(&mut self, path: &str) -> ZarResult<()> {
         let (parent, name) = self.resolve_parent(path, true)?;
         if self.child(parent, name.as_bytes())?.is_some() {
@@ -495,7 +497,7 @@ impl<'p, W: Write> ZarWriter<'p, W> {
             NodeKind::Dir { children } => Ok(children
                 .iter()
                 .copied()
-                .find(|&index| self.nodes[index].name == name)),
+                .find(|&index| self.nodes[index].name.eq_ignore_ascii_case(name))),
         }
     }
 
@@ -553,11 +555,9 @@ impl<'p, W: Write> ZarWriter<'p, W> {
                 continue;
             };
             let mut sorted = children.clone();
-            // Byte order breaks fold ties so the layout does not depend
-            // on the order `read_dir` happened to hand the names over.
             sorted.sort_by(|&a, &b| {
                 let (a, b) = (&self.nodes[a].name, &self.nodes[b].name);
-                cmp_ascii_ci(a, b).then_with(|| a.cmp(b))
+                cmp_ascii_ci(a, b)
             });
             ranges[node] = (order.len() as u32, sorted.len() as u32);
             order.extend(sorted);
@@ -695,7 +695,7 @@ mod tests {
     fn siblings_are_sorted_case_insensitively() {
         let mut buf = Vec::new();
         let mut writer = ZarWriter::new(&mut buf, 2).expect("writer spawns");
-        for name in ["zeta", "Zeta", "alpha", "Beta"] {
+        for name in ["zeta", "Zebra", "alpha", "Beta"] {
             writer.start_file(name).expect("file opens");
             writer.append_data(b"x").expect("data appends");
         }
@@ -716,12 +716,10 @@ mod tests {
                 String::from_utf8_lossy(&table[offset + header..offset + header + len]).into_owned()
             })
             .collect();
-        // "Zeta"/"zeta" are equal under the fold, so byte order decides
-        // and the insertion order they were added in does not.
-        assert_eq!(sorted, vec!["alpha", "Beta", "Zeta", "zeta"]);
+        assert_eq!(sorted, vec!["alpha", "Beta", "Zebra", "zeta"]);
         // Names are interned in tree order, not the order the files
         // were added, so the table matches what the reference writer emits.
-        assert_eq!(table, b"\x05alpha\x04Beta\x04Zeta\x04zeta");
+        assert_eq!(table, b"\x05alpha\x04Beta\x05Zebra\x04zeta");
     }
 
     #[test]
@@ -745,6 +743,41 @@ mod tests {
             writer.make_dir("blocker/child", true),
             Err(ZarError::PathThroughFile(_))
         ));
+    }
+
+    #[test]
+    fn case_variant_file_names_are_rejected() {
+        let mut buf = Vec::new();
+        let mut writer = ZarWriter::new(&mut buf, 1).expect("writer spawns");
+        writer.start_file("a/Asset.bin").expect("file opens");
+        assert!(matches!(
+            writer.start_file("a/asset.bin"),
+            Err(ZarError::DuplicateEntry(_))
+        ));
+        assert!(matches!(
+            writer.make_dir("A/asset.bin", false),
+            Err(ZarError::DuplicateEntry(_))
+        ));
+        assert_eq!(writer.nodes[2].name, b"Asset.bin");
+    }
+
+    #[test]
+    fn case_variant_parent_names_reuse_directory() {
+        let mut buf = Vec::new();
+        let mut writer = ZarWriter::new(&mut buf, 1).expect("writer spawns");
+        writer.make_dir("Dir", false).expect("directory is created");
+        writer.start_file("dir/x").expect("file opens");
+        assert_eq!(writer.nodes.len(), 3);
+        assert_eq!(writer.nodes[1].name, b"Dir");
+        assert!(matches!(
+            &writer.nodes[0].kind,
+            NodeKind::Dir { children } if children == &[1]
+        ));
+        assert!(matches!(
+            &writer.nodes[1].kind,
+            NodeKind::Dir { children } if children == &[2]
+        ));
+        assert_eq!(writer.nodes[2].name, b"x");
     }
 
     #[test]
