@@ -711,7 +711,11 @@ fn update_tmd_hashes(
         let count = content_info_record.content_command_count as usize;
         let end = start + count;
         let mut hasher = Sha256::new();
-        for chunk in &tmd.content_chunk_records[start..end] {
+        let chunks = tmd
+            .content_chunk_records
+            .get(start..end)
+            .ok_or_else(|| anyhow!("TMD content info range out of bounds"))?;
+        for chunk in chunks {
             let mut buf = Cursor::new(Vec::new());
             chunk.write_be(&mut buf)?;
             hasher.update(buf.get_ref());
@@ -764,6 +768,31 @@ mod tests {
     };
     use crate::util::NoProgress;
     use binrw::{BinWrite, Endian};
+
+    #[test]
+    fn update_tmd_hashes_rejects_out_of_bounds_tmd_info_range() {
+        let mut tmd = make_tmd(
+            SYNTH_CIA_TITLE_ID,
+            vec![(0, 0, vec![0u8; 16], [0u8; 32])],
+            false,
+        );
+        tmd.content_info_records[1].content_index_offset = 2;
+        tmd.content_info_records[1].content_command_count = 0;
+        let header = CiaHeader {
+            header_size: CIA_HEADER_SIZE,
+            cia_type: 0,
+            version: 0,
+            cert_chain_size: 0,
+            ticket_size: 0,
+            tmd_size: 0,
+            meta_size: 0,
+            content_size: 16,
+            content_index: vec![0; CIA_CONTENT_INDEX_SIZE],
+        };
+
+        let error = update_tmd_hashes(&mut tmd, &header, &[[0u8; 32]]).unwrap_err();
+        assert_eq!(error.to_string(), "TMD content info range out of bounds");
+    }
 
     fn make_plain_ncch_with_romfs() -> Vec<u8> {
         let romfs_offset_mu = 2u32;

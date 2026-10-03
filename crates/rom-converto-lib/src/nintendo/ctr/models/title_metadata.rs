@@ -22,6 +22,16 @@ pub struct TitleMetadata {
     pub content_chunk_records: Vec<ContentChunkRecord>,
 }
 
+impl TitleMetadata {
+    /// Checks that every content info range lies within the content chunk records.
+    pub(crate) fn validate_content_info_ranges(&self) -> bool {
+        self.content_info_records.iter().all(|record| {
+            usize::from(record.content_index_offset) + usize::from(record.content_command_count)
+                <= self.content_chunk_records.len()
+        })
+    }
+}
+
 /// The fixed-size fields of a TMD, preceding its content info/chunk records.
 #[derive(Debug, Clone, BinRead, BinWrite)]
 #[brw(big)]

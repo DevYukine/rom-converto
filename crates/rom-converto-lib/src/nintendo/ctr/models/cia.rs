@@ -183,6 +183,12 @@ fn read_preamble<R: Read + Seek>(reader: &mut R) -> BinResult<CiaFileWithoutCont
     let tmd_start = align_64(reader.stream_position()?);
     reader.seek(SeekFrom::Start(tmd_start))?;
     let tmd = TitleMetadata::read_options(reader, Endian::Big, ())?;
+    if !tmd.validate_content_info_ranges() {
+        return Err(binrw::Error::AssertFail {
+            pos: tmd_start,
+            message: "TMD content info range out of bounds".to_owned(),
+        });
+    }
 
     Ok(CiaFileWithoutContent {
         header,

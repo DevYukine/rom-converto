@@ -115,9 +115,15 @@ pub async fn decrypt_from_encrypted_cia(
     for content_info_record in &mut decrypted_cia.tmd.content_info_records {
         let start = content_info_record.content_index_offset as usize;
         let count = content_info_record.content_command_count as usize;
+        let end = start + count;
         let mut hasher = Sha256::new();
 
-        for chunk in &decrypted_cia.tmd.content_chunk_records[start..start + count] {
+        let chunks = decrypted_cia
+            .tmd
+            .content_chunk_records
+            .get(start..end)
+            .ok_or_else(|| anyhow::anyhow!("TMD content info range out of bounds"))?;
+        for chunk in chunks {
             let mut buf = Cursor::new(Vec::new());
             chunk.write_be(&mut buf)?;
             hasher.update(buf.get_ref());
@@ -868,6 +874,34 @@ mod tests {
             .filter_map(Result::ok)
             .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"));
         assert!(!leftover_ncch, "scratch .ncch files were left behind");
+    }
+
+    #[tokio::test]
+    async fn cia_with_out_of_bounds_tmd_info_range_is_rejected_at_parse() {
+        use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
+
+        let (_tmp, in_path, _) = synth_encrypted_cia_multi_content(&[0]);
+        let bytes = std::fs::read(&in_path).unwrap();
+        let mut cia = CiaFile::read_le(&mut Cursor::new(bytes)).unwrap();
+        cia.tmd.content_info_records[1].content_index_offset = 2;
+        cia.tmd.content_info_records[1].content_command_count = 0;
+        let mut malformed = Cursor::new(Vec::new());
+        cia.write_le(&mut malformed).unwrap();
+        std::fs::write(&in_path, malformed.into_inner()).unwrap();
+
+        let file = File::create(in_path.with_extension("dec.cia"))
+            .await
+            .unwrap();
+        let mut out = BufWriter::new(file);
+        let error =
+            decrypt_from_encrypted_cia(&in_path, &mut out, &NoProgress, &CancelToken::new())
+                .await
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("TMD content info range out of bounds")
+        );
     }
 
     // Older CIAs produced by this tool never set the header's content_index
