@@ -100,16 +100,14 @@ fn name_has_ext(name: &str, exts: &[&str]) -> bool {
     }
 }
 
-fn keep_member(name: &str, size: u64, is_dir: bool) -> Option<ArchiveMember> {
-    if is_dir {
-        return None;
-    }
+fn is_kept(name: &str, is_dir: bool) -> bool {
     let base = basename(name);
-    if base.is_empty() || is_os_junk_file(base) {
-        return None;
-    }
     // Nested archives are hidden the same way the recursive walker hides them.
-    if name_has_ext(name, ARCHIVE_EXTS) {
+    !is_dir && !base.is_empty() && !is_os_junk_file(base) && !name_has_ext(name, ARCHIVE_EXTS)
+}
+
+fn keep_member(name: &str, size: u64, is_dir: bool) -> Option<ArchiveMember> {
+    if !is_kept(name, is_dir) {
         return None;
     }
     Some(ArchiveMember {
@@ -118,9 +116,9 @@ fn keep_member(name: &str, size: u64, is_dir: bool) -> Option<ArchiveMember> {
     })
 }
 
-/// List the convertible members of an archive: regular files only, with OS
-/// junk and nested archives filtered out, sorted by name for deterministic
-/// first-match selection. Bare gzip returns a clear unsupported error.
+/// List the convertible members of an archive in archive order: regular files
+/// only, with OS junk and nested archives filtered out. Bare gzip returns a
+/// clear unsupported error.
 pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
@@ -128,15 +126,13 @@ pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
             path.display()
         )
     })?;
-    let mut out = match kind {
+    Ok(match kind {
         ArchiveKind::Zip => list_zip(path)?,
         ArchiveKind::SevenZ => list_7z(path)?,
         ArchiveKind::Tar => list_tar(path, false)?,
         ArchiveKind::TarGz => list_tar(path, true)?,
         ArchiveKind::Rar => list_rar(path)?,
-    };
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(out)
+    })
 }
 
 fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
@@ -244,11 +240,15 @@ fn list_tar(path: &Path, gz: bool) -> Result<Vec<ArchiveMember>> {
 }
 
 /// Extract one member to `dest_dir`, returning the written path. Streams so a
-/// multi-gigabyte member never buffers in memory.
+/// multi-gigabyte member never buffers in memory. Tar and rar use `member_index`,
+/// the member's position among the listing's entries in archive order, and
+/// check the lossy decoded name; distinct raw names can share that name. Zip
+/// also decodes names lossily but resolves by exact decoded name, as does 7z.
 fn extract_one(
     path: &Path,
     kind: ArchiveKind,
     member_name: &str,
+    member_index: usize,
     dest_dir: &Path,
 ) -> Result<PathBuf> {
     match kind {
@@ -285,14 +285,26 @@ fn extract_one(
         }
         ArchiveKind::Tar | ArchiveKind::TarGz => {
             let mut archive = open_tar(path, kind == ArchiveKind::TarGz)?;
+            // Count members exactly as list_tar does, so member_index
+            // addresses the sequence the selection was built from.
+            let mut kept = 0;
             for entry in archive.entries()? {
                 let mut entry = entry?;
+                let is_file = entry.header().entry_type().is_file();
                 let name = entry.path()?.to_string_lossy().replace('\\', "/");
-                if name == member_name {
-                    let out = dest_dir.join(safe_basename(member_name)?);
-                    let mut writer = File::create(&out)?;
-                    std::io::copy(&mut entry, &mut writer)?;
-                    return Ok(out);
+                if is_kept(&name, !is_file) {
+                    if kept == member_index {
+                        if name != member_name {
+                            bail!(
+                                "archive member at index {member_index} changed: expected {member_name}, found {name}"
+                            );
+                        }
+                        let out = dest_dir.join(safe_basename(member_name)?);
+                        let mut writer = File::create(&out)?;
+                        std::io::copy(&mut entry, &mut writer)?;
+                        return Ok(out);
+                    }
+                    kept += 1;
                 }
             }
             bail!("member {member_name} not found in {}", path.display())
@@ -300,11 +312,30 @@ fn extract_one(
         ArchiveKind::Rar => {
             let out = dest_dir.join(safe_basename(member_name)?);
             let mut archive = unrar::Archive::new(path).open_for_processing()?;
+            // Count members exactly as list_rar does, so member_index
+            // addresses the sequence the selection was built from.
+            let mut kept = 0;
             while let Some(header) = archive.read_header()? {
-                let name = header.entry().filename.to_string_lossy().replace('\\', "/");
-                if name == member_name {
-                    header.extract_to(&out)?;
-                    return Ok(out);
+                let entry = header.entry();
+                // Processing mode re-reports a split file's continuation
+                // header in every volume part, while list mode hides it;
+                // skipping it keeps the kept counter aligned with the list.
+                if entry.is_split_before() {
+                    archive = header.skip()?;
+                    continue;
+                }
+                let name = entry.filename.to_string_lossy().replace('\\', "/");
+                if is_kept(&name, entry.is_directory()) {
+                    if kept == member_index {
+                        if name != member_name {
+                            bail!(
+                                "archive member at index {member_index} changed: expected {member_name}, found {name}"
+                            );
+                        }
+                        header.extract_to(&out)?;
+                        return Ok(out);
+                    }
+                    kept += 1;
                 }
                 archive = header.skip()?;
             }
@@ -423,31 +454,33 @@ pub fn entry_count(path: &Path) -> Result<usize> {
 }
 
 /// The member [`probe_archive`] extracts for `exts`: the first match by
-/// sorted name. Several qualifying members log a warning.
+/// sorted name. Several qualifying members log a warning. `members` is in
+/// archive order and the returned position addresses that sequence.
 fn pick_member(path: &Path, members: &[ArchiveMember], exts: &[&str]) -> Result<usize> {
-    let matches: Vec<usize> = members
+    let mut total = 0;
+    let picked = members
         .iter()
         .enumerate()
-        .filter(|(_, m)| name_has_ext(&m.name, exts))
-        .map(|(index, _)| index)
-        .collect();
-    match matches.as_slice() {
-        [] => Err(anyhow::Error::new(NoMatchingMember).context(format!(
+        .filter(|(_, member)| name_has_ext(&member.name, exts))
+        .inspect(|_| total += 1)
+        .min_by(|a, b| a.1.name.cmp(&b.1.name))
+        .map(|(index, _)| index);
+    match picked {
+        Some(index) => {
+            if total > 1 {
+                log::warn!(
+                    "{} contains {total} matching members; using {}",
+                    path.display(),
+                    members[index].name
+                );
+            }
+            Ok(index)
+        }
+        None => Err(anyhow::Error::new(NoMatchingMember).context(format!(
             "archive {} contains no matching image ({:?})",
             path.display(),
             exts
         ))),
-        [first, rest @ ..] => {
-            if !rest.is_empty() {
-                log::warn!(
-                    "{} contains {} matching members; using {}",
-                    path.display(),
-                    matches.len(),
-                    members[*first].name
-                );
-            }
-            Ok(*first)
-        }
     }
 }
 
@@ -480,19 +513,57 @@ fn probe_selection(path: &Path, exts: &[&str]) -> Result<ArchiveSelection> {
     })
 }
 
-fn cue_sidecar_members<'a>(
-    members: &'a [ArchiveMember],
+/// Directory portion of an in-archive member path (empty at the archive
+/// root), tolerating either separator.
+fn parent_dir(name: &str) -> &str {
+    match name.rsplit_once(['/', '\\']) {
+        Some((dir, _)) => dir,
+        None => "",
+    }
+}
+
+fn cue_sidecar_members(
+    path: &Path,
+    members: &[ArchiveMember],
     cue_name: &str,
     references: &HashSet<String>,
-) -> Vec<&'a ArchiveMember> {
-    members
-        .iter()
-        .filter(|member| {
-            member.name != cue_name
-                && references.contains(&basename(&member.name).to_ascii_lowercase())
-        })
-        .collect()
+) -> Result<Vec<usize>> {
+    let cue_dir = parent_dir(cue_name);
+    let mut indices = Vec::new();
+    for reference in references {
+        // A multi-disc archive repeats track names per disc folder, so the
+        // cue's own directory disambiguates; only a reference that matches
+        // nothing there falls back to the whole archive.
+        let hits: Vec<usize> = members
+            .iter()
+            .enumerate()
+            .filter(|(_, member)| {
+                member.name != cue_name && basename(&member.name).to_ascii_lowercase() == *reference
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let in_cue_dir: Vec<usize> = hits
+            .iter()
+            .copied()
+            .filter(|&index| parent_dir(&members[index].name).eq_ignore_ascii_case(cue_dir))
+            .collect();
+        let matched: &[usize] = match in_cue_dir.as_slice() {
+            [] => &hits,
+            found => found,
+        };
+        match matched {
+            [] => {}
+            [index] => indices.push(*index),
+            _ => bail!(
+                "referenced archive basename {reference} appears multiple times in {}",
+                path.display()
+            ),
+        }
+    }
+    indices.sort_unstable();
+    Ok(indices)
 }
+
 /// Resolve a read input, reusing an archive probe if available.
 pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
     resolve_input_with_selection(path, exts, None)
@@ -547,7 +618,13 @@ pub fn resolve_input_with_selection(
                 format_bytes(available)
             )));
         }
-        Some(extract_one(path, kind, &member.name, tmp.path())?)
+        Some(extract_one(
+            path,
+            kind,
+            &member.name,
+            member_index,
+            tmp.path(),
+        )?)
     } else {
         None
     };
@@ -562,12 +639,11 @@ pub fn resolve_input_with_selection(
             .into_iter()
             .map(|file| basename(&file.filename).to_ascii_lowercase())
             .collect();
-        let sidecars = cue_sidecar_members(&members, &member.name, &wanted);
-        for other in sidecars {
+        referenced = cue_sidecar_members(path, &members, &member.name, &wanted)?;
+        for &index in &referenced {
             needed = needed
-                .checked_add(other.size)
+                .checked_add(members[index].size)
                 .ok_or_else(|| anyhow!("archive extraction size overflow"))?;
-            referenced.push(other);
         }
     }
     if let Ok(available) = available_space(tmp.path()) {
@@ -584,10 +660,10 @@ pub fn resolve_input_with_selection(
     }
     let extracted = match extracted_cue {
         Some(path) => path,
-        None => extract_one(path, kind, &member.name, tmp.path())?,
+        None => extract_one(path, kind, &member.name, member_index, tmp.path())?,
     };
-    for other in referenced {
-        extract_one(path, kind, &other.name, tmp.path())?;
+    for index in referenced {
+        extract_one(path, kind, &members[index].name, index, tmp.path())?;
     }
 
     Ok(ResolvedInput {
@@ -696,6 +772,29 @@ mod tests {
         builder.into_inner().unwrap();
     }
 
+    /// Like [`write_tar`], but stores raw, possibly non-UTF-8 member name
+    /// bytes. Unix only: raw byte names only exist as an OsStr extension.
+    #[cfg(unix)]
+    fn write_tar_raw_names(path: &Path, entries: &[(&[u8], &[u8])]) {
+        use std::os::unix::ffi::OsStringExt;
+        let file = File::create(path).unwrap();
+        let mut builder = tar::Builder::new(file);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    std::ffi::OsString::from_vec(name.to_vec()),
+                    *data,
+                )
+                .unwrap();
+        }
+        builder.into_inner().unwrap();
+    }
+
     fn write_7z(path: &Path, entries: &[(&str, &[u8])]) {
         let mut writer = sevenz_rust2::ArchiveWriter::create(path).unwrap();
         for (name, data) in entries {
@@ -776,6 +875,50 @@ mod tests {
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"chd-data");
     }
 
+    /// Two tar members whose raw names differ only in a non-UTF-8 byte share
+    /// one lossy display name; the selection index, not the name, decides
+    /// which entry's bytes are extracted.
+    #[cfg(unix)]
+    #[test]
+    fn tar_selects_by_index_when_lossy_names_collide() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("collide.tar");
+        write_tar_raw_names(
+            &tar,
+            &[
+                (b"z.iso", b"unselected"),
+                (b".DS_Store", b"junk"),
+                (b"game\xff.iso", b"first"),
+                (b"game\xfe.iso", b"second"),
+            ],
+        );
+        let members = list_members(&tar).unwrap();
+        assert_eq!(members.len(), 3);
+        assert_eq!(members[0].name, "z.iso");
+        assert_eq!(members[1].name, members[2].name);
+        let selection = ArchiveSelection {
+            members,
+            member_index: 2,
+        };
+        let resolved = resolve_input_with_selection(&tar, &["iso"], Some(selection)).unwrap();
+        assert_eq!(std::fs::read(resolved.path()).unwrap(), b"second");
+    }
+
+    #[test]
+    fn tar_rejects_member_name_changes_after_probe() {
+        for gz in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(if gz { "g.tar.gz" } else { "g.tar" });
+            write_tar(&path, gz, &[("game.iso", b"original")]);
+            let selection = probe_archive(&path, &["iso"]).unwrap().unwrap();
+            write_tar(&path, gz, &[("other.iso", b"replacement")]);
+            let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("expected game.iso, found other.iso"), "{err}");
+        }
+    }
+
     #[test]
     fn targz_detection_and_extraction() {
         let dir = tempfile::tempdir().unwrap();
@@ -839,6 +982,19 @@ mod tests {
     }
 
     #[test]
+    fn rar_rejects_member_name_mismatch_at_selected_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.rar");
+        std::fs::write(&path, RAR_FIXTURE).unwrap();
+        let mut selection = probe_archive(&path, &["iso"]).unwrap().unwrap();
+        selection.members[selection.member_index].name = "other.iso".into();
+        let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("expected other.iso, found game.iso"), "{err}");
+    }
+
+    #[test]
     fn bare_gzip_reports_unsupported() {
         let dir = tempfile::tempdir().unwrap();
         let gz = dir.path().join("game.iso.gz");
@@ -871,6 +1027,9 @@ mod tests {
             zip::CompressionMethod::Stored,
             &[("b.iso", b"second"), ("a.iso", b"first")],
         );
+        let members = list_members(&zip).unwrap();
+        assert_eq!(members[0].name, "b.iso");
+        assert_eq!(members[1].name, "a.iso");
         let resolved = resolve_input(&zip, &["iso"]).unwrap();
         assert_eq!(resolved.path().file_name().unwrap(), "a.iso");
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"first");
@@ -898,6 +1057,60 @@ mod tests {
         );
         // Only referenced bins are pulled, not every bin in the archive.
         assert!(!dir.join("unrelated.bin").exists());
+    }
+
+    #[test]
+    fn cue_rejects_ambiguous_referenced_basenames() {
+        let cue = b"FILE \"Track 01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+        for names in [
+            ["Disc 1/Track 01.bin", "Disc 2/Track 01.bin"],
+            ["Disc 1/Track 01.bin", "Disc 2/TRACK 01.BIN"],
+        ] {
+            for extension in ["zip", "tar"] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = dir.path().join(format!("disc.{extension}"));
+                let entries: &[(&str, &[u8])] = &[
+                    ("disc.cue", cue),
+                    (names[0], b"first"),
+                    (names[1], b"second"),
+                ];
+                if extension == "zip" {
+                    write_zip(&path, zip::CompressionMethod::Stored, entries);
+                } else {
+                    write_tar(&path, false, entries);
+                }
+                let err = resolve_input(&path, &["cue"]).unwrap_err().to_string();
+                assert!(
+                    err.contains("referenced archive basename track 01.bin appears multiple times"),
+                    "{err}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cue_resolves_track_references_within_its_own_disc_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("multi.zip");
+        let cue = b"FILE \"Track 01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[
+                ("Disc 1/game.cue", cue.as_slice()),
+                ("Disc 1/Track 01.bin", b"first-disc"),
+                ("Disc 2/game.cue", cue.as_slice()),
+                ("Disc 2/Track 01.bin", b"second-disc"),
+            ],
+        );
+        let resolved = resolve_input(&zip, &["cue"]).unwrap();
+        // The first sorted cue is Disc 1's, and its track resolves inside
+        // Disc 1 even though Disc 2 repeats the basename.
+        assert_eq!(resolved.output_basis().file_name().unwrap(), "game.cue");
+        assert_eq!(
+            std::fs::read(resolved.path().parent().unwrap().join("Track 01.bin")).unwrap(),
+            b"first-disc"
+        );
     }
 
     #[test]
@@ -970,10 +1183,14 @@ mod tests {
             },
         ];
         let wanted = HashSet::from(["one.bin".to_string(), "two.bin".to_string()]);
-        let tracks = cue_sidecar_members(&members, "disc.cue", &wanted);
+        let tracks =
+            cue_sidecar_members(Path::new("a.rar"), &members, "disc.cue", &wanted).unwrap();
+        assert_eq!(tracks, [1, 2]);
         let required = tracks
             .iter()
-            .try_fold(members[0].size, |sum, member| sum.checked_add(member.size))
+            .try_fold(members[0].size, |sum, &index| {
+                sum.checked_add(members[index].size)
+            })
             .unwrap();
         assert_eq!(required, 332);
         assert!(
