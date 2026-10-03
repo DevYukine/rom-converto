@@ -5,7 +5,7 @@
 //! signatures no longer validate, so CFW installers reject it.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -55,14 +55,14 @@ pub fn merge_containers(
 ) -> NxResult<()> {
     validate_merge_paths(inputs, output)?;
     let sel = select_content(inputs, keys)?;
-    write_selection(&sel, output, format, progress, cancel)?;
+    write_selection(&sel, File::create(output)?, format, progress, cancel)?;
     progress.warn(SIGNATURE_WARNING);
     Ok(())
 }
 
 fn write_selection(
     sel: &Selection,
-    output: &Path,
+    output: File,
     format: NxMergeFormat,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
@@ -136,11 +136,11 @@ pub async fn merge_containers_async(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
+        move |file, bytes_done, cancel| {
             let proxy = AtomicProgress {
                 counter: bytes_done,
             };
-            write_selection(&sel, &write_path, format, &proxy, &cancel)
+            write_selection(&sel, file, format, &proxy, &cancel)
         },
     )
     .await?;
@@ -150,7 +150,7 @@ pub async fn merge_containers_async(
 
 fn write_super_xci(
     sel: &Selection,
-    output: &Path,
+    mut out: File,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> NxResult<()> {
@@ -224,11 +224,6 @@ fn write_super_xci(
     let secure_offset =
         XCI_PREFIX_SIZE as u64 + root_header.bytes.len() as u64 + stub.bytes.len() as u64 * 2;
 
-    let mut out = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     out.write_all(&vec![0u8; XCI_PREFIX_SIZE])?; // placeholder prefix
     out.write_all(&root_header.bytes)?;
     out.write_all(&stub.bytes)?; // update

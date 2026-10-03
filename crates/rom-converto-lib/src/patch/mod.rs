@@ -262,18 +262,12 @@ impl Patch {
                 "source does not match the patch: embedded CRC32 {crc:08x}, source has {actual:08x}"
             );
         }
-        let temp = crate::util::scratch_output_path(output)?;
-        // Read-write: the format appliers hash the result back through this
-        // handle to verify a carried target checksum before publishing.
+        let (out, temp) = crate::util::scratch_output_file(output)
+            .context("creating the patched output")?
+            .into_parts();
         // Positional IO through `File` is unbuffered, so no flush is needed.
-        let out = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)
-            .context("creating the patched output")?;
         self.apply_to(source, &out, cancel)?;
+        drop(out);
         crate::util::publish_temp(temp, output, true).context("publishing the patched output")?;
         Ok(())
     }

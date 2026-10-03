@@ -62,8 +62,8 @@ pub async fn decompress_disc(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            decompress_blocking(&input_owned, &write_path, bytes_done, &cancel)
+        move |file, bytes_done, cancel| {
+            decompress_blocking(&input_owned, file, bytes_done, &cancel)
         },
     )
     .await?;
@@ -94,8 +94,8 @@ pub async fn decompress_disc_to_wbfs(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            decompress_to_wbfs_blocking(&input_owned, &write_path, bytes_done, &cancel)
+        move |file, bytes_done, cancel| {
+            decompress_to_wbfs_blocking(&input_owned, file, bytes_done, &cancel)
         },
     )
     .await?;
@@ -206,7 +206,7 @@ fn parse_rvz_metadata(input: &Path) -> RvzResult<RvzMetadata> {
 /// then decodes every raw region and partition in order into `output`.
 pub fn decompress_blocking(
     input: &Path,
-    output: &Path,
+    output: std::fs::File,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {
@@ -262,7 +262,7 @@ pub fn decompress_blocking(
 
 fn decompress_to_wbfs_blocking(
     input: &Path,
-    output: &Path,
+    output: std::fs::File,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {

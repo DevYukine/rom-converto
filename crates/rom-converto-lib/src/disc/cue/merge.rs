@@ -5,7 +5,7 @@ use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::disc::cue::CueParser;
 use crate::disc::cue::error::CueError;
 use crate::disc::cue::models::{CueSheet, FileType, Msf};
-use crate::util::{BYTES_PER_MB, CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::util::{BYTES_PER_MB, CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 use log::{debug, info};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -249,8 +249,8 @@ pub async fn merge_bin(
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
     }
-    let output_bin_tmp = scratch_output_path(&output_bin_path)?;
-    let output_cue_tmp = scratch_output_path(&output_cue_path)?;
+    let (out_file, output_bin_tmp) = scratch_output_file(&output_bin_path)?.into_parts();
+    let (mut cue_file, output_cue_tmp) = scratch_output_file(&output_cue_path)?.into_parts();
 
     let bytes_done = Arc::new(AtomicU64::new(0));
     let bytes_done_bg = bytes_done.clone();
@@ -262,7 +262,6 @@ pub async fn merge_bin(
         if cancel_bg.is_cancelled() {
             return Err(Cancelled.into());
         }
-        let out_file = std::fs::File::create(&output_bin_tmp)?;
         let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
         let mut buffer = vec![0u8; IO_BUFFER_SIZE];
         for bin_path in &bin_paths {
@@ -280,7 +279,7 @@ pub async fn merge_bin(
             }
         }
         writer.flush()?;
-        std::fs::write(&output_cue_tmp, cue_text.as_bytes())?;
+        cue_file.write_all(cue_text.as_bytes())?;
         if cancel_bg.is_cancelled() {
             return Err(Cancelled.into());
         }
@@ -615,10 +614,12 @@ mod tests {
         let bin_path = dir.path().join("merged.bin");
         let cue_path = dir.path().join("merged.cue");
         std::fs::write(&cue_path, b"raced cue").unwrap();
-        let bin_temp = scratch_output_path(&bin_path).unwrap();
-        let cue_temp = scratch_output_path(&cue_path).unwrap();
-        std::fs::write(&bin_temp, b"new bin").unwrap();
-        std::fs::write(&cue_temp, b"new cue").unwrap();
+        let (mut bin_file, bin_temp) = scratch_output_file(&bin_path).unwrap().into_parts();
+        let (mut cue_file, cue_temp) = scratch_output_file(&cue_path).unwrap().into_parts();
+        bin_file.write_all(b"new bin").unwrap();
+        cue_file.write_all(b"new cue").unwrap();
+        drop(bin_file);
+        drop(cue_file);
 
         assert!(
             crate::util::publish_set(vec![(bin_temp, &bin_path), (cue_temp, &cue_path)], false,)

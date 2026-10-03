@@ -230,12 +230,11 @@ pub async fn decrypt_ps3_iso(
         force,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> Ps3Result<()> {
+        move |out_file, bytes_done, cancel| -> Ps3Result<()> {
             use crate::util::worker_pool::{Pool, drive, parallelism};
 
             let in_file = std::fs::File::open(&input_owned)?;
             let mut reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
-            let out_file = std::fs::File::create(&write_path)?;
             let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
             let workers = make_ps3_decrypt_workers(parallelism(), key.0);

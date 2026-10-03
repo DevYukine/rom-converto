@@ -182,7 +182,10 @@ fn write_split(
     let paths = plan.output_paths(output_dir);
     let mut written = Vec::with_capacity(paths.len());
     for (sources, out_path) in plan.groups.values().zip(paths) {
-        if let Err(err) = write_pfs0_from_sources(&out_path, sources, progress, cancel) {
+        if let Err(err) = std::fs::File::create(&out_path)
+            .map_err(crate::nintendo::nx::error::NxError::from)
+            .and_then(|file| write_pfs0_from_sources(file, sources, progress, cancel))
+        {
             let _ = std::fs::remove_file(&out_path);
             for path in &written {
                 let _ = std::fs::remove_file(path);

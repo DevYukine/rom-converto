@@ -2,7 +2,7 @@
 //! same placeholder-header-then-rewrite pattern, NCZ files routed
 //! through `ncz::ncz_to_nca`, everything else copied verbatim.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +13,7 @@ use crate::nintendo::nx::container::{
     ContainerKind, detect_container, read_xci_hfs0_offset, xci_root_partitions,
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
+#[cfg(test)]
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0::{
     self as hfs0_mod, DEFAULT_HASHED_REGION, Hfs0FileSpec, Hfs0LayoutHints,
@@ -31,10 +32,23 @@ use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_
 /// # Errors
 /// Fails if `input` is not a compressed NSZ/XCZ, or on the underlying
 /// I/O, zstd, or NCA-parsing errors.
+#[cfg(test)]
 pub fn decompress_container(
     input: &Path,
     output: &Path,
     _keys: &KeySet,
+    progress: &dyn ProgressReporter,
+    cancel: Option<&CancelToken>,
+) -> NxResult<()> {
+    let (file, temp) = crate::util::scratch_output_file(output)?.into_parts();
+    decompress_container_file(input, file, progress, cancel)?;
+    crate::util::publish_temp(temp, output, true)?;
+    Ok(())
+}
+
+fn decompress_container_file(
+    input: &Path,
+    output: File,
     progress: &dyn ProgressReporter,
     cancel: Option<&CancelToken>,
 ) -> NxResult<()> {
@@ -57,7 +71,6 @@ pub fn decompress_container(
 pub async fn decompress_container_async(
     input: PathBuf,
     output: PathBuf,
-    keys: KeySet,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> NxResult<()> {
@@ -68,11 +81,11 @@ pub async fn decompress_container_async(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
+        move |file, bytes_done, cancel| {
             let proxy = AtomicProgress {
                 counter: bytes_done,
             };
-            decompress_container(&input, &write_path, &keys, &proxy, Some(&cancel))
+            decompress_container_file(&input, file, &proxy, Some(&cancel))
         },
     )
     .await
@@ -80,7 +93,7 @@ pub async fn decompress_container_async(
 
 fn decompress_pfs0(
     input: &Path,
-    output: &Path,
+    mut out: File,
     progress: &dyn ProgressReporter,
     cancel: Option<&CancelToken>,
 ) -> NxResult<()> {
@@ -110,12 +123,6 @@ fn decompress_pfs0(
     };
     let placeholder_header = pfs0_mod::build_header(&placeholder_specs, &hints)?;
 
-    let mut out = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     out.write_all(&placeholder_header.bytes)?;
     if hints.first_file_data_offset > 0 {
         write_zeros(&mut out, hints.first_file_data_offset)?;
@@ -158,7 +165,7 @@ fn decompress_pfs0(
 
 fn decompress_xci(
     input: &Path,
-    output: &Path,
+    mut out: File,
     progress: &dyn ProgressReporter,
     cancel: Option<&CancelToken>,
 ) -> NxResult<()> {
@@ -183,12 +190,6 @@ fn decompress_xci(
     }
     drop(reader);
 
-    let mut out = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     copy_range(&in_file, 0, hfs0_off, &mut out)?;
 
     let placeholder_root_specs: Vec<Hfs0FileSpec> = sub_partitions

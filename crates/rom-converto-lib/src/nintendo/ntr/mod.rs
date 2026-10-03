@@ -216,10 +216,9 @@ async fn crypt_ntr_rom(
         force,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> NtrResult<()> {
+        move |out_file, bytes_done, cancel| -> NtrResult<()> {
             let in_file = std::fs::File::open(&input_owned)?;
             let mut reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
-            let out_file = std::fs::File::create(&write_path)?;
             let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
             let mut chunk = vec![0u8; IO_BUFFER_SIZE];

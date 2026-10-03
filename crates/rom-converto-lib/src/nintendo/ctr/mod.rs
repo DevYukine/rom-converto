@@ -21,7 +21,7 @@ use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
 use crate::util::{
     CancelToken, Cancelled, ConflictPolicy, ConflictResolution, ProgressReporter, resolve_conflict,
-    scratch_output_path,
+    scratch_output_file,
 };
 use anyhow::Result;
 use binrw::BinRead;
@@ -86,8 +86,8 @@ pub async fn decrypt_cia(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output)?;
-    let out = File::create(&tmp).await?;
+    let (file, tmp) = scratch_output_file(output)?.into_parts();
+    let out = File::from_std(file);
     let mut out = BufWriter::new(out);
 
     decrypt_from_encrypted_cia(input, &mut out, progress, &cancel).await?;
@@ -153,18 +153,15 @@ async fn decrypt_ncsd(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output)?;
-
     // The verbatim copy carries the NCSD header, inter-partition gaps, and any
     // plain partitions; parse_and_decrypt_ncsd overwrites each NCCH partition
     // region in place, so the decrypt streams straight into the final temp
     // without per-partition scratch files.
-    fs::copy(input, &tmp).await?;
-    let mut out = fs::OpenOptions::new()
-        .write(true)
-        .read(true)
-        .open(&tmp)
-        .await?;
+    let (input_path, output_path) = (input.to_path_buf(), output.to_path_buf());
+    let (_staging, tmp, out) =
+        tokio::task::spawn_blocking(move || copy_to_private_scratch(&input_path, &output_path))
+            .await??;
+    let mut out = File::from_std(out);
     parse_and_decrypt_ncsd(input, &mut out, None, progress, cancel).await?;
     out.flush().await?;
     drop(out);
@@ -180,9 +177,8 @@ async fn decrypt_ncch(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let tmp = scratch_output_path(output)?;
-
-    let mut out = File::create(&tmp).await?;
+    let (file, tmp) = scratch_output_file(output)?.into_parts();
+    let mut out = File::from_std(file);
     parse_and_decrypt_ncch(input, &mut out, progress, cancel).await?;
     out.flush().await?;
     drop(out);
@@ -436,8 +432,9 @@ async fn convert_cdn_to_cia_single(
         );
     }
 
-    let encrypted = private_temp_path(&final_output, ".cia")?;
-    let out = File::create(&encrypted).await?;
+    let staging = private_temp_dir(&final_output)?;
+    let (file, encrypted) = private_temp_file(staging.path(), ".cia")?.into_parts();
+    let out = File::from_std(file);
     let mut out_buffered = BufWriter::new(out);
     if let Err(err) = write_cia(
         &mut out_buffered,
@@ -459,8 +456,11 @@ async fn convert_cdn_to_cia_single(
     out_buffered.flush().await?;
     drop(out_buffered);
     let decrypted = if opts.decrypt {
-        let decrypted = private_temp_path(&final_output, ".cia")?;
-        decrypt_cia(&encrypted, &decrypted, progress, cancel.clone()).await?;
+        let (file, decrypted) = private_temp_file(staging.path(), ".cia")?.into_parts();
+        let mut out = BufWriter::new(File::from_std(file));
+        decrypt_from_encrypted_cia(&encrypted, &mut out, progress, &cancel).await?;
+        out.flush().await?;
+        drop(out);
         Some(decrypted)
     } else {
         None
@@ -468,7 +468,7 @@ async fn convert_cdn_to_cia_single(
 
     if opts.compress {
         let output = decrypted.as_deref().unwrap_or(&encrypted);
-        let compressed = private_temp_path(&final_output, ".zcia")?;
+        let compressed = private_temp_file(staging.path(), ".zcia")?.into_temp_path();
         compress_rom(output, &compressed, None, false, progress, cancel).await?;
         publish_temp_path(compressed, &final_output, opts.on_conflict)?;
     } else {
@@ -548,15 +548,50 @@ async fn verify_forged_title_key(
     Ok(())
 }
 
-fn private_temp_path(output: &Path, suffix: &str) -> std::io::Result<TempPath> {
-    let parent = output.parent().unwrap_or_else(|| Path::new("."));
-    let path = tempfile::Builder::new()
+// Intermediates re-opened by path are staged in a private directory in the
+// output's parent (same filesystem, so publishing stays a rename): 0700 on
+// unix keeps other local users out (Windows grants no equivalent), and the
+// directory is removed when the guard drops, including on error.
+fn private_temp_dir(output: &Path) -> std::io::Result<tempfile::TempDir> {
+    let parent = output
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    tempfile::Builder::new()
         .prefix(".rom-converto-")
-        .suffix(suffix)
-        .tempfile_in(parent)?
-        .into_temp_path();
-    std::fs::remove_file(&path)?;
-    Ok(path)
+        .tempdir_in(parent)
+}
+
+fn private_temp_file(dir: &Path, suffix: &str) -> std::io::Result<tempfile::NamedTempFile> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".rom-converto-").suffix(suffix);
+    // Published into the output's parent by rename, so the file must keep
+    // the process's normal create mode (0666 & !umask), not a private 0600.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    builder.tempfile_in(dir)
+}
+
+/// Copies `input` into a private scratch next to `output` and opens it for
+/// in-place rewriting. Going through `fs::copy` keeps the filesystem clone
+/// fast path (APFS clonefile, `copy_file_range`); opening by path is safe
+/// because the directory was just created 0700. The guard removes the
+/// directory on drop, so publish the returned path first.
+pub(super) fn copy_to_private_scratch(
+    input: &Path,
+    output: &Path,
+) -> std::io::Result<(tempfile::TempDir, TempPath, std::fs::File)> {
+    let dir = private_temp_dir(output)?;
+    let path = dir.path().join(output.file_name().unwrap_or_default());
+    std::fs::copy(input, &path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    Ok((dir, TempPath::try_from_path(path)?, file))
 }
 
 fn publish_temp_path(path: TempPath, output: &Path, policy: ConflictPolicy) -> std::io::Result<()> {
@@ -1179,8 +1214,12 @@ mod tests {
             ConflictPolicy::OverwriteInvalid,
         ] {
             let output = tmp.path().join(format!("{policy:?}.cia"));
-            let staged = private_temp_path(&output, ".cia").unwrap();
-            std::fs::write(&staged, b"NEW").unwrap();
+            let staging = private_temp_dir(&output).unwrap();
+            let (mut file, staged) = private_temp_file(staging.path(), ".cia")
+                .unwrap()
+                .into_parts();
+            file.write_all(b"NEW").unwrap();
+            drop(file);
             std::fs::write(&output, b"RACER").unwrap();
 
             let err = publish_temp_path(staged, &output, policy).unwrap_err();
@@ -1189,8 +1228,12 @@ mod tests {
         }
 
         let output = tmp.path().join("overwrite.cia");
-        let staged = private_temp_path(&output, ".cia").unwrap();
-        std::fs::write(&staged, b"NEW").unwrap();
+        let staging = private_temp_dir(&output).unwrap();
+        let (mut file, staged) = private_temp_file(staging.path(), ".cia")
+            .unwrap()
+            .into_parts();
+        file.write_all(b"NEW").unwrap();
+        drop(file);
         std::fs::write(&output, b"OLD").unwrap();
         publish_temp_path(staged, &output, ConflictPolicy::Overwrite).unwrap();
         assert_eq!(std::fs::read(output).unwrap(), b"NEW");
@@ -1264,6 +1307,17 @@ mod tests {
             .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"))
     }
 
+    fn rom_converto_staging_present(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".rom-converto-")
+            })
+    }
+
     #[tokio::test]
     async fn decrypt_cancel_before_start_leaves_no_output() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1281,7 +1335,10 @@ mod tests {
             "error chain must carry the cancelled variant"
         );
         assert!(!output.exists(), "no partial output");
-        assert!(!crate::util::scratch_output_exists(&output).unwrap());
+        assert!(
+            !rom_converto_staging_present(tmp.path()),
+            "no .rom-converto-* staging left behind"
+        );
         assert!(
             !ncch_scratch_present(tmp.path()),
             "no leftover .ncch scratch"
@@ -1344,7 +1401,10 @@ mod tests {
 
         assert!(output.exists(), "output survives a post-completion cancel");
         assert!(parses_as_cia(&output), "decrypted output is a valid CIA");
-        assert!(!crate::util::scratch_output_exists(&output).unwrap());
+        assert!(
+            !rom_converto_staging_present(tmp.path()),
+            "no .rom-converto-* staging left behind"
+        );
         assert!(
             !ncch_scratch_present(tmp.path()),
             "no leftover .ncch scratch"
@@ -1367,7 +1427,10 @@ mod tests {
         let err = result.expect_err("a pre-cancelled token must abort the decrypt");
         assert!(Cancelled::in_chain(&err));
         assert_eq!(std::fs::read(&output).unwrap(), original);
-        assert!(!crate::util::scratch_output_exists(&output).unwrap());
+        assert!(
+            !rom_converto_staging_present(tmp.path()),
+            "no .rom-converto-* staging left behind"
+        );
     }
 
     #[tokio::test]

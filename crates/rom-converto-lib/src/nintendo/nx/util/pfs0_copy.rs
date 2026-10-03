@@ -1,9 +1,8 @@
 //! Verbatim byte-range copying into a freshly built PFS0. Shared by the
 //! super-NSP merge and the container split.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 
 use crate::nintendo::nx::error::NxResult;
@@ -19,14 +18,14 @@ pub(crate) struct Pfs0Source {
     pub name: String,
 }
 
-/// Builds a PFS0 over `sources` in order at `output` and copies each
+/// Builds a PFS0 over `sources` in order in `out` and copies each
 /// source's byte range verbatim.
 ///
 /// # Errors
-/// Returns an error if `output` cannot be written or a source range
+/// Returns an error if `out` cannot be written or a source range
 /// cannot be read, and [`NxError::Cancelled`] if `cancel` fires mid-copy.
 pub(crate) fn write_pfs0_from_sources(
-    output: &Path,
+    mut out: File,
     sources: &[Pfs0Source],
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
@@ -34,11 +33,6 @@ pub(crate) fn write_pfs0_from_sources(
     let specs: Vec<(String, u64)> = sources.iter().map(|s| (s.name.clone(), s.size)).collect();
     let header = build_header(&specs, &Pfs0LayoutHints::default())?;
 
-    let mut out = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     out.write_all(&header.bytes)?;
     for s in sources {
         copy_range(&s.file, s.abs_offset, s.size, &mut out, progress, cancel)?;

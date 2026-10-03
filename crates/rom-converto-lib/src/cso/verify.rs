@@ -163,7 +163,7 @@ mod tests {
         let bytes_done = Arc::new(AtomicU64::new(0));
         write_cso_blocking(
             &iso,
-            &packed,
+            std::fs::File::create(&packed).unwrap(),
             CsoFormat::Cso,
             2048,
             0,

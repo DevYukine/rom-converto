@@ -107,8 +107,8 @@ pub async fn wud_to_wux(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            write_wux_blocking(reader, &write_path, sector_count, &bytes_done, &cancel)
+        move |file, bytes_done, cancel| {
+            write_wux_blocking(reader, file, sector_count, &bytes_done, &cancel)
         },
     )
     .await?;
@@ -148,9 +148,7 @@ pub async fn wux_to_wud(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            restore_wud_blocking(reader, &write_path, &bytes_done, &cancel)
-        },
+        move |file, bytes_done, cancel| restore_wud_blocking(reader, file, &bytes_done, &cancel),
     )
     .await?;
 
@@ -175,12 +173,11 @@ pub(crate) fn logical_disc_size(path: &Path) -> WupResult<u64> {
 /// end.
 fn write_wux_blocking(
     mut reader: WudReader,
-    output: &Path,
+    out_file: std::fs::File,
     sector_count: u64,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> WupResult<()> {
-    let out_file = std::fs::File::create(output)?;
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
     let uncompressed = sector_count * SECTOR_SIZE as u64;
@@ -283,11 +280,10 @@ fn write_wux_blocking(
 /// pool, one reused chunk buffer, cancel checked per chunk.
 fn restore_wud_blocking(
     reader: WuxReader,
-    output: &Path,
+    out_file: std::fs::File,
     bytes_done: &Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> WupResult<()> {
-    let out_file = std::fs::File::create(output)?;
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
     let logical_count = reader.total_sectors();

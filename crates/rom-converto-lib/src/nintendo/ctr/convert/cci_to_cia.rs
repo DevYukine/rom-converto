@@ -16,7 +16,7 @@ use crate::nintendo::ctr::models::signature::{SignatureData, SignatureType};
 use crate::nintendo::ctr::models::title_metadata::{
     ContentChunkRecord, ContentInfoRecord, ContentType, TitleMetadata, TitleMetadataHeader,
 };
-use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 use aes::cipher::{KeyIvInit, StreamCipher};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite, Endian};
@@ -142,8 +142,10 @@ pub async fn cci_to_cia(
             .set_content_index(record.content_index as usize);
     }
 
-    let tmp = scratch_output_path(output)?;
-    let out = File::create(&tmp).await.context("creating CIA output")?;
+    let (file, tmp) = scratch_output_file(output)
+        .context("creating CIA output")?
+        .into_parts();
+    let out = File::from_std(file);
     let mut out = BufWriter::new(out);
 
     let stream = async {

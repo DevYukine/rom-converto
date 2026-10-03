@@ -61,8 +61,8 @@ pub async fn convert_to_xiso(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            create::create_blocking(prepared, &write_path, options, bytes_done, &cancel)
+        move |file, bytes_done, cancel| {
+            create::create_blocking(prepared, file, options, bytes_done, &cancel)
         },
     )
     .await?;

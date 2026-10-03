@@ -54,7 +54,7 @@ pub async fn decompress_rom(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> Z3dsResult<u64> {
+        move |out_file, bytes_done, cancel| -> Z3dsResult<u64> {
             // Re-reading the 32-byte header here is cheaper than shipping the parsed
             // struct across the await.
             let mut header_file = std::fs::File::open(&input_owned)?;
@@ -79,7 +79,6 @@ pub async fn decompress_rom(
             // because workers pread their own frames.
             bytes_done.fetch_add(compressed_size, Ordering::Relaxed);
 
-            let out_file = std::fs::File::create(&write_path)?;
             let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
             let Some(admission) = decompression_admission(&work_items, parallelism()) else {

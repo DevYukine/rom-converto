@@ -18,19 +18,22 @@ use crate::disc::chd::{
 use crate::disc::cue::to_iso::cue_to_iso;
 use crate::util::{CancelToken, ProgressReporter};
 
-fn temp_iso_path(output: &Path) -> std::io::Result<tempfile::TempPath> {
+// The ISO intermediate is re-opened by path for the second pass, so it is
+// staged inside a private directory in the output's parent (same filesystem,
+// so publishing stays a rename) instead of directly in the output directory,
+// where a local attacker could swap the file between write and read: 0700 on
+// unix keeps other local users out (Windows grants no equivalent). The
+// directory is removed when the guard drops, including on error.
+fn temp_iso_stage(output: &Path) -> std::io::Result<(tempfile::TempDir, PathBuf)> {
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut prefix = std::ffi::OsString::from(".");
-    prefix.push(output.file_name().unwrap_or_default());
-    prefix.push(".");
-    tempfile::Builder::new()
-        .prefix(&prefix)
-        .suffix(".iso.tmp")
-        .tempfile_in(parent)
-        .map(tempfile::NamedTempFile::into_temp_path)
+    let dir = tempfile::Builder::new()
+        .prefix(".rom-converto-")
+        .tempdir_in(parent)?;
+    let path = dir.path().join("iso.tmp");
+    Ok((dir, path))
 }
 
 fn reject_unsupported_input(input: &Path) -> Result<()> {
@@ -62,18 +65,18 @@ pub async fn cso_to_chd(
 ) -> Result<()> {
     reject_unsupported_input(&input_path)?;
 
-    let temp_iso = temp_iso_path(&output_path)?;
+    let (_temp_dir, temp_iso) = temp_iso_stage(&output_path)?;
     decompress_from_cso(
         progress,
         input_path.clone(),
-        temp_iso.to_path_buf(),
+        temp_iso.clone(),
         true,
         cancel.clone(),
     )
     .await?;
     convert_disc_to_chd(
         progress,
-        temp_iso.to_path_buf(),
+        temp_iso,
         output_path.clone(),
         mode,
         opts.clone(),
@@ -102,18 +105,18 @@ pub async fn chd_to_cso(
         );
     }
 
-    let temp_iso = temp_iso_path(&output_path)?;
+    let (_temp_dir, temp_iso) = temp_iso_stage(&output_path)?;
     extract_from_chd(
         progress,
         input_path.clone(),
-        temp_iso.to_path_buf(),
+        temp_iso.clone(),
         None,
         cancel.clone(),
     )
     .await?;
     compress_to_cso(
         progress,
-        temp_iso.to_path_buf(),
+        temp_iso,
         output_path.clone(),
         opts.clone(),
         cancel.clone(),
@@ -132,11 +135,11 @@ pub async fn cue_to_cso(
     format: CsoFormat,
     force: bool,
 ) -> Result<()> {
-    let temp_iso = temp_iso_path(&output_path)?;
-    cue_to_iso(progress, cue_path.clone(), temp_iso.to_path_buf(), true).await?;
+    let (_temp_dir, temp_iso) = temp_iso_stage(&output_path)?;
+    cue_to_iso(progress, cue_path.clone(), temp_iso.clone(), true).await?;
     compress_to_cso(
         progress,
-        temp_iso.to_path_buf(),
+        temp_iso,
         output_path.clone(),
         CsoCompressOptions {
             format,
@@ -156,8 +159,24 @@ mod tests {
     use crate::disc::chd::{extract_from_chd, verify_chd};
     use crate::util::NoProgress;
 
+    // Intermediates stage in a `.rom-converto-*` directory in the output's
+    // parent, so success and failure alike must leave no such entry behind.
     fn assert_no_temp_iso(output: &Path) {
-        assert!(!crate::util::scratch_output_exists(output).unwrap());
+        let parent = output.parent().unwrap_or_else(|| Path::new("."));
+        let leftover = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".rom-converto-")
+            });
+        assert!(
+            !leftover,
+            "no .rom-converto-* staging left in {}",
+            parent.display()
+        );
     }
 
     fn mixed_iso(sectors: usize) -> Vec<u8> {

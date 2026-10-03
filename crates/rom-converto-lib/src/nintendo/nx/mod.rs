@@ -35,9 +35,9 @@ pub mod walker;
 #[cfg(test)]
 pub mod test_fixtures;
 
-pub use compress::{NxCompressOptions, compress_container, compress_container_async};
+pub use compress::{NxCompressOptions, compress_container_async};
 pub use container::{ContainerKind, detect_container};
-pub use decompress::{decompress_container, decompress_container_async};
+pub use decompress::decompress_container_async;
 pub use decrypt::{decrypt_container, decrypt_container_async};
 pub use derive_paths::{
     derive_compressed_path, derive_decompressed_path, derive_decrypted_path, derive_merged_path,

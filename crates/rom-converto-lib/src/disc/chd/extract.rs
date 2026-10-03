@@ -9,7 +9,7 @@ use crate::disc::chd::reader::cue_generator::{
 use crate::disc::chd::reader::{ChdFlavor, SyncChdHandle};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use log::{debug, info};
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -84,11 +84,14 @@ pub async fn extract_from_chd(
         })
         .collect();
     let cue_content = generate_cue_sheet(&bin_names, &tracks);
-    let bin_temps: Vec<tempfile::TempPath> = bin_paths
-        .iter()
-        .map(|path| crate::util::scratch_output_path(path))
-        .collect::<io::Result<_>>()?;
-    let cue_temp = crate::util::scratch_output_path(&cue_path)?;
+    let mut bin_files = Vec::with_capacity(bin_paths.len());
+    let mut bin_temps = Vec::with_capacity(bin_paths.len());
+    for path in &bin_paths {
+        let (file, temp) = crate::util::scratch_output_file(path)?.into_parts();
+        bin_files.push(file);
+        bin_temps.push(temp);
+    }
+    let (mut cue_file, cue_temp) = crate::util::scratch_output_file(&cue_path)?.into_parts();
 
     let total_mb = total_bin_bytes as f64 / BYTES_PER_MB;
     progress.start(
@@ -117,12 +120,12 @@ pub async fn extract_from_chd(
             let frame_audio = chd_frame_audio(&tracks, padded);
 
             let mut bin_writer = TrackBinWriter::new(
-                bin_temps
-                    .iter()
+                bin_files
+                    .into_iter()
                     .zip(&tracks)
-                    .map(|(temp, track)| {
+                    .map(|(file, track)| {
                         (
-                            temp.as_ref(),
+                            file,
                             crate::disc::chd::layout::chd_track_decoded_size(track),
                         )
                     })
@@ -162,13 +165,8 @@ pub async fn extract_from_chd(
     });
     let bin_temps =
         crate::util::await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await?;
-    {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&cue_temp)?;
-        file.write_all(cue_content.as_bytes())?;
-    }
+    cue_file.write_all(cue_content.as_bytes())?;
+    drop(cue_file);
     if cancel.is_cancelled() {
         return Err(crate::util::Cancelled.into());
     }
@@ -222,14 +220,14 @@ pub(crate) fn possible_track_bins(cue: &Path) -> impl Iterator<Item = PathBuf> {
         .chain((1..=9).map(move |track| track_bin_path(cue, Some(track), true)))
 }
 
-struct TrackBinWriter<'a> {
-    remaining: std::vec::IntoIter<(&'a Path, u64)>,
+struct TrackBinWriter {
+    remaining: std::vec::IntoIter<(File, u64)>,
     current: Option<BufWriter<File>>,
     bytes_left: u64,
 }
 
-impl<'a> TrackBinWriter<'a> {
-    fn new(tracks: Vec<(&'a Path, u64)>) -> Self {
+impl TrackBinWriter {
+    fn new(tracks: Vec<(File, u64)>) -> Self {
         Self {
             remaining: tracks.into_iter(),
             current: None,
@@ -249,7 +247,7 @@ impl<'a> TrackBinWriter<'a> {
     }
 }
 
-impl Write for TrackBinWriter<'_> {
+impl Write for TrackBinWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.is_empty() {
             return Ok(0);
@@ -258,11 +256,10 @@ impl Write for TrackBinWriter<'_> {
             if let Some(mut writer) = self.current.take() {
                 writer.flush()?;
             }
-            for (path, length) in self.remaining.by_ref() {
+            for (file, length) in self.remaining.by_ref() {
                 if length == 0 {
                     continue;
                 }
-                let file = OpenOptions::new().write(true).truncate(true).open(path)?;
                 self.current = Some(BufWriter::with_capacity(IO_BUFFER_SIZE, file));
                 self.bytes_left = length;
                 break;
@@ -349,7 +346,7 @@ async fn extract_dvd_iso(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+        move |iso_file, bytes_done, cancel| -> ChdResult<()> {
             use crate::disc::chd::reader::worker::{
                 ChdExtractWork, ChdExtractedOut, chd_read_admission, extract_hunks_dvd,
                 make_chd_dvd_extract_workers,
@@ -360,7 +357,6 @@ async fn extract_dvd_iso(
             let admission =
                 chd_read_admission(hunk_bytes, parallelism(), handle.map.len() as u64, true);
 
-            let iso_file = std::fs::File::create(&write_path)?;
             let mut iso_writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, iso_file);
 
             let workers = make_chd_dvd_extract_workers(
@@ -463,18 +459,14 @@ mod tests {
     #[test]
     fn track_writer_routes_bytes_past_empty_tracks() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<_> = (0..5)
+        let (files, paths): (Vec<_>, Vec<_>) = (0..5)
             .map(|track| {
-                crate::util::scratch_output_path(&dir.path().join(format!("{track}.bin"))).unwrap()
+                crate::util::scratch_output_file(&dir.path().join(format!("{track}.bin")))
+                    .unwrap()
+                    .into_parts()
             })
-            .collect();
-        let mut writer = TrackBinWriter::new(
-            paths
-                .iter()
-                .zip([0, 3, 0, 2, 0])
-                .map(|(path, length)| (path.as_ref(), length))
-                .collect(),
-        );
+            .unzip();
+        let mut writer = TrackBinWriter::new(files.into_iter().zip([0, 3, 0, 2, 0]).collect());
         writer.write_all(b"ab").unwrap();
         writer.write_all(b"cde").unwrap();
         writer.finish().unwrap();
@@ -487,9 +479,14 @@ mod tests {
     #[test]
     fn track_writer_rejects_a_short_stream() {
         let dir = tempfile::tempdir().unwrap();
-        let first = crate::util::scratch_output_path(&dir.path().join("first.bin")).unwrap();
-        let second = crate::util::scratch_output_path(&dir.path().join("second.bin")).unwrap();
-        let mut writer = TrackBinWriter::new(vec![(&first, 2), (&second, 3)]);
+        let (first, _first_path) = crate::util::scratch_output_file(&dir.path().join("first.bin"))
+            .unwrap()
+            .into_parts();
+        let (second, _second_path) =
+            crate::util::scratch_output_file(&dir.path().join("second.bin"))
+                .unwrap()
+                .into_parts();
+        let mut writer = TrackBinWriter::new(vec![(first, 2), (second, 3)]);
         writer.write_all(b"abcd").unwrap();
         assert_eq!(
             writer.finish().unwrap_err().kind(),
@@ -500,12 +497,40 @@ mod tests {
     #[test]
     fn track_writer_rejects_an_overlong_stream() {
         let dir = tempfile::tempdir().unwrap();
-        let first = crate::util::scratch_output_path(&dir.path().join("first.bin")).unwrap();
-        let second = crate::util::scratch_output_path(&dir.path().join("second.bin")).unwrap();
-        let mut writer = TrackBinWriter::new(vec![(&first, 2), (&second, 1)]);
+        let (first, _first_path) = crate::util::scratch_output_file(&dir.path().join("first.bin"))
+            .unwrap()
+            .into_parts();
+        let (second, _second_path) =
+            crate::util::scratch_output_file(&dir.path().join("second.bin"))
+                .unwrap()
+                .into_parts();
+        let mut writer = TrackBinWriter::new(vec![(first, 2), (second, 1)]);
         assert_eq!(
             writer.write_all(b"abcd").unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn track_writer_does_not_follow_replaced_scratch_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.bin");
+        std::fs::write(&victim, b"private").unwrap();
+        let (file, path) = crate::util::scratch_output_file(&dir.path().join("track.bin"))
+            .unwrap()
+            .into_parts();
+        let mut original = file.try_clone().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&victim, &path).unwrap();
+        let mut writer = TrackBinWriter::new(vec![(file, 3)]);
+        writer.write_all(b"abc").unwrap();
+        writer.finish().unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"private");
+        use std::io::{Read, Seek};
+        original.rewind().unwrap();
+        let mut bytes = Vec::new();
+        original.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes, b"abc");
     }
 }

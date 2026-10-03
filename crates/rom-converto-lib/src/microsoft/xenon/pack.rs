@@ -67,14 +67,14 @@ pub fn total_input_bytes(input: &Path) -> XenonResult<u64> {
     }
 }
 
-/// Open `output` and pack `input` (an ISO file or a directory) into it.
+/// Pack `input` (an ISO file or a directory) into the open output file.
 pub fn pack_blocking(
     input: &Path,
-    output: &Path,
+    output: std::fs::File,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> XenonResult<XenonPackSummary> {
-    let writer = std::io::BufWriter::with_capacity(4 * 1024 * 1024, std::fs::File::create(output)?);
+    let writer = std::io::BufWriter::with_capacity(4 * 1024 * 1024, output);
     if input.is_dir() {
         pack_dir(input, writer, &bytes_done, cancel)
     } else {

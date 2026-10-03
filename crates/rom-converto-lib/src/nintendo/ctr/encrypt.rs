@@ -9,7 +9,7 @@ use log::{debug, info};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use tokio::fs::{self, File, OpenOptions};
+use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 use crate::nintendo::ctr::constants::{
@@ -19,6 +19,7 @@ use crate::nintendo::ctr::constants::{
     NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
     NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
 };
+use crate::nintendo::ctr::copy_to_private_scratch;
 use crate::nintendo::ctr::decrypt::cia::{
     Aes128Ctr, derive_ctr_key, extra_crypto_index, fixed_key, get_ncch_aes_counter, get_new_key,
 };
@@ -32,7 +33,7 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::title_metadata::{ContentInfoRecord, TitleMetadata};
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id, mirrored_output, run_batch};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
-use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 
 const ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 const COPY_BUF: usize = 4 * 1024 * 1024;
@@ -90,9 +91,13 @@ async fn encrypt_ncsd(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting NCSD");
 
-    let tmp = scratch_output_path(output)?;
-    fs::copy(input, &tmp).await?;
-    encrypt_ncsd_partitions(input, &tmp, progress, cancel).await?;
+    let (input_path, output_path) = (input.to_path_buf(), output.to_path_buf());
+    let (_staging, tmp, out) =
+        tokio::task::spawn_blocking(move || copy_to_private_scratch(&input_path, &output_path))
+            .await??;
+    let mut out = File::from_std(out);
+    encrypt_ncsd_partitions(input, &mut out, progress, cancel).await?;
+    drop(out);
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCSD file");
@@ -108,9 +113,13 @@ async fn encrypt_ncch(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting NCCH");
 
-    let tmp = scratch_output_path(output)?;
-    fs::copy(input, &tmp).await?;
-    encrypt_ncch_at(input, &tmp, 0, [0u8; 8], progress, cancel).await?;
+    let (input_path, output_path) = (input.to_path_buf(), output.to_path_buf());
+    let (_staging, tmp, out) =
+        tokio::task::spawn_blocking(move || copy_to_private_scratch(&input_path, &output_path))
+            .await??;
+    let mut out = File::from_std(out);
+    encrypt_ncch_at(&mut out, 0, [0u8; 8], progress, cancel).await?;
+    drop(out);
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     info!("Encrypted NCCH file");
@@ -146,7 +155,7 @@ pub async fn encrypt_rom_batch(
 
 async fn encrypt_ncsd_partitions(
     input: &Path,
-    output: &Path,
+    output: &mut File,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
@@ -189,7 +198,7 @@ async fn encrypt_ncsd_partitions(
             "  Partition {i} ({partition_name}) at offset 0x{partition_offset:X}, size {size_mu} MU",
         );
 
-        encrypt_ncch_at(input, output, partition_offset, title_id, progress, cancel).await?;
+        encrypt_ncch_at(output, partition_offset, title_id, progress, cancel).await?;
     }
 
     Ok(())
@@ -204,8 +213,9 @@ async fn encrypt_cia(
     let input_size = fs::metadata(input).await?.len();
     progress.start(input_size, "Encrypting CIA");
 
-    let tmp = scratch_output_path(output)?;
-    let content_tmp = scratch_output_path(output)?;
+    let (file, tmp) = scratch_output_file(output)?.into_parts();
+    let (content_file, _content_tmp) = scratch_output_file(output)?.into_parts();
+    let mut content_file = File::from_std(content_file);
     async {
         let mut std_in = std::fs::File::open(input)?;
         let mut header_buf = [0u8; CIA_HEADER_SIZE as usize];
@@ -238,7 +248,7 @@ async fn encrypt_cia(
         encrypted_cia.write_le(&mut preamble)?;
         let preamble_len = preamble.get_ref().len() as u64;
 
-        let mut out = BufWriter::new(File::create(&tmp).await?);
+        let mut out = BufWriter::new(File::from_std(file));
         out.write_all(preamble.get_ref()).await?;
         out.flush().await?;
 
@@ -265,9 +275,9 @@ async fn encrypt_cia(
             }
 
             let content_offset = layout.content_offset + next_content_offs;
-            copy_range_to_path(
+            copy_range_to_file(
                 input,
-                &content_tmp,
+                &mut content_file,
                 content_offset,
                 record.content_size,
                 cancel,
@@ -275,19 +285,11 @@ async fn encrypt_cia(
             .await?;
 
             if !is_twl {
-                encrypt_ncch_at(
-                    &content_tmp,
-                    &content_tmp,
-                    0,
-                    ticket_title_id,
-                    progress,
-                    cancel,
-                )
-                .await?;
+                encrypt_ncch_at(&mut content_file, 0, ticket_title_id, progress, cancel).await?;
             }
 
             let hash = write_cbc_encrypted_content(
-                &content_tmp,
+                &mut content_file,
                 out.get_mut(),
                 &title_key,
                 record.content_index,
@@ -298,7 +300,6 @@ async fn encrypt_cia(
             .await?;
             content_hashes.push(hash);
 
-            fs::remove_file(&content_tmp).await.ok();
             next_content_offs += align_64(record.content_size);
         }
 
@@ -340,23 +341,15 @@ async fn encrypt_cia(
 }
 
 async fn encrypt_ncch_at(
-    input: &Path,
-    output: &Path,
+    file: &mut File,
     ncch_offset: u64,
     mut title_id: [u8; 8],
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<()> {
-    let mut read = File::open(input).await?;
-    let mut write = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(output)
-        .await?;
-
-    read.seek(SeekFrom::Start(ncch_offset)).await?;
+    file.seek(SeekFrom::Start(ncch_offset)).await?;
     let mut header_bytes = [0u8; 0x200];
-    read.read_exact(&mut header_bytes).await?;
+    file.read_exact(&mut header_bytes).await?;
     let header = NcchHeader::read(&mut Cursor::new(&header_bytes))?;
     if &header.magic != b"NCCH" {
         anyhow::bail!("not a valid NCCH partition at 0x{ncch_offset:X}");
@@ -374,15 +367,14 @@ async fn encrypt_ncch_at(
     let crypto = NcchCrypto::from_header(&header, title_id).await?;
 
     header_bytes[NCCH_FLAGS_OFFSET + 7] &= !NCCH_FLAGS7_NOCRYPTO;
-    write.seek(SeekFrom::Start(ncch_offset)).await?;
-    write.write_all(&header_bytes).await?;
+    file.seek(SeekFrom::Start(ncch_offset)).await?;
+    file.write_all(&header_bytes).await?;
 
     if header.exhdrsize != 0 {
         let counter = get_ncch_aes_counter(&header, NcchSection::ExHeader);
         let key = crypto.base_or_fixed_key();
         encrypt_stream_section(
-            &mut read,
-            &mut write,
+            file,
             ncch_offset + EXEFS_HEADER_SIZE as u64,
             header.exhdrsize as u64 * 2,
             StreamCrypto { key, counter },
@@ -395,8 +387,7 @@ async fn encrypt_ncch_at(
     if header.exefssize != 0 {
         let counter = get_ncch_aes_counter(&header, NcchSection::ExeFS);
         encrypt_exefs_section(
-            &mut read,
-            &mut write,
+            file,
             ncch_offset + (header.exefsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64),
             header.exefssize as u64 * CTR_MEDIA_UNIT_SIZE as u64,
             &crypto,
@@ -410,8 +401,7 @@ async fn encrypt_ncch_at(
         let counter = get_ncch_aes_counter(&header, NcchSection::RomFS);
         let key = crypto.romfs_key();
         encrypt_stream_section(
-            &mut read,
-            &mut write,
+            file,
             ncch_offset + (header.romfsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64),
             header.romfssize as u64 * CTR_MEDIA_UNIT_SIZE as u64,
             StreamCrypto { key, counter },
@@ -421,7 +411,7 @@ async fn encrypt_ncch_at(
         .await?;
     }
 
-    write.flush().await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -484,8 +474,7 @@ struct StreamCrypto {
 }
 
 async fn encrypt_stream_section(
-    read: &mut File,
-    write: &mut File,
+    file: &mut File,
     offset: u64,
     size: u64,
     crypto: StreamCrypto,
@@ -493,8 +482,6 @@ async fn encrypt_stream_section(
     cancel: &CancelToken,
 ) -> Result<()> {
     let StreamCrypto { key, counter } = crypto;
-    read.seek(SeekFrom::Start(offset)).await?;
-    write.seek(SeekFrom::Start(offset)).await?;
 
     let mut remaining = size;
     let mut done = 0u64;
@@ -505,10 +492,12 @@ async fn encrypt_stream_section(
         }
 
         let take = remaining.min(CRYPTO_BUF as u64) as usize;
-        read.read_exact(&mut buf[..take]).await?;
+        file.seek(SeekFrom::Start(offset + done)).await?;
+        file.read_exact(&mut buf[..take]).await?;
         let chunk = &mut buf[..take];
         Aes128Ctr::new_from_slices(&key, &advance_counter(&counter, done))?.apply_keystream(chunk);
-        write.write_all(chunk).await?;
+        file.seek(SeekFrom::Start(offset + done)).await?;
+        file.write_all(chunk).await?;
         progress.inc(take as u64);
         remaining -= take as u64;
         done += take as u64;
@@ -518,8 +507,7 @@ async fn encrypt_stream_section(
 }
 
 async fn encrypt_exefs_section(
-    read: &mut File,
-    write: &mut File,
+    file: &mut File,
     offset: u64,
     size: u64,
     crypto: &NcchCrypto,
@@ -527,8 +515,8 @@ async fn encrypt_exefs_section(
     progress: &dyn ProgressReporter,
 ) -> Result<()> {
     let mut plain = vec![0u8; size as usize];
-    read.seek(SeekFrom::Start(offset)).await?;
-    read.read_exact(&mut plain).await.context("reading ExeFS")?;
+    file.seek(SeekFrom::Start(offset)).await?;
+    file.read_exact(&mut plain).await.context("reading ExeFS")?;
 
     let mut encrypted = plain.clone();
     Aes128Ctr::new_from_slices(&crypto.base_or_fixed_key(), &counter)?
@@ -568,8 +556,8 @@ async fn encrypt_exefs_section(
         }
     }
 
-    write.seek(SeekFrom::Start(offset)).await?;
-    write.write_all(&encrypted).await.context("writing ExeFS")?;
+    file.seek(SeekFrom::Start(offset)).await?;
+    file.write_all(&encrypted).await.context("writing ExeFS")?;
     progress.inc(size);
     Ok(())
 }
@@ -581,17 +569,18 @@ fn advance_counter(base: &[u8; 16], byte_offset: u64) -> [u8; 16] {
         .to_be_bytes()
 }
 
-async fn copy_range_to_path(
+async fn copy_range_to_file(
     input: &Path,
-    output: &Path,
+    dst: &mut File,
     offset: u64,
     size: u64,
     cancel: &CancelToken,
 ) -> Result<()> {
     let mut src = File::open(input).await?;
-    let mut dst = File::create(output).await?;
+    dst.set_len(0).await?;
+    dst.seek(SeekFrom::Start(0)).await?;
     src.seek(SeekFrom::Start(offset)).await?;
-    copy_exact(&mut src, &mut dst, size, cancel).await?;
+    copy_exact(&mut src, dst, size, cancel).await?;
     dst.flush().await?;
     Ok(())
 }
@@ -627,7 +616,7 @@ async fn copy_exact(src: &mut File, dst: &mut File, size: u64, cancel: &CancelTo
 }
 
 async fn write_cbc_encrypted_content(
-    input: &Path,
+    src: &mut File,
     output: &mut File,
     title_key: &[u8; 16],
     content_index: u16,
@@ -635,7 +624,7 @@ async fn write_cbc_encrypted_content(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> Result<[u8; 32]> {
-    let mut src = File::open(input).await?;
+    src.seek(SeekFrom::Start(0)).await?;
     let size = src.metadata().await?.len();
     if size % 16 != 0 {
         anyhow::bail!("CIA content size is not AES-CBC block aligned: {size}");

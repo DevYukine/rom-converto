@@ -1687,7 +1687,9 @@ pub(crate) async fn nx_decompress(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let keys = crate::nintendo::nx::load_keyset(req.options.keys.as_deref())?;
+    // Decompression never consumes the keys, but the documented contract is
+    // that a prod.keys must be present, so keep validating it.
+    crate::nintendo::nx::load_keyset(req.options.keys.as_deref())?;
     convert_op(
         progress,
         &req,
@@ -1699,7 +1701,7 @@ pub(crate) async fn nx_decompress(
         },
         cancel,
         |input, output, cancel| async move {
-            crate::nintendo::nx::decompress_container_async(input, output, keys, progress, cancel)
+            crate::nintendo::nx::decompress_container_async(input, output, progress, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -3438,7 +3440,7 @@ mod tests {
         let packed = dir.path().join("game.cso");
         write_cso_blocking(
             &iso,
-            &packed,
+            std::fs::File::create(&packed).unwrap(),
             CsoFormat::Cso,
             2048,
             0,

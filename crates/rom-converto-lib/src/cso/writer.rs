@@ -59,13 +59,13 @@ impl Worker<CsoBlockWork, CsoBlockOut, CsoError> for CsoCompressWorker {
     }
 }
 
-/// Compress `input` into a CSO/ZSO at `output`. `index_shift` comes
+/// Compress `input` into the open CSO/ZSO output file. `index_shift` comes
 /// from [`crate::cso::models::pick_index_shift`] in production;
 /// tests pass larger shifts to exercise offset packing and alignment
 /// without multi-GiB fixtures.
 pub(crate) fn write_cso_blocking(
     input: &Path,
-    output: &Path,
+    out_file: std::fs::File,
     format: CsoFormat,
     block_size: u32,
     index_shift: u8,
@@ -85,7 +85,6 @@ pub(crate) fn write_cso_blocking(
     header.write(&mut header_bytes)?;
     let header_bytes = header_bytes.into_inner();
 
-    let out_file = std::fs::File::create(output)?;
     let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
     writer.write_all(&header_bytes)?;
     writer.write_all(&vec![0u8; index.len() * 4])?;

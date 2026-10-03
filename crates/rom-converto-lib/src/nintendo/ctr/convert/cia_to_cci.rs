@@ -10,7 +10,7 @@ use crate::nintendo::ctr::models::ncsd_header::{
     NcsdPartitionEntry,
 };
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
-use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 use anyhow::{Context, Result, bail};
 use binrw::{BinRead, BinWrite};
 use log::{info, warn};
@@ -70,8 +70,10 @@ pub async fn cia_to_cci(
     let total_content_bytes: u64 = placements.iter().map(|p| p.layout.ncch_size).sum();
     progress.start(total_content_bytes, "Converting CIA to CCI");
 
-    let tmp = scratch_output_path(output)?;
-    let out = File::create(&tmp).await.context("creating CCI output")?;
+    let (file, tmp) = scratch_output_file(output)
+        .context("creating CCI output")?
+        .into_parts();
+    let out = File::from_std(file);
     let mut out = BufWriter::new(out);
 
     let stream = async {

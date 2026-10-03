@@ -48,8 +48,8 @@ pub async fn pack_zar(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            pack::pack_blocking(&input_owned, &write_path, bytes_done, &cancel)
+        move |file, bytes_done, cancel| {
+            pack::pack_blocking(&input_owned, file, bytes_done, &cancel)
         },
     )
     .await?;

@@ -28,7 +28,6 @@ use crate::util::worker_pool::{Pool, parallelism};
 use binrw::BinWrite;
 use sha1::{Digest, Sha1};
 use std::io::{BufWriter, Cursor, Read, Seek, SeekFrom, Write};
-use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
@@ -75,7 +74,7 @@ impl ChdWriter {
     /// implementation, so the logical size can exceed the source frame
     /// count times `FRAME_SIZE`.
     pub fn create(
-        output_path: impl AsRef<Path>,
+        file: std::fs::File,
         file_sectors: &[u32],
         hunk_size: u32,
         cue_sheet: &CueSheet,
@@ -88,7 +87,6 @@ impl ChdWriter {
             "one sector count per cue FILE"
         );
         let frames = track_frames(cue_sheet, file_sectors)?;
-        let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
         let (cd_frame_data, cd_audio_frames) = cd_frame_layout(cue_sheet, &frames);
@@ -132,7 +130,7 @@ impl ChdWriter {
     /// exact input size, `DVD ` marker metadata. `codecs` fills the
     /// header compressor slots in order.
     pub fn create_dvd(
-        output_path: impl AsRef<Path>,
+        file: std::fs::File,
         iso_bytes: u64,
         hunk_size: u32,
         codecs: Vec<ChdCodec>,
@@ -147,7 +145,6 @@ impl ChdWriter {
             return Err(ChdError::InvalidHunkSize);
         }
 
-        let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
         let slots = codec_header_slots(&codecs);
@@ -183,7 +180,7 @@ impl ChdWriter {
     /// Raw passthrough writer: `logical_bytes` of an already-laid-out stream,
     /// with `metadata` copied verbatim from the source container.
     pub fn create_raw(
-        output_path: impl AsRef<Path>,
+        file: std::fs::File,
         logical_bytes: u64,
         hunk_bytes: u32,
         unit_bytes: u32,
@@ -200,7 +197,6 @@ impl ChdWriter {
             return Err(ChdError::InvalidHunkSize);
         }
 
-        let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
         let slots = codec_header_slots(&codecs);
@@ -400,13 +396,12 @@ impl ChdWriter {
     /// carrying the `AVAV` geometry string and, at NTSC/PAL field
     /// heights, an `AVLD` blob reserved now and backfilled by
     /// [`Self::finalize`] once every field's VBI has been parsed.
-    pub fn create_ld(output_path: impl AsRef<Path>, params: &LdParams) -> ChdResult<Self> {
+    pub fn create_ld(file: std::fs::File, params: &LdParams) -> ChdResult<Self> {
         let hunk_bytes = params.bytes_per_frame;
         if hunk_bytes == 0 {
             return Err(ChdError::InvalidHunkSize);
         }
 
-        let file = std::fs::File::create(output_path)?;
         let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
         let codecs = vec![ChdCodec::AvHuff];
@@ -569,8 +564,14 @@ mod tests {
 
         let iso_file = std::fs::File::open(&iso_path).unwrap();
         let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
-        let mut writer =
-            ChdWriter::create_dvd(&chd_path, iso.len() as u64, hunk_size, codecs, level).unwrap();
+        let mut writer = ChdWriter::create_dvd(
+            std::fs::File::create(&chd_path).unwrap(),
+            iso.len() as u64,
+            hunk_size,
+            codecs,
+            level,
+        )
+        .unwrap();
         let bytes_done = Arc::new(AtomicU64::new(0));
         writer
             .compress_all_hunks_dvd(&mut reader, &bytes_done, &CancelToken::new())
@@ -728,18 +729,34 @@ mod tests {
 
     #[test]
     fn create_dvd_rejects_bad_geometry() {
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("out.chd");
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096 + 1, 4096, default_dvd_codecs(), None),
+            ChdWriter::create_dvd(
+                tempfile::tempfile().unwrap(),
+                4096 + 1,
+                4096,
+                default_dvd_codecs(),
+                None
+            ),
             Err(ChdError::IsoNotSectorAligned { .. })
         ));
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096, 3000, default_dvd_codecs(), None),
+            ChdWriter::create_dvd(
+                tempfile::tempfile().unwrap(),
+                4096,
+                3000,
+                default_dvd_codecs(),
+                None
+            ),
             Err(ChdError::InvalidHunkSize)
         ));
         assert!(matches!(
-            ChdWriter::create_dvd(&out, 4096, 0, default_dvd_codecs(), None),
+            ChdWriter::create_dvd(
+                tempfile::tempfile().unwrap(),
+                4096,
+                0,
+                default_dvd_codecs(),
+                None
+            ),
             Err(ChdError::InvalidHunkSize)
         ));
     }
@@ -762,7 +779,7 @@ mod tests {
         ];
 
         let mut writer = ChdWriter::create_raw(
-            &chd_path,
+            std::fs::File::create(&chd_path).unwrap(),
             raw.len() as u64,
             4096,
             2048,
@@ -880,11 +897,12 @@ mod tests {
         write_ld_chd_at(avi_bytes, &dir.path().join("out.chd"))
     }
 
-    fn write_ld_chd_at(avi_bytes: &[u8], chd_path: &Path) -> Vec<u8> {
+    fn write_ld_chd_at(avi_bytes: &[u8], chd_path: &std::path::Path) -> Vec<u8> {
         let mut avi = AviFile::new(IoCursor::new(avi_bytes.to_vec())).unwrap();
         let params = avi.ld_params().unwrap();
 
-        let mut writer = ChdWriter::create_ld(chd_path, &params).unwrap();
+        let mut writer =
+            ChdWriter::create_ld(std::fs::File::create(chd_path).unwrap(), &params).unwrap();
         let bytes_done = Arc::new(AtomicU64::new(0));
         writer
             .compress_all_hunks_ld(&mut avi, &params, &bytes_done, &CancelToken::new())

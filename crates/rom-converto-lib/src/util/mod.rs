@@ -153,11 +153,13 @@ impl Cancelled {
     }
 }
 
-/// A sibling temp path in the output directory so an interrupted write
+/// An open sibling temp file in the output directory so an interrupted write
 /// never lands on the final name and a pre-existing overwrite target
 /// survives until the rename. Creates the output's parent directories
 /// when missing, so every writer accepts a not-yet-existing output dir.
-pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<tempfile::TempPath> {
+pub(crate) fn scratch_output_file(
+    output: &std::path::Path,
+) -> std::io::Result<tempfile::NamedTempFile> {
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -176,9 +178,11 @@ pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<t
         use std::os::unix::fs::PermissionsExt;
         builder.permissions(std::fs::Permissions::from_mode(0o666));
     }
-    builder
-        .tempfile_in(parent)
-        .map(tempfile::NamedTempFile::into_temp_path)
+    builder.tempfile_in(parent)
+}
+
+pub(crate) fn scratch_output_path(output: &std::path::Path) -> std::io::Result<tempfile::TempPath> {
+    scratch_output_file(output).map(tempfile::NamedTempFile::into_temp_path)
 }
 
 pub(crate) fn publish_temp(
@@ -194,7 +198,7 @@ pub(crate) fn publish_temp(
     result.map(|_| ()).map_err(|err| err.error)
 }
 
-/// Write `output` through [`scratch_output_path`]: `write` fills a sibling
+/// Write `output` through [`scratch_output_file`]: `write` fills a sibling
 /// temp file that is published to the final name only once it returns, so a
 /// failed or interrupted write leaves the existing file untouched.
 pub(crate) fn atomic_write<E, F>(
@@ -206,8 +210,7 @@ where
     E: From<std::io::Error>,
     F: FnOnce(&mut std::fs::File) -> Result<(), E>,
 {
-    let temp = scratch_output_path(output)?;
-    let mut file = std::fs::File::create(&temp)?;
+    let (mut file, temp) = scratch_output_file(output)?.into_parts();
     write(&mut file)?;
     drop(file);
     publish_temp(temp, output, overwrite)?;
@@ -509,7 +512,7 @@ pub(crate) async fn run_scratch_write<T, E>(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
     job: impl FnOnce(
-        std::path::PathBuf,
+        std::fs::File,
         std::sync::Arc<std::sync::atomic::AtomicU64>,
         CancelToken,
     ) -> Result<T, E>
@@ -520,13 +523,12 @@ where
     T: Send + 'static,
     E: From<Cancelled> + From<std::io::Error> + From<tokio::task::JoinError> + Send + 'static,
 {
-    let write_path = scratch_output_path(output)?;
+    let (file, write_path) = scratch_output_file(output)?.into_parts();
     let bytes_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let handle = tokio::task::spawn_blocking({
-        let write_owned = write_path.to_path_buf();
         let bytes_done = bytes_done.clone();
         let cancel = cancel.clone();
-        move || job(write_owned, bytes_done, cancel)
+        move || job(file, bytes_done, cancel)
     });
     let value = await_with_progress_cancel(progress, &bytes_done, handle, cancel).await?;
     publish_temp(write_path, output, overwrite)?;
@@ -671,6 +673,44 @@ mod tests {
         assert!(first.exists());
         drop(first);
         assert!(!first_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn scratch_write_does_not_follow_replaced_path() {
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        let victim = dir.path().join("victim.bin");
+        std::fs::write(&victim, b"unchanged").unwrap();
+        let parent = dir.path().to_path_buf();
+        let victim_owned = victim.clone();
+        let result: anyhow::Result<()> = super::run_scratch_write(
+            &output,
+            true,
+            &NoProgress,
+            &super::CancelToken::new(),
+            move |mut file, _, _| {
+                let scratch = std::fs::read_dir(parent)?
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .find(|entry| entry.file_name().to_string_lossy().starts_with(".out.bin."))
+                    .unwrap()
+                    .path();
+                std::fs::remove_file(&scratch)?;
+                symlink(&victim_owned, &scratch)?;
+                file.write_all(b"replacement")?;
+                Err(super::Cancelled.into())
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(victim).unwrap(), b"unchanged");
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

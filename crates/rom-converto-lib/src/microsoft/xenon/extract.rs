@@ -270,7 +270,7 @@ mod tests {
         let cancel = CancelToken::new();
         super::super::pack::pack_blocking(
             src.path(),
-            &zar_path,
+            std::fs::File::create(&zar_path).unwrap(),
             Arc::new(AtomicU64::new(0)),
             &cancel,
         )

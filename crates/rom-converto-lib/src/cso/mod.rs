@@ -94,10 +94,10 @@ pub async fn compress_to_cso(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
+        move |out_file, bytes_done, cancel| {
             writer::write_cso_blocking(
                 &input_owned,
-                &write_path,
+                out_file,
                 format,
                 block_size,
                 index_shift,
@@ -192,11 +192,10 @@ pub async fn decompress_from_cso(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> CsoResult<()> {
+        move |out_file, bytes_done, cancel| -> CsoResult<()> {
             use crate::util::worker_pool::{Pool, parallelism};
 
             let admission = reader::cso_extract_admission(&handle, parallelism());
-            let out_file = std::fs::File::create(&write_path)?;
             let mut writer = std::io::BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
 
             let workers =
@@ -534,7 +533,7 @@ mod tests {
             let bytes_done = Arc::new(AtomicU64::new(0));
             writer::write_cso_blocking(
                 &iso,
-                &packed,
+                std::fs::File::create(&packed).unwrap(),
                 format,
                 2048,
                 2,

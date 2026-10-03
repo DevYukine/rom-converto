@@ -29,7 +29,7 @@ use crate::nintendo::wup::nus::compress::{
     NusTitlePlan, compress_prepared_nus_title_with_cancel, prepare_nus_title,
 };
 use crate::util::worker_pool::parallelism;
-use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 use crate::zar::{
     COMPRESSED_BLOCK_SIZE, DEFAULT_COMPRESSION_LEVEL, MAX_COMPRESSION_LEVEL, MIN_COMPRESSION_LEVEL,
     ZarWriter,
@@ -467,8 +467,8 @@ fn compress_titles_with_cancel(
         prepared.push((path, plan));
     }
 
-    let tmp = scratch_output_path(output)?;
-    compress_titles_into_tmp(prepared, &tmp, opts, progress, cancelled, read_total_bytes)?;
+    let (file, tmp) = scratch_output_file(output)?.into_parts();
+    compress_titles_into_tmp(prepared, file, opts, progress, cancelled, read_total_bytes)?;
     crate::util::publish_temp(tmp, output, true)?;
     progress.finish();
     Ok(())
@@ -476,13 +476,12 @@ fn compress_titles_with_cancel(
 
 fn compress_titles_into_tmp(
     prepared: Vec<(PathBuf, PreparedTitlePlan)>,
-    output: &Path,
+    file: std::fs::File,
     opts: WupCompressOptions,
     progress: &(dyn ProgressReporter + Sync),
     cancelled: Option<&AtomicBool>,
     read_total_bytes: u64,
 ) -> WupResult<()> {
-    let file = std::fs::File::create(output)?;
     // 4 MiB BufWriter batches many 64 KiB block writes into a single
     // WriteFile syscall, cutting user <-> kernel transitions across
     // large archives. The OS write cache does the rest.

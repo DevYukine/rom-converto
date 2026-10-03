@@ -140,12 +140,11 @@ pub async fn compress_rom(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> Z3dsResult<u64> {
+        move |out_file, bytes_done, cancel| -> Z3dsResult<u64> {
             // std::fs (not tokio) lets the reader and writer hand off directly to zstd.
             let in_file = std::fs::File::open(&input_owned)?;
             let mut reader = BufReader::with_capacity(4 * 1024 * 1024, in_file);
 
-            let out_file = std::fs::File::create(&write_path)?;
             let mut writer = StdBufWriter::with_capacity(4 * 1024 * 1024, out_file);
 
             // Placeholder header. The real one is written after the payload, by

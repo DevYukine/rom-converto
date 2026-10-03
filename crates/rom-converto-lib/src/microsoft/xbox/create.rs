@@ -163,7 +163,7 @@ fn nodes_total(nodes: &[Node]) -> u64 {
 
 pub(super) fn create_blocking(
     prepared: PreparedInput,
-    output: &Path,
+    output: File,
     options: XisoCreateOptions,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
@@ -185,7 +185,7 @@ pub(super) fn create_blocking(
     let image_size = (next * SECTOR_SIZE).next_multiple_of(FILE_MODULUS);
 
     let mut writer = Writer {
-        out: io::BufWriter::with_capacity(COPY_BUF, File::create(output)?),
+        out: io::BufWriter::with_capacity(COPY_BUF, output),
         image,
         media_patch: options.media_patch,
         buf: vec![0u8; COPY_BUF],

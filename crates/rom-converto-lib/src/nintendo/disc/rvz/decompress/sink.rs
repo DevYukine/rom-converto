@@ -6,7 +6,6 @@
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
-use std::path::Path;
 
 use crate::nintendo::disc::rvz::error::RvzResult;
 use crate::nintendo::disc::wbfs::format::DISC_HEADER_COPY_SIZE;
@@ -32,8 +31,8 @@ pub(crate) struct IsoSink {
 }
 
 impl IsoSink {
-    pub(crate) fn create(output: &Path, iso_file_size: u64) -> RvzResult<Self> {
-        let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, File::create(output)?);
+    pub(crate) fn create(output: File, iso_file_size: u64) -> RvzResult<Self> {
+        let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, output);
         // Pre-size so trailing/sparse regions never seek past the end.
         if iso_file_size > 0 {
             writer.seek(SeekFrom::Start(iso_file_size - 1))?;
@@ -78,7 +77,7 @@ pub(crate) struct WbfsSink {
 
 impl WbfsSink {
     pub(crate) fn create(
-        output: &Path,
+        file: File,
         usage: &DiscUsage,
         disc_size: u64,
         hd_sec_sz_s: u8,
@@ -86,7 +85,6 @@ impl WbfsSink {
     ) -> RvzResult<Self> {
         let (wlba, total_blocks) = compute_layout(usage, disc_size, wbfs_sec_sz_s)?;
         let wbfs_sec_sz = 1u64 << wbfs_sec_sz_s;
-        let file = File::create(output)?;
         // Pre-size so unwritten tails of stored blocks read back as zero.
         file.set_len(total_blocks * wbfs_sec_sz)?;
         Ok(Self {
@@ -204,8 +202,14 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("game.wbfs");
-        let mut sink =
-            WbfsSink::create(&out, &usage, disc_size, HD_SECTOR_SHIFT, WBFS_SECTOR_SHIFT).unwrap();
+        let mut sink = WbfsSink::create(
+            File::create(&out).unwrap(),
+            &usage,
+            disc_size,
+            HD_SECTOR_SHIFT,
+            WBFS_SECTOR_SHIFT,
+        )
+        .unwrap();
         // Write the whole disc; the sink routes used blocks to their
         // slots and drops the rest.
         sink.write_at(0, &disc).unwrap();
@@ -241,8 +245,14 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("span.wbfs");
-        let mut sink =
-            WbfsSink::create(&out, &usage, disc_size, HD_SECTOR_SHIFT, WBFS_SECTOR_SHIFT).unwrap();
+        let mut sink = WbfsSink::create(
+            File::create(&out).unwrap(),
+            &usage,
+            disc_size,
+            HD_SECTOR_SHIFT,
+            WBFS_SECTOR_SHIFT,
+        )
+        .unwrap();
         let payload: Vec<u8> = (0..200u32).map(|i| (i as u8).wrapping_add(1)).collect();
         let off = BLOCK as u64 - 100; // 100 bytes in block 0, 100 in block 1
         sink.write_at(off, &payload).unwrap();
@@ -262,8 +272,14 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("tail.wbfs");
-        let mut sink =
-            WbfsSink::create(&out, &usage, disc_size, HD_SECTOR_SHIFT, WBFS_SECTOR_SHIFT).unwrap();
+        let mut sink = WbfsSink::create(
+            File::create(&out).unwrap(),
+            &usage,
+            disc_size,
+            HD_SECTOR_SHIFT,
+            WBFS_SECTOR_SHIFT,
+        )
+        .unwrap();
         // Write only the first 1000 bytes of block 2.
         let payload = vec![0xCDu8; 1000];
         sink.write_at(2 * BLOCK as u64, &payload).unwrap();
@@ -294,7 +310,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let single = dir.path().join("single.wbfs");
         let mut sink = WbfsSink::create(
-            &single,
+            File::create(&single).unwrap(),
             &usage,
             disc_size,
             HD_SECTOR_SHIFT,

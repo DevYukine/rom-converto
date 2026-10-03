@@ -83,12 +83,11 @@ pub(crate) async fn convert_iso_to_chd_with_kind(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+        move |file, bytes_done, cancel| -> ChdResult<()> {
             let iso_file = std::fs::File::open(&iso_owned)?;
             let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
 
-            let mut writer =
-                ChdWriter::create_dvd(&write_path, iso_size, hunk_size, codecs, level)?;
+            let mut writer = ChdWriter::create_dvd(file, iso_size, hunk_size, codecs, level)?;
             writer.compress_all_hunks_dvd(&mut iso_reader, &bytes_done, &cancel)?;
             writer.finalize()?;
             Ok(())
@@ -170,12 +169,12 @@ pub async fn convert_iso_to_cd_chd(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+        move |file, bytes_done, cancel| -> ChdResult<()> {
             let iso_file = std::fs::File::open(&iso_owned)?;
             let mut iso_reader = std::io::BufReader::with_capacity(IO_BUFFER_SIZE, iso_file);
 
             let mut writer = ChdWriter::create(
-                &write_path,
+                file,
                 &[data_sectors],
                 CD_HUNK_BYTES,
                 &cue_sheet,
@@ -246,11 +245,11 @@ pub async fn convert_avi_to_chd(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+        move |file, bytes_done, cancel| -> ChdResult<()> {
             let mut avi = AviFile::open(&avi_owned)?;
             let params = avi.ld_params()?;
 
-            let mut writer = ChdWriter::create_ld(&write_path, &params)?;
+            let mut writer = ChdWriter::create_ld(file, &params)?;
             writer.compress_all_hunks_ld(&mut avi, &params, &bytes_done, &cancel)?;
             writer.finalize()?;
             Ok(())
@@ -407,14 +406,14 @@ pub async fn convert_to_chd(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| -> ChdResult<()> {
+        move |file, bytes_done, cancel| -> ChdResult<()> {
             let mut bin_reader = BinChain {
                 pending: bins.into_iter(),
                 current: None,
             };
 
             let mut writer = ChdWriter::create(
-                &write_path,
+                file,
                 &file_sectors,
                 CD_HUNK_BYTES,
                 &cue_sheet,

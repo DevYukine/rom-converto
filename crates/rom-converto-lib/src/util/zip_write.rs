@@ -1,7 +1,7 @@
 //! Deflate zip writing for cartridge ROMs: one streamed member, staged on a
 //! sibling temp file and published only once the archive is complete.
 
-use crate::util::{CancelToken, Cancelled, ProgressReporter, publish_temp, scratch_output_path};
+use crate::util::{CancelToken, Cancelled, ProgressReporter, publish_temp, scratch_output_file};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -32,8 +32,8 @@ pub fn write_zip(
     let mut input = std::fs::File::open(source)?;
     let total = input.metadata()?.len();
 
-    let temp = scratch_output_path(output)?;
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(&temp)?);
+    let (file, temp) = scratch_output_file(output)?.into_parts();
+    let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .compression_level(Some(9))

@@ -90,7 +90,7 @@ pub async fn migrate_chd_to_v5(
     );
 
     let level = opts.level;
-    run_scratch_write(&output_path, true, progress, &cancel, move |write_path, bytes_done, cancel| -> ChdResult<()> {
+    run_scratch_write(&output_path, true, progress, &cancel, move |file, bytes_done, cancel| -> ChdResult<()> {
         // Copied out field by field before `into_raw_reader` consumes the
         // source; ChdMetadataHeader is not Clone.
         let mut metadata: Vec<ChdMetadataHeader> = source
@@ -136,7 +136,7 @@ pub async fn migrate_chd_to_v5(
             }));
         }
         let mut writer = ChdWriter::create_raw(
-            &write_path,
+            file,
             logical_bytes,
             hunk_bytes,
             unit_bytes,

@@ -8,7 +8,7 @@
 //! because PFS0 / HFS0 header size depends only on file names and
 //! count, both of which are known up front.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -101,9 +101,24 @@ impl NxCompressOptions {
 /// # Errors
 /// Fails if `input` is not an uncompressed NSP/XCI, if `opts` is
 /// invalid, or on the underlying I/O or NCA-parsing errors.
+#[cfg(test)]
 pub fn compress_container(
     input: &Path,
     output: &Path,
+    opts: NxCompressOptions,
+    keys: &KeySet,
+    progress: &dyn ProgressReporter,
+    cancel: Option<&CancelToken>,
+) -> NxResult<()> {
+    let (file, temp) = crate::util::scratch_output_file(output)?.into_parts();
+    compress_container_file(input, file, opts, keys, progress, cancel)?;
+    crate::util::publish_temp(temp, output, true)?;
+    Ok(())
+}
+
+fn compress_container_file(
+    input: &Path,
+    output: File,
     opts: NxCompressOptions,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
@@ -139,11 +154,11 @@ pub async fn compress_container_async(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
+        move |file, bytes_done, cancel| {
             let proxy = AtomicProgress {
                 counter: bytes_done,
             };
-            compress_container(&input, &write_path, opts, &keys, &proxy, Some(&cancel))
+            compress_container_file(&input, file, opts, &keys, &proxy, Some(&cancel))
         },
     )
     .await
@@ -151,7 +166,7 @@ pub async fn compress_container_async(
 
 fn compress_pfs0(
     input: &Path,
-    output: &Path,
+    mut out: File,
     opts: NxCompressOptions,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
@@ -209,12 +224,6 @@ fn compress_pfs0(
     };
     let placeholder_header = pfs0_mod::build_header(&placeholder_specs, &hints)?;
 
-    let mut out = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     out.write_all(&placeholder_header.bytes)?;
     if hints.first_file_data_offset > 0 {
         write_zeros(&mut out, hints.first_file_data_offset)?;
@@ -263,7 +272,7 @@ fn compress_pfs0(
 
 fn compress_xci(
     input: &Path,
-    output: &Path,
+    mut out: File,
     opts: NxCompressOptions,
     keys: &KeySet,
     progress: &dyn ProgressReporter,
@@ -293,12 +302,6 @@ fn compress_xci(
     let mut keys = keys.clone();
     load_tickets_from_xci(&in_file, &sub_partitions, &mut keys)?;
 
-    let mut out = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output)?;
     copy_range(&in_file, 0, hfs0_off, &mut out)?;
 
     let placeholder_root_specs: Vec<Hfs0FileSpec> = sub_partitions

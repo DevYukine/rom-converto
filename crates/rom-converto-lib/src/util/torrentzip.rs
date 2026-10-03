@@ -5,7 +5,7 @@
 //! written and checked byte for byte.
 
 use crate::util::hash::{CRC32, PumpSink, pump_skip_pad};
-use crate::util::{CancelToken, ProgressReporter, publish_temp, scratch_output_path};
+use crate::util::{CancelToken, ProgressReporter, publish_temp, scratch_output_file};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -210,8 +210,7 @@ pub fn write_torrentzip(
         )
     })? + member.pad;
 
-    let temp = scratch_output_path(output)?;
-    let mut file = std::fs::File::create(&temp)?;
+    let (mut file, temp) = scratch_output_file(output)?.into_parts();
     progress.start(raw_size, "zip");
 
     let entry = write_member(&mut file, member, raw_size, format, progress, cancel)?;
@@ -230,6 +229,7 @@ pub fn write_torrentzip(
     let comment = format!("{}{:08X}", format.comment_prefix(), cd_crc);
     write_eocd(&mut file, cd_offset, cd.len() as u64, needs_zip64, &comment)?;
     file.flush()?;
+    drop(file);
     progress.finish();
 
     publish_temp(temp, output, true)?;

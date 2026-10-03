@@ -90,11 +90,11 @@ pub async fn decrypt_container_async(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
+        move |file, bytes_done, cancel| {
             let proxy = AtomicProgress {
                 counter: bytes_done,
             };
-            let mut out = BufWriter::new(File::create(&write_path)?);
+            let mut out = BufWriter::new(file);
             write_segments(&plan, &mut out, &proxy, &cancel)?;
             out.flush()?;
             Ok(())

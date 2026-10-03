@@ -154,15 +154,8 @@ pub(crate) async fn compress_iso(
         true,
         progress,
         &cancel,
-        move |write_path, bytes_done, cancel| {
-            compress_blocking(
-                &input_owned,
-                &write_path,
-                options,
-                iso_size,
-                bytes_done,
-                &cancel,
-            )
+        move |file, bytes_done, cancel| {
+            compress_blocking(&input_owned, file, options, iso_size, bytes_done, &cancel)
         },
     )
     .await?;
@@ -234,7 +227,7 @@ pub(super) struct PartitionLayout {
 /// the file. No temporary ISO is materialized either way.
 fn compress_blocking(
     input: &Path,
-    output: &Path,
+    output: std::fs::File,
     options: RvzCompressOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
@@ -250,7 +243,7 @@ fn compress_blocking(
 /// ratio.
 fn compress_reader<R: Read + Seek>(
     mut reader: BufReader<R>,
-    output: &Path,
+    output: std::fs::File,
     options: RvzCompressOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
@@ -258,7 +251,7 @@ fn compress_reader<R: Read + Seek>(
 ) -> RvzResult<u64> {
     let (dhead, disc_type, plan) = read_disc_plan(&mut reader, iso_size)?;
 
-    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, std::fs::File::create(output)?);
+    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, output);
 
     // Placeholder header and disc struct. Rewritten at the end once
     // all offsets and sizes are known.
