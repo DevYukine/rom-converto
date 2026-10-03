@@ -9,7 +9,7 @@
 use crate::info::Image;
 use crate::nintendo::nx::constants::NCA_HEADER_SIZE;
 use crate::nintendo::nx::container::{
-    ContainerKind, ContainerListing, list_container, read_xci_hfs0_offset,
+    ContainerKind, ContainerListing, list_container, read_xci_hfs0_offset, xci_root_partitions,
 };
 use crate::nintendo::nx::keys::{KeySet, load_keyset};
 use crate::nintendo::nx::meta;
@@ -908,10 +908,7 @@ fn read_xci_partition_layout(path: &Path) -> Result<Vec<XciPartitionSummary>> {
     let root = Hfs0::read(&mut reader)?;
 
     let mut out = Vec::with_capacity(root.files.len());
-    for entry in &root.files {
-        let part_abs_offset = root.data_section_offset + entry.data_offset;
-        reader.seek(SeekFrom::Start(part_abs_offset))?;
-        let sub = Hfs0::read(&mut reader)?;
+    for (entry, _, sub) in xci_root_partitions(&mut reader, &root)? {
         let total_size = sub.files.iter().map(|f| f.size).sum();
         out.push(XciPartitionSummary {
             name: entry.name.clone(),

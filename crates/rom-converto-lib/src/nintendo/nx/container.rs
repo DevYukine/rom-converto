@@ -9,6 +9,7 @@
 //! live in `secure`; the loader still reads `update`/`logo`/`normal`
 //! so a re-pack can pass them through.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -17,7 +18,7 @@ use byteorder::{LE, ReadBytesExt};
 
 use crate::nintendo::nx::constants::{HFS0_MAGIC, PFS0_MAGIC, XCI_PARTITIONS};
 use crate::nintendo::nx::error::{NxError, NxResult};
-use crate::nintendo::nx::models::hfs0::Hfs0;
+use crate::nintendo::nx::models::hfs0::{Hfs0, Hfs0FileRef};
 use crate::nintendo::nx::models::pfs0::{Pfs0, Pfs0FileRef};
 
 pub(crate) const XCI_HEAD_MAGIC_OFFSET: u64 = 0x100;
@@ -134,16 +135,52 @@ pub fn list_container(path: &Path) -> NxResult<ContainerListing> {
 fn list_pfs0(path: &Path) -> NxResult<Vec<ContainerEntry>> {
     let mut reader = BufReader::new(File::open(path)?);
     let pfs0 = Pfs0::read(&mut reader)?;
-    Ok(pfs0
-        .files
+    pfs0.files
         .into_iter()
-        .map(|f: Pfs0FileRef| ContainerEntry {
-            partition: None,
-            abs_offset: pfs0.data_section_offset + f.data_offset,
-            name: f.name,
-            size: f.size,
+        .map(|f: Pfs0FileRef| {
+            Ok(ContainerEntry {
+                partition: None,
+                abs_offset: pfs0
+                    .data_section_offset
+                    .checked_add(f.data_offset)
+                    .ok_or(NxError::OverlappingEntries)?,
+                name: f.name,
+                size: f.size,
+            })
         })
-        .collect())
+        .collect()
+}
+
+/// Walks the root HFS0 of a gamecard image and reads each
+/// sub-partition header, returning the root entry, the partition's
+/// absolute offset, and the parsed sub-HFS0.
+///
+/// A real gamecard references each known partition at most once;
+/// repeated extents would reparse the same table and re-emit its
+/// whole file list per reference, so the entry count is capped at the
+/// known partition set and each absolute offset is visited once.
+pub(crate) fn xci_root_partitions<'a, R: Read + Seek>(
+    reader: &mut R,
+    root: &'a Hfs0,
+) -> NxResult<Vec<(&'a Hfs0FileRef, u64, Hfs0)>> {
+    if root.files.len() > XCI_PARTITIONS.len() {
+        return Err(NxError::InvalidXci);
+    }
+    let mut visited = HashSet::new();
+    let mut partitions = Vec::with_capacity(root.files.len());
+    for entry in &root.files {
+        let part_abs_offset = root
+            .data_section_offset
+            .checked_add(entry.data_offset)
+            .ok_or(NxError::OverlappingEntries)?;
+        if !visited.insert(part_abs_offset) {
+            return Err(NxError::OverlappingEntries);
+        }
+        reader.seek(SeekFrom::Start(part_abs_offset))?;
+        let sub = Hfs0::read(reader)?;
+        partitions.push((entry, part_abs_offset, sub));
+    }
+    Ok(partitions)
 }
 
 fn list_xci(path: &Path) -> NxResult<Vec<ContainerEntry>> {
@@ -156,15 +193,15 @@ fn list_xci(path: &Path) -> NxResult<Vec<ContainerEntry>> {
     let root = Hfs0::read(&mut reader)?;
 
     let mut out = Vec::new();
-    for entry in root.files {
-        let partition_name = name_to_static(&entry.name);
-        let part_abs_offset = root.data_section_offset + entry.data_offset;
-        reader.seek(SeekFrom::Start(part_abs_offset))?;
-        let sub = Hfs0::read(&mut reader)?;
+    for (root_entry, _, sub) in xci_root_partitions(&mut reader, &root)? {
+        let partition_name = name_to_static(&root_entry.name);
         for f in sub.files {
             out.push(ContainerEntry {
                 partition: partition_name,
-                abs_offset: sub.data_section_offset + f.data_offset,
+                abs_offset: sub
+                    .data_section_offset
+                    .checked_add(f.data_offset)
+                    .ok_or(NxError::OverlappingEntries)?,
                 name: f.name,
                 size: f.size,
             });
@@ -197,5 +234,54 @@ mod tests {
         let f = write(&[0u8; 0x100]);
         let err = detect_container(f.path()).unwrap_err();
         assert!(matches!(err, NxError::UnknownContainer));
+    }
+
+    #[test]
+    fn rejects_repeated_xci_partition_offset() {
+        let f = write_xci(b"update\0secure\0\0\0", &[(0, 0, 0x10), (0, 7, 0x10)]);
+        let err = list_xci(f.path()).unwrap_err();
+        assert!(matches!(err, NxError::OverlappingEntries));
+    }
+
+    #[test]
+    fn rejects_root_partition_count_over_known_set() {
+        // Five root entries exceed the four known partitions even with
+        // distinct names and offsets.
+        let entries: Vec<(u64, u32, u64)> = (0u32..5)
+            .map(|i| (0x10 * u64::from(i), 3 * i, 0x10u64))
+            .collect();
+        let f = write_xci(b"n0\0n1\0n2\0n3\0n4\0", &entries);
+        let err = list_xci(f.path()).unwrap_err();
+        assert!(matches!(err, NxError::InvalidXci));
+    }
+
+    /// Builds a synthetic gamecard image whose root HFS0 at 0x200
+    /// holds one entry per `(data_offset, name_offset, size)` triple
+    /// over `table`, followed by an empty sub-HFS0.
+    fn write_xci(table: &[u8], entries: &[(u64, u32, u64)]) -> NamedTempFile {
+        let mut buf = vec![0u8; 0x400];
+        buf[0x100..0x104].copy_from_slice(b"HEAD");
+        buf[0x130..0x138].copy_from_slice(&0x200u64.to_le_bytes());
+
+        let mut root = Vec::new();
+        root.extend_from_slice(b"HFS0");
+        root.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        root.extend_from_slice(&(table.len() as u32).to_le_bytes());
+        root.extend_from_slice(&0u32.to_le_bytes());
+        for (data_offset, name_offset, size) in entries {
+            root.extend_from_slice(&data_offset.to_le_bytes());
+            root.extend_from_slice(&size.to_le_bytes());
+            root.extend_from_slice(&name_offset.to_le_bytes());
+            root.extend_from_slice(&0u32.to_le_bytes());
+            root.extend_from_slice(&0u64.to_le_bytes());
+            root.extend_from_slice(&[0u8; 32]);
+        }
+        root.extend_from_slice(table);
+        buf[0x200..0x200 + root.len()].copy_from_slice(&root);
+
+        let sub = 0x200 + root.len();
+        buf[sub..sub + 4].copy_from_slice(b"HFS0");
+
+        write(&buf)
     }
 }

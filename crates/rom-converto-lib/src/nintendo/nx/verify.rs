@@ -15,8 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::nintendo::nx::container::{ContainerKind, detect_container};
-use crate::nintendo::nx::error::NxResult;
+use crate::nintendo::nx::container::{ContainerKind, detect_container, xci_root_partitions};
+use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0 as hfs0_mod;
 use crate::nintendo::nx::models::pfs0 as pfs0_mod;
@@ -207,16 +207,20 @@ fn list_pfs0_entries(path: &Path, cancel: &CancelToken) -> NxResult<Vec<Entry>> 
     check_cancel(cancel)?;
     let mut reader = BufReader::new(File::open(path)?);
     let pfs0 = pfs0_mod::Pfs0::read(&mut reader)?;
-    Ok(pfs0
-        .files
+    pfs0.files
         .into_iter()
-        .map(|f| Entry {
-            name: f.name,
-            partition: None,
-            abs_offset: pfs0.data_section_offset + f.data_offset,
-            size: f.size,
+        .map(|f| {
+            Ok(Entry {
+                name: f.name,
+                partition: None,
+                abs_offset: pfs0
+                    .data_section_offset
+                    .checked_add(f.data_offset)
+                    .ok_or(NxError::OverlappingEntries)?,
+                size: f.size,
+            })
         })
-        .collect())
+        .collect()
 }
 
 fn list_xci_entries(path: &Path, cancel: &CancelToken) -> NxResult<Vec<Entry>> {
@@ -229,16 +233,16 @@ fn list_xci_entries(path: &Path, cancel: &CancelToken) -> NxResult<Vec<Entry>> {
     reader.seek(SeekFrom::Start(hfs0_off))?;
     let root = hfs0_mod::Hfs0::read(&mut reader)?;
     let mut out = Vec::new();
-    for root_entry in root.files {
+    for (root_entry, _, sub) in xci_root_partitions(&mut reader, &root)? {
         check_cancel(cancel)?;
-        let part_abs = root.data_section_offset + root_entry.data_offset;
-        reader.seek(SeekFrom::Start(part_abs))?;
-        let sub = hfs0_mod::Hfs0::read(&mut reader)?;
         for f in sub.files {
             out.push(Entry {
                 name: f.name,
                 partition: Some(root_entry.name.clone()),
-                abs_offset: sub.data_section_offset + f.data_offset,
+                abs_offset: sub
+                    .data_section_offset
+                    .checked_add(f.data_offset)
+                    .ok_or(NxError::OverlappingEntries)?,
                 size: f.size,
             });
         }

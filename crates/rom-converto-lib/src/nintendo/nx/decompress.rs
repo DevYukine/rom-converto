@@ -9,7 +9,9 @@ use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
-use crate::nintendo::nx::container::{ContainerKind, detect_container, read_xci_hfs0_offset};
+use crate::nintendo::nx::container::{
+    ContainerKind, detect_container, read_xci_hfs0_offset, xci_root_partitions,
+};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::hfs0::{
@@ -171,10 +173,7 @@ fn decompress_xci(
     let root = hfs0_mod::Hfs0::read(&mut reader)?;
 
     let mut sub_partitions = Vec::with_capacity(root.files.len());
-    for root_entry in &root.files {
-        let part_abs = root.data_section_offset + root_entry.data_offset;
-        reader.seek(SeekFrom::Start(part_abs))?;
-        let sub = hfs0_mod::Hfs0::read(&mut reader)?;
+    for (root_entry, part_abs, sub) in xci_root_partitions(&mut reader, &root)? {
         sub_partitions.push(SubPartitionPlan {
             partition_name: root_entry.name.clone(),
             partition_hashed_size: root_entry.hashed_region_size.max(DEFAULT_HASHED_REGION),

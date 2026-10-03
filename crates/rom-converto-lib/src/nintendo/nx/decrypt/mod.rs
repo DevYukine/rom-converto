@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 use crate::nintendo::nx::constants::{HFS0_ENTRY_SIZE, HFS0_HEADER_SIZE};
 use crate::nintendo::nx::container::{
     ContainerKind, DXCI_MAGIC, XCI_HEAD_MAGIC_OFFSET, list_container, read_xci_hfs0_offset,
+    xci_root_partitions,
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
@@ -214,13 +215,10 @@ fn xci_segments(
     let mut root_header = read_at(file, hfs0_off, root.data_section_offset - hfs0_off)?;
 
     let mut segments = Vec::new();
-    for (index, partition) in root.files.iter().enumerate() {
-        let part_abs = root
-            .data_section_offset
-            .checked_add(partition.data_offset)
-            .ok_or(NxError::InvalidXci)?;
-        reader.seek(SeekFrom::Start(part_abs))?;
-        let sub = Hfs0::read(&mut reader)?;
+    for (index, (partition, part_abs, sub)) in xci_root_partitions(&mut reader, &root)?
+        .into_iter()
+        .enumerate()
+    {
         let mut sub_header = read_at(file, part_abs, sub.data_section_offset - part_abs)?;
 
         for (i, entry) in sub.files.iter().enumerate() {
