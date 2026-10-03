@@ -15,6 +15,7 @@ use byteorder::{BE, ByteOrder};
 pub const U8_MAGIC: u32 = 0x55AA_382D;
 pub const U8_NODE_SIZE: usize = 12;
 pub const U8_HEADER_SIZE: usize = 0x20;
+const MAX_LISTED_PATH_BYTES: usize = 16 * 1024 * 1024;
 
 /// Parsed U8 archive: the node table plus a borrowed view of the underlying bytes for file lookups.
 #[derive(Debug, Clone)]
@@ -87,6 +88,12 @@ impl<'a> U8Archive<'a> {
             });
         }
 
+        for node in &nodes {
+            if node.is_dir && node.size as usize > nodes.len() {
+                return Err(anyhow!("U8 directory end past node table"));
+            }
+        }
+
         let string_table_offset = nodes_end;
         Ok(Self {
             data,
@@ -114,7 +121,7 @@ impl<'a> U8Archive<'a> {
         Some((node.data_offset as usize, node.size as usize))
     }
 
-    /// Lists every file in the archive with its full path and payload bytes.
+    /// Lists files with full paths and payload bytes, subject to [`Self::list_extents`] limits.
     pub fn list_paths(&self) -> Vec<(String, &'a [u8])> {
         self.list_extents()
             .into_iter()
@@ -125,42 +132,57 @@ impl<'a> U8Archive<'a> {
             .collect()
     }
 
-    /// Lists every file as `(path, offset, size)` without touching payloads.
+    /// Lists file extents, skipping names over 255 bytes and stopping at 16 MiB of path bytes.
     pub fn list_extents(&self) -> Vec<(String, usize, usize)> {
         let mut out = Vec::new();
         if self.nodes.is_empty() {
             return out;
         }
         let total_nodes = self.nodes[0].size as usize;
-        let mut stack: Vec<String> = Vec::new();
+        let mut stack: Vec<&str> = Vec::new();
         let mut end_stack: Vec<usize> = vec![total_nodes];
         let mut idx = 1usize;
+        let mut prefix_bytes = 0usize;
+        let mut listed_path_bytes = 0usize;
         while idx < total_nodes {
             while let Some(end) = end_stack.last().copied() {
                 if idx >= end && end_stack.len() > 1 {
                     end_stack.pop();
-                    stack.pop();
+                    if let Some(name) = stack.pop() {
+                        prefix_bytes -= name.len() + 1;
+                    }
                 } else {
                     break;
                 }
             }
             let node = self.nodes[idx];
             let name = match self.read_name(node.name_offset) {
-                Some(n) => n.to_string(),
+                Some(n) => n,
                 None => {
-                    idx += 1;
+                    idx = if node.is_dir {
+                        (node.size as usize).max(idx + 1)
+                    } else {
+                        idx + 1
+                    };
                     continue;
                 }
             };
+            let path_bytes = prefix_bytes + name.len();
+            if path_bytes > MAX_LISTED_PATH_BYTES - listed_path_bytes {
+                break;
+            }
             if node.is_dir {
                 stack.push(name);
                 end_stack.push(node.size as usize);
+                prefix_bytes += name.len() + 1;
             } else {
-                let path = if stack.is_empty() {
-                    name
-                } else {
-                    format!("{}/{}", stack.join("/"), name)
-                };
+                let mut path = String::with_capacity(path_bytes);
+                for component in &stack {
+                    path.push_str(component);
+                    path.push('/');
+                }
+                path.push_str(name);
+                listed_path_bytes += path_bytes;
                 out.push((path, node.data_offset as usize, node.size as usize));
             }
             idx += 1;
@@ -187,7 +209,7 @@ impl<'a> U8Archive<'a> {
         let (head, rest) = components.split_first()?;
         let mut idx = dir_idx + 1;
         while idx < dir_end_excl {
-            let node = self.nodes[idx];
+            let node = *self.nodes.get(idx)?;
             let name = self.read_name(node.name_offset).unwrap_or("");
             let next_subtree_end = if node.is_dir {
                 node.size as usize
@@ -213,11 +235,13 @@ impl<'a> U8Archive<'a> {
         if start >= self.data.len() {
             return None;
         }
+        // A U8 name component cannot exceed 255 bytes; refuse longer runs
+        // instead of scanning unbounded shared string-table tails.
         let end = self.data[start..]
             .iter()
+            .take(256)
             .position(|b| *b == 0)
-            .map(|p| start + p)
-            .unwrap_or(self.data.len());
+            .map(|p| start + p)?;
         std::str::from_utf8(&self.data[start..end]).ok()
     }
 }
@@ -408,6 +432,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_directory_end_outside_node_table() {
+        let mut archive = build_archive(&[Entry {
+            path: "meta",
+            data: b"",
+        }]);
+        let dir_offset = U8_HEADER_SIZE + U8_NODE_SIZE;
+        BE::write_u32(&mut archive[dir_offset..dir_offset + 4], 0x0100_0001);
+        BE::write_u32(&mut archive[dir_offset + 8..dir_offset + 12], 3);
+        assert!(U8Archive::parse(&archive).is_err());
+    }
+
+    #[test]
+    fn accepts_directory_end_past_enclosing_subtree() {
+        let mut archive = build_archive(&[
+            Entry {
+                path: "meta/nested/banner.bin",
+                data: b"",
+            },
+            Entry {
+                path: "icon.bin",
+                data: b"",
+            },
+        ]);
+        let dir_offset = U8_HEADER_SIZE + 2 * U8_NODE_SIZE;
+        BE::write_u32(&mut archive[dir_offset + 8..dir_offset + 12], 5);
+        assert!(U8Archive::parse(&archive).is_ok());
+    }
+
+    #[test]
     fn finds_deeply_nested_file() {
         let archive = build_archive(&[Entry {
             path: "arc/timg/banner.tpl",
@@ -460,6 +513,43 @@ mod tests {
             paths.contains(&"arc/timg/banner.tpl".to_string()),
             "got {:?}",
             paths
+        );
+    }
+
+    #[test]
+    fn list_extents_skips_shared_oversized_names() {
+        let name = "a".repeat(300);
+        let entries: Vec<Entry<'_>> = (0..64)
+            .map(|_| Entry {
+                path: &name,
+                data: b"",
+            })
+            .collect();
+        let mut archive = build_archive(&entries);
+        for idx in 1..=64 {
+            let node_offset = U8_HEADER_SIZE + idx * U8_NODE_SIZE;
+            BE::write_u32(&mut archive[node_offset..node_offset + 4], 1);
+        }
+        let parsed = U8Archive::parse(&archive).unwrap();
+        assert!(parsed.list_extents().is_empty());
+    }
+
+    #[test]
+    fn list_extents_bounds_cumulative_path_bytes() {
+        let name = "a".repeat(255);
+        let archive = build_archive(&[Entry {
+            path: &name,
+            data: b"",
+        }]);
+        let mut parsed = U8Archive::parse(&archive).unwrap();
+        let file = parsed.nodes[1];
+        let file_count = MAX_LISTED_PATH_BYTES / name.len() + 1;
+        parsed.nodes.resize(file_count + 1, file);
+        parsed.nodes[0].size = parsed.nodes.len() as u32;
+        let extents = parsed.list_extents();
+        assert_eq!(extents.len(), file_count - 1);
+        assert!(
+            extents.iter().map(|(path, _, _)| path.len()).sum::<usize>() <= MAX_LISTED_PATH_BYTES
         );
     }
 
