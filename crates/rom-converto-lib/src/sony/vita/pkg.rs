@@ -9,6 +9,7 @@
 //! 2 to 4 derive the CTR key by AES-ECB encrypting the header's
 //! `pkg_data_iv` under the matching Vita key.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -397,6 +398,7 @@ fn find_license(pkg_path: &Path, content_id: &str) -> Option<[u8; 16]> {
 
 /// Decrypts the item table of the `.pkg` at `path` and writes every file
 /// item under `out_dir`, reporting bytes written through `progress`.
+/// Rejects invalid UTF-8 names and duplicate destination paths.
 /// Returns the item table as parsed.
 pub fn extract(
     path: &Path,
@@ -420,14 +422,38 @@ pub fn extract(
     progress.start(total, "vita pkg: extract");
 
     let mut buf = vec![0u8; CHUNK];
+    let mut seen_files = HashSet::new();
+    let mut seen_dirs = HashSet::new();
     for entry in &raw {
         let item = &entry.item;
         let dest = safe_join(out_dir, &item.name)?;
+        // Key on the lowercased, normalized item path: the written
+        // names collide case-insensitively on common filesystems, and
+        // `.` components and leading or trailing separators do not
+        // change the destination. Repeated directory records are
+        // benign (create_dir_all is idempotent); any collision
+        // involving a file would overwrite content.
+        let key = Path::new(&item.name)
+            .components()
+            .filter_map(|comp| match comp {
+                Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("/");
         if item.is_dir {
+            if seen_files.contains(&key) {
+                bail!("vita pkg: duplicate item path {}", dest.display());
+            }
+            seen_dirs.insert(key);
             std::fs::create_dir_all(&dest)
                 .with_context(|| format!("vita pkg extract: mkdir {}", dest.display()))?;
             continue;
         }
+        if seen_files.contains(&key) || seen_dirs.contains(&key) {
+            bail!("vita pkg: duplicate item path {}", dest.display());
+        }
+        seen_files.insert(key);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("vita pkg extract: mkdir {}", parent.display()))?;
@@ -746,6 +772,8 @@ fn read_items(
                 file.seek(SeekFrom::Start(header.data_offset + name_offset))?;
                 file.read_exact(&mut name)?;
                 ctr_at(&raw.key, &header.iv, name_offset)?.apply_keystream(&mut name);
+                // Lookups keep scanning past an undecodable name
+                // instead of failing the whole scan.
                 raw.item.name = String::from_utf8_lossy(&name).into_owned();
                 if !raw.item.is_dir && ends_with_ignore_ascii_case(&raw.item.name, suffix) {
                     items.push(raw);
@@ -800,7 +828,13 @@ fn read_items(
             let end = begin + raw.item.name_size as usize;
             let mut name = name_bytes[begin..end].to_vec();
             ctr_at(&raw.key, &header.iv, raw.item.name_offset)?.apply_keystream(&mut name);
-            raw.item.name = String::from_utf8_lossy(&name).into_owned();
+            raw.item.name = if info_only {
+                // Info mode keeps scanning past an undecodable name.
+                String::from_utf8_lossy(&name).into_owned()
+            } else {
+                String::from_utf8(name)
+                    .map_err(|_| anyhow!("vita pkg: item name is not valid UTF-8"))?
+            };
             // Info keeps only the names it reports; everything else is
             // released as soon as its batch is decoded.
             if info_only && !info_reports(&raw.item) {
@@ -1234,6 +1268,132 @@ mod tests {
             );
             assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
         }
+    }
+
+    #[test]
+    fn invalid_utf8_item_name_fails_extract_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.pkg");
+        let entries = [Entry {
+            name: "eboot.bin",
+            data: vec![0xAB],
+            is_dir: false,
+            psp_type: 0x90,
+        }];
+        let mut bytes = build_pkg(2, 3, 0x15, &entries);
+        let data_offset = u64_be(&bytes, 32) as usize;
+        // The sole name follows the item record; changing CTR ciphertext
+        // by this XOR changes its first plaintext byte from 'e' to 0xFF.
+        bytes[data_offset + ITEM_LEN as usize] ^= b'e' ^ 0xFF;
+        std::fs::write(&path, bytes).unwrap();
+
+        let mut file = File::open(&path).unwrap();
+        let pkg_size = file.metadata().unwrap().len();
+        let header = read_header(&mut file, &path).unwrap();
+        let meta = read_meta(&mut file, &header).unwrap();
+        let key = derive_key(header.key_type, &header.iv, PkgPlatform::Vita).unwrap();
+        // Extraction writes files, so an undecodable name still aborts it.
+        let err = read_items(&mut file, &header, &meta, &key, pkg_size, false, None)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(err, "vita pkg: item name is not valid UTF-8");
+
+        // Lookups keep scanning and match on the lossy-decoded name.
+        let (items, truncated) = read_items(
+            &mut file,
+            &header,
+            &meta,
+            &key,
+            pkg_size,
+            false,
+            Some(".bin"),
+        )
+        .unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item.name, "\u{FFFD}boot.bin");
+        assert!(!truncated);
+
+        // Info mode scans past it without aborting.
+        assert!(read_info(&path).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_item_paths_without_overwriting() {
+        for (second, expected_name) in [
+            ("eboot.bin", "eboot.bin"),
+            ("EBOOT.BIN", "EBOOT.BIN"),
+            ("./eboot.bin", "eboot.bin"),
+            ("/eboot.bin", "eboot.bin"),
+            ("eboot.bin/", "eboot.bin"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("duplicate.pkg");
+            let out = dir.path().join("out");
+            let entries = [
+                Entry {
+                    name: "eboot.bin",
+                    data: vec![0xAB; 3],
+                    is_dir: false,
+                    psp_type: 0x90,
+                },
+                Entry {
+                    name: second,
+                    data: vec![0xCD; 5],
+                    is_dir: false,
+                    psp_type: 0x90,
+                },
+            ];
+            std::fs::write(&path, build_pkg(2, 3, 0x15, &entries)).unwrap();
+
+            let err = extract(&path, &out, &NoProgress).unwrap_err().to_string();
+            assert_eq!(
+                err,
+                format!(
+                    "vita pkg: duplicate item path {}",
+                    out.join(expected_name).display()
+                )
+            );
+            assert_eq!(
+                std::fs::read(out.join("eboot.bin")).unwrap(),
+                entries[0].data
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_directory_records_extract_without_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("repeated-dir.pkg");
+        let out = dir.path().join("out");
+        let entries = [
+            Entry {
+                name: "sce_sys",
+                data: Vec::new(),
+                is_dir: true,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "sce_sys",
+                data: Vec::new(),
+                is_dir: true,
+                psp_type: 0x90,
+            },
+            Entry {
+                name: "sce_sys/eboot.bin",
+                data: vec![0xAB; 3],
+                is_dir: false,
+                psp_type: 0x90,
+            },
+        ];
+        std::fs::write(&path, build_pkg(2, 3, 0x15, &entries)).unwrap();
+
+        extract(&path, &out, &NoProgress).unwrap();
+        assert!(out.join("sce_sys").is_dir());
+        assert_eq!(
+            std::fs::read(out.join("sce_sys/eboot.bin")).unwrap(),
+            entries[2].data
+        );
     }
 
     #[test]
