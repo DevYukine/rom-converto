@@ -1320,7 +1320,11 @@ pub(crate) async fn hash(
     let digest = match cache.and_then(|c| c.lookup_raw(&input, &algos)) {
         Some(digest) => digest,
         None => {
-            let digest = hash_file(&input, &algos, progress, &cancel)?;
+            let digest = spawn_blocking_with_progress(progress, {
+                let input = input.clone();
+                move |progress| hash_file(&input, &algos, progress, &cancel)
+            })
+            .await?;
             if let Some(cache) = cache {
                 cache.store_raw(&input, &digest);
             }

@@ -573,6 +573,7 @@ pub(crate) async fn dat_fixdat(
         progress.warn(NX_DAT_UNSUPPORTED_HINT);
     }
     let missing = diff_library(&games, &index);
+    let missing_count = missing.len();
     let missing_files = missing.iter().map(|e| e.missing.len()).sum();
     if req.dry_run {
         return Ok(RunResponse::ok(
@@ -580,30 +581,38 @@ pub(crate) async fn dat_fixdat(
             Some(RunData::FixdatPlan(FixdatPlanData {
                 dat_file: dat,
                 total_games,
-                missing_count: missing.len(),
+                missing_count,
                 missing_files,
                 output,
             })),
         ));
     }
-    crate::util::atomic_write(
-        &output,
-        policy == ConflictPolicy::Overwrite,
-        |file| -> anyhow::Result<()> {
-            write_fixdat_xml(file, &dat, &missing, &cancel)?;
-            file.sync_all()?;
-            if cancel.is_cancelled() {
-                return Err(Cancelled.into());
-            }
-            Ok(())
-        },
-    )?;
+    let dat = tokio::task::spawn_blocking({
+        let output = output.clone();
+        let cancel = cancel.clone();
+        move || {
+            crate::util::atomic_write(
+                &output,
+                policy == ConflictPolicy::Overwrite,
+                |file| -> anyhow::Result<()> {
+                    write_fixdat_xml(file, &dat, &missing, &cancel)?;
+                    file.sync_all()?;
+                    if cancel.is_cancelled() {
+                        return Err(Cancelled.into());
+                    }
+                    Ok(())
+                },
+            )
+            .map(|()| dat)
+        }
+    })
+    .await??;
     Ok(RunResponse::ok(
         "Fixdat written.",
         Some(RunData::FixdatWritten(FixdatWrittenData {
             dat_file: dat,
             total_games,
-            missing_count: missing.len(),
+            missing_count,
             missing_files,
             output: output.clone(),
         })),
