@@ -970,12 +970,10 @@ mod tests {
         }
     }
 
+    // Creating the symlink needs privileges Windows test runs lack.
+    #[cfg(unix)]
     #[tokio::test]
     async fn bundle_rejects_an_output_that_is_an_input() {
-        if cfg!(windows) {
-            // Creating the symlink needs privileges Windows test runs lack.
-            return;
-        }
         let tmp = tempfile::tempdir().unwrap();
         let member = tmp.path().join("game.cia");
         std::fs::write(&member, b"payload").unwrap();
