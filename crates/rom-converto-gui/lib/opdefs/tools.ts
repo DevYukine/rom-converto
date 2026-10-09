@@ -690,7 +690,6 @@ const ctrBundle: OpDef = {
 	showDryRun: true,
 	actionNote: "All staged files merge into one queue job producing a single output.",
 
-	deriveOutput: (input, store) => bundleOutput(store, [input]),
 	buildArgs: (store, item, taskId) => bundleArgs(store, [item.path], taskId),
 	buildArgsAll: (store, items, taskId) => bundleArgs(store, items.map((i) => i.path), taskId),
 	chips: () => "",
