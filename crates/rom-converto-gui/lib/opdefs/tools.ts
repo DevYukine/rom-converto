@@ -587,7 +587,7 @@ const nxSplit: OpDef = {
 			kind: "directory",
 			label: "Output directory",
 			display: (store) => store.outputDir || "",
-			placeholder: "Same as source",
+			placeholder: "<input>_split",
 			value: (store) => store.outputDir,
 			set: (store, value) => {
 				store.outputDir = value;
@@ -716,6 +716,7 @@ const ctrUnbundle: OpDef = {
 	fields: [],
 	outputRows: directoryOutputRows(
 		"Where the bundle members are written. Leave empty to use a <name>_unbundled folder next to the input file.",
+		"<input>_unbundled",
 	),
 
 	renameDisabled: true,

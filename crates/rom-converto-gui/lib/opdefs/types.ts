@@ -189,14 +189,16 @@ export interface OpDef {
 }
 
 // Ops that write a whole directory instead of deriving a single output
-// file, so they have no template/report row.
-export function directoryOutputRows(tooltip: string): OutputRow[] {
+// file, so they have no template/report row. A row that names the output
+// folder itself (not its parent) passes that folder's default, such as
+// "<input>_unbundled", as the placeholder.
+export function directoryOutputRows(tooltip: string, placeholder = "Same as source"): OutputRow[] {
 	return [
 		{
 			kind: "directory",
 			label: "Directory",
 			display: (s) => s.outputDir || "",
-			placeholder: "Same as source",
+			placeholder,
 			value: (s) => s.outputDir,
 			set: (s, v) => { s.outputDir = v; },
 			tooltip,
