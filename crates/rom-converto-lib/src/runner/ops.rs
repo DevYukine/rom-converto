@@ -15,7 +15,7 @@ use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
 use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, vita_extract};
-use super::organize::{FileIdentity, organize};
+use super::organize::{FileIdentity, location_under_root, organize};
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
 use crate::cso::{CsoCompressOptions, CsoFormat};
 use crate::disc::chd::error::ChdError;
@@ -3064,7 +3064,8 @@ fn output_exists(desired: &Path, message: String) -> anyhow::Error {
 /// auto-number, so `rename` is rejected; `skip` keeps a directory that
 /// already holds files and `error` refuses it. `overwrite` removes an
 /// existing file at the path and writes into a non-empty directory as is,
-/// but refuses a path that is the input itself.
+/// but refuses a path that is the input itself or a file inside a
+/// directory input.
 pub(crate) fn prepare_output_dir(
     req: &RunRequest,
     input: &Path,
@@ -3117,6 +3118,21 @@ pub(crate) fn prepare_output_dir(
         }) {
             return Err(invalid_arg(format!(
                 "{} is the input file; writing the output there would delete it",
+                desired.display()
+            )));
+        }
+        // The input may be a directory (wup.decrypt takes a title folder):
+        // overwriting a file inside it would delete part of the input even
+        // though the paths differ. The entry is judged where it sits, so a
+        // link inside the input counts and a link pointing in does not.
+        if input.is_dir()
+            && location_under_root(
+                desired,
+                &input.canonicalize().unwrap_or_else(|_| input.to_path_buf()),
+            )
+        {
+            return Err(invalid_arg(format!(
+                "{} is inside the input directory; writing the output there would delete part of it",
                 desired.display()
             )));
         }
@@ -4332,30 +4348,57 @@ mod tests {
     }
 
     /// `overwrite` removes a file at a directory output's path, so an output
-    /// that names the input itself is refused, on a dry run too, and the
-    /// input survives.
+    /// that names the input itself, spells it differently but resolves to it,
+    /// or sits inside a directory input (a link there included) is refused,
+    /// on a dry run too, and the input survives.
     #[test]
     fn prepare_output_dir_never_removes_its_input() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("game.nsp");
         std::fs::write(&input, b"nsp").unwrap();
+        let dotted = dir.path().join(".").join("game.nsp");
+        let title = dir.path().join("title");
+        std::fs::create_dir(&title).unwrap();
+        let tmd = title.join("title.tmd");
+        std::fs::write(&tmd, b"tmd").unwrap();
+        #[cfg(unix)]
+        let linked = {
+            let link = title.join("outside.tik");
+            std::os::unix::fs::symlink(&input, &link).unwrap();
+            link
+        };
+
+        let mut cases: Vec<(&std::path::Path, &std::path::Path, &[u8])> =
+            vec![(&input, &input, b"nsp"), (&input, &dotted, b"nsp")];
+        #[cfg(unix)]
+        cases.push((&title, &linked, b"nsp"));
+        cases.push((&title, &tmd, b"tmd"));
+
         for dry_run in [false, true] {
-            let req = RunRequest {
-                schema: None,
-                operation: "nx.split".to_string(),
-                input: Some(input.clone()),
-                output: Some(input.clone()),
-                config: None,
-                preset: None,
-                options: RunOptions {
-                    on_conflict: Some("overwrite".to_string()),
-                    ..RunOptions::default()
-                },
-                dry_run,
-                ctx: Default::default(),
-            };
-            assert!(prepare_output_dir(&req, &input, &input, "nx.split").is_err());
-            assert_eq!(std::fs::read(&input).unwrap(), b"nsp");
+            for (case_input, desired, content) in &cases {
+                let req = RunRequest {
+                    schema: None,
+                    operation: "wup.decrypt".to_string(),
+                    input: Some((*case_input).to_path_buf()),
+                    output: Some((*desired).to_path_buf()),
+                    config: None,
+                    preset: None,
+                    options: RunOptions {
+                        on_conflict: Some("overwrite".to_string()),
+                        ..RunOptions::default()
+                    },
+                    dry_run,
+                    ctx: Default::default(),
+                };
+                let err = prepare_output_dir(&req, case_input, desired, "wup.decrypt")
+                    .expect_err("the input must survive");
+                assert!(
+                    err.downcast_ref::<crate::runner::InvalidArgument>()
+                        .is_some(),
+                    "{err}"
+                );
+                assert_eq!(&std::fs::read(desired).unwrap(), content);
+            }
         }
     }
 

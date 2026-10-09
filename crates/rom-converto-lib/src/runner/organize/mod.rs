@@ -1791,8 +1791,16 @@ fn sync_file_data(file: &std::fs::File) -> std::io::Result<()> {
 /// The entry's own location: its parent canonicalized (resolving spelling
 /// and symlinked directories) with the file name re-joined. The entry's own
 /// final symlink is never followed, so a link is judged by where it sits.
+/// A bare relative name has the empty parent, which is the current directory.
 fn entry_location(path: &Path) -> PathBuf {
-    match path.parent().map(std::fs::canonicalize) {
+    let parent = path.parent().map(|parent| {
+        if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        }
+    });
+    match parent.map(std::fs::canonicalize) {
         Some(Ok(parent)) => parent.join(path.file_name().unwrap_or_default()),
         _ => path.to_path_buf(),
     }
@@ -1895,7 +1903,7 @@ fn resolve_deepest_prefix(path: &Path) -> PathBuf {
 }
 
 /// True when `path`'s own location sits inside the input root.
-fn location_under_root(path: &Path, root: &Path) -> bool {
+pub(super) fn location_under_root(path: &Path, root: &Path) -> bool {
     #[cfg(unix)]
     let identity = FileIdentity::of(root);
     #[cfg(not(unix))]
@@ -6435,6 +6443,14 @@ mod tests {
         let root = TempDir::new().unwrap();
         let overlap = paths_overlap(root.path(), &root.path().join("out/deeper"));
         assert!(overlap, "a missing output dir under the root overlaps");
+    }
+
+    /// A bare relative name sits in the current directory (the package root
+    /// under cargo test), so it is under that directory as a root.
+    #[test]
+    fn location_under_root_resolves_a_bare_relative_name() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert!(location_under_root(Path::new("Cargo.toml"), &cwd));
     }
 
     /// The pre-write guard refuses a plan whose desired output is (by
