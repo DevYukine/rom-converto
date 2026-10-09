@@ -190,9 +190,9 @@ content: DiscContent | null, };
  */
 export type CtrBundledTitle = { name: string, size: number, 
 /**
- * True for the bootable main: the CCI/3DS or CXI member of a `.bcci` or
- * `.bcxi` bundle. A `.bcia`, or a bundle with no CCI/3DS/CXI member,
- * has no main.
+ * True for the bootable main: the CCI/3DS member of a `.bcci` or
+ * `.bcxi` bundle, or the CXI member of a `.bcxi` bundle. A `.bcia`, or
+ * a bundle with no CCI/3DS/CXI member, has no main.
  */
 main: boolean, format: CtrFormat, compressed: boolean, encrypted: boolean, title_id: string, content_kind: ContentKind | null, 
 /**

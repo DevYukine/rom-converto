@@ -167,9 +167,9 @@ pub struct CtrContentEntry {
 pub struct CtrBundledTitle {
     pub name: String,
     pub size: u64,
-    /// True for the bootable main: the CCI/3DS or CXI member of a `.bcci` or
-    /// `.bcxi` bundle. A `.bcia`, or a bundle with no CCI/3DS/CXI member,
-    /// has no main.
+    /// True for the bootable main: the CCI/3DS member of a `.bcci` or
+    /// `.bcxi` bundle, or the CXI member of a `.bcxi` bundle. A `.bcia`, or
+    /// a bundle with no CCI/3DS/CXI member, has no main.
     pub main: bool,
     pub format: CtrFormat,
     pub compressed: bool,
@@ -262,8 +262,8 @@ fn read_bundle_info(path: &Path, kind: BundleKind) -> Result<CtrInfo> {
     // AutoOpenNCCHNCSD, which opens a CCI/3DS main over a CXI or CIA; the
     // CXI-then-CIA fallbacks below are rom-converto's own descriptive
     // choice for a bundle with no CCI/3DS main (a .bcia is handled by
-    // Azahar's AM CIA path instead). Only a primary found by the CCI or
-    // CXI search is a bootable main; the CIA fallback describes the file
+    // Azahar's AM CIA path instead). Only a .bcxi boots a CXI, so the CXI
+    // fallback is a main only there; the CIA fallback describes the file
     // but boots nothing.
     let bootable = entries.iter().position(|e| {
         [".cci", ".zcci", ".3ds"]
@@ -276,7 +276,7 @@ fn read_bundle_info(path: &Path, kind: BundleKind) -> Result<CtrInfo> {
             entries
                 .iter()
                 .position(|e| [".cxi", ".zcxi"].iter().any(|ext| e.name.ends_with(ext)))
-                .map(|idx| (idx, true))
+                .map(|idx| (idx, kind == BundleKind::Cxi))
         })
         .or_else(|| {
             entries
@@ -287,8 +287,9 @@ fn read_bundle_info(path: &Path, kind: BundleKind) -> Result<CtrInfo> {
         .ok_or_else(|| anyhow!("ctr info: bundle contains no 3DS ROM at {}", path.display()))?;
 
     let physical_bytes = std::fs::metadata(path)?.len();
-    // A .bcia has no main even when it holds a CCI or CXI; a .bcci or
-    // .bcxi has one only when the primary came from the CCI/CXI search.
+    // A .bcia has no main even when it holds a CCI or CXI, and a .bcci
+    // never boots a CXI; a primary is a main only when the bundle kind
+    // boots it.
     let has_main = kind != BundleKind::Cia && primary_is_main;
     let mut bundled_titles = Vec::with_capacity(entries.len());
     let mut primary_info = None;
@@ -340,7 +341,7 @@ fn bundled_title_row(info: &CtrInfo, entry: &BundleEntry, is_main: bool) -> CtrB
         main: is_main,
         format: info.format,
         compressed: info.compressed,
-        encrypted: info.ncch_encrypted,
+        encrypted: info.ncch_encrypted || info.cia_contents.iter().any(|c| c.encrypted),
         title_id: info.title_id.clone(),
         content_kind: info.content_kind,
         title,
@@ -1577,5 +1578,57 @@ mod tests {
         assert!(info.bundled_titles[1].main);
         assert_eq!(info.bundled_titles[1].name, "game.cxi");
         assert_eq!(info.format, CtrFormat::Ncch);
+    }
+
+    #[test]
+    fn read_bundle_info_does_not_boot_a_cxi_member_in_a_bcci() {
+        use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, synth_cia};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (_cia_tmp, cia_path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x400);
+
+        let bundle_path = dir.path().join("game.bcci");
+        let mut builder = tar::Builder::new(std::fs::File::create(&bundle_path).unwrap());
+        builder
+            .append_path_with_name(&cia_path, "update.cia")
+            .unwrap();
+        tar_append(
+            &mut builder,
+            dir.path(),
+            "game.cxi",
+            &make_fake_decrypted_cxi(0x400),
+        );
+        builder.finish().unwrap();
+
+        let info = read_info(&bundle_path).unwrap();
+        assert_eq!(info.bundled_titles.len(), 2);
+        // Only a .bcxi boots a CXI, so the fallback member stays a plain
+        // row even though it is the primary.
+        assert!(!info.bundled_titles[0].main);
+        assert!(!info.bundled_titles[1].main);
+        assert_eq!(info.bundled_titles[1].name, "game.cxi");
+        assert_eq!(info.format, CtrFormat::Ncch);
+    }
+
+    #[test]
+    fn bundled_title_row_flags_encryption_from_cia_contents() {
+        let entry = BundleEntry {
+            name: "game.cia".to_string(),
+            offset: 0,
+            size: 0x400,
+            regular: true,
+        };
+        let mut info = CtrInfo::default();
+        assert!(!bundled_title_row(&info, &entry, false).encrypted);
+
+        info.cia_contents.push(CtrContentEntry {
+            index: 0,
+            content_id: "00000000".to_string(),
+            size: 0x200,
+            encrypted: true,
+        });
+        // Title-key encryption lives in the TMD content flags, not the
+        // NCCH header, so the row reports it from the content records.
+        assert!(bundled_title_row(&info, &entry, false).encrypted);
     }
 }
