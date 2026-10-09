@@ -324,6 +324,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     &cmd.input,
                     cmd.full,
                     cmd.max_depth,
+                    &cancel,
                 )
                 .await?
             } else {

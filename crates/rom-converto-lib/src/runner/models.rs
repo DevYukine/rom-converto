@@ -630,6 +630,9 @@ pub struct RunContext {
     /// the config defaults set `on_conflict`; `None` means `error`. Lets a
     /// frontend carry its own default without forcing it onto every request.
     pub default_conflict: Option<crate::util::ConflictPolicy>,
+    /// The archive listing and member pick a recursive walk already made for
+    /// this request's input, so the child does not list the archive again.
+    pub archive_selection: Option<crate::util::ArchiveSelection>,
 }
 
 impl std::fmt::Debug for RunContext {
@@ -637,6 +640,7 @@ impl std::fmt::Debug for RunContext {
         f.debug_struct("RunContext")
             .field("hash_cache", &self.hash_cache.is_some())
             .field("default_conflict", &self.default_conflict)
+            .field("archive_selection", &self.archive_selection.is_some())
             .finish()
     }
 }

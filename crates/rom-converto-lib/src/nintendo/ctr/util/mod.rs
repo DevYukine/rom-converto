@@ -20,10 +20,13 @@ pub fn check_cancel(cancel: &CancelToken) -> Result<()> {
 /// progress accounting, a cancel check between files, and turning a
 /// per-file failure into a warning so one bad ROM does not abort the run.
 /// `labels` is the progress-bar gerund and the failure-message verb, e.g.
-/// `("Decrypting", "decrypt")`.
+/// `("Decrypting", "decrypt")`. With `open_archives`, archives holding a
+/// member with one of `exts` are inputs too (collected on the blocking pool).
+#[allow(clippy::too_many_arguments)]
 pub async fn run_batch(
     input_dir: &Path,
-    exts: &[&str],
+    exts: &'static [&'static str],
+    open_archives: bool,
     labels: (&str, &str),
     max_depth: Option<usize>,
     total_progress: &dyn ProgressReporter,
@@ -31,7 +34,25 @@ pub async fn run_batch(
     mut op: impl AsyncFnMut(&Path) -> Result<()>,
 ) -> Result<()> {
     check_cancel(cancel)?;
-    let roms = crate::util::fs::collect_files_with_exts(input_dir, exts, max_depth, cancel)?;
+    let roms = if open_archives {
+        let dir = input_dir.to_path_buf();
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::util::collect_inputs(
+                &dir,
+                &crate::util::InputScan {
+                    exts,
+                    member_exts: None,
+                    max_depth,
+                    skip_unpacked_twins: false,
+                },
+                &cancel,
+            )
+        })
+        .await??
+    } else {
+        crate::util::fs::collect_files_with_exts(input_dir, exts, max_depth, cancel)?
+    };
     if roms.is_empty() {
         warn!(
             "No supported ROM files found in {} (looked for {:?})",

@@ -17,6 +17,8 @@ import {
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
 
+const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
+
 // hash.algos is a string[]; the Options card only renders toggle/kv/slider/etc.
 // fields, so each algorithm gets a synthetic boolean accessor backed by the
 // same array the store already exposes.
@@ -84,25 +86,25 @@ const hash: OpDef = {
 			kind: "toggle",
 			key: algoKey("crc32"),
 			label: "CRC32",
-			tooltip: "A fast 32-bit checksum, good for catching corruption or duplicates. Just a digest of the file bytes, not a database lookup.",
+			tooltip: "A fast 32-bit checksum, good for catching corruption or duplicates. Just a digest of the file bytes (of the known image inside an archive, else the archive itself), not a database lookup.",
 		},
 		{
 			kind: "toggle",
 			key: algoKey("sha1"),
 			label: "SHA-1",
-			tooltip: "A 160-bit hash, the digest most ROM hash sheets use. Just a digest of the file bytes, not a database lookup.",
+			tooltip: "A 160-bit hash, the digest most ROM hash sheets use. Just a digest of the file bytes (of the known image inside an archive, else the archive itself), not a database lookup.",
 		},
 		{
 			kind: "toggle",
 			key: algoKey("md5"),
 			label: "MD5",
-			tooltip: "A 128-bit hash, still common for file verification. Just a digest of the file bytes, not a database lookup.",
+			tooltip: "A 128-bit hash, still common for file verification. Just a digest of the file bytes (of the known image inside an archive, else the archive itself), not a database lookup.",
 		},
 		{
 			kind: "toggle",
 			key: algoKey("sha256"),
 			label: "SHA-256",
-			tooltip: "A 256-bit hash with no known practical collisions, slower to compute than the others. Just a digest of the file bytes, not a database lookup.",
+			tooltip: "A 256-bit hash with no known practical collisions, slower to compute than the others. Just a digest of the file bytes (of the known image inside an archive, else the archive itself), not a database lookup.",
 		},
 		{
 			kind: "toggle",
@@ -465,8 +467,8 @@ const nxMerge: OpDef = {
 	title: "Merge Switch NSP/XCI",
 	subtitle: "Combines multiple NSP/XCI parts into one super container.",
 	dropText: "Drop NSP or XCI files to merge",
-	acceptedExts: ["nsp", "xci"],
-	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+	acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci", ...ARCHIVE_EXTS] }],
 	progressKey: "nx-merge",
 
 	fields: [
@@ -559,8 +561,8 @@ const nxSplit: OpDef = {
 	title: "Split Switch NSP/XCI",
 	subtitle: "Splits a merged NSP/XCI back into its per-title parts.",
 	dropText: "Drop an NSP or XCI file",
-	acceptedExts: ["nsp", "xci"],
-	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
+	acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci", ...ARCHIVE_EXTS] }],
 	singleInput: true,
 	progressKey: "nx-split",
 

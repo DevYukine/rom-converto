@@ -89,6 +89,9 @@ pub enum NxError {
     #[error("no title content (CNMT) found in {0}")]
     NoContentInInput(PathBuf),
 
+    #[error("container holds a single title, nothing to split")]
+    SingleTitle,
+
     #[error("super-XCI merge requires XCI inputs; {0} is an NSP (use --format nsp)")]
     XciMergeRequiresXciInputs(PathBuf),
 

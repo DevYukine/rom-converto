@@ -38,18 +38,19 @@ pub fn derive_decrypted_path(input: &Path) -> PathBuf {
 /// Derives the default merge output for `first_input`: its stem plus
 /// ` (Merged)` and the requested container extension, beside the input.
 pub fn derive_merged_path(first_input: &Path, ext: &str) -> PathBuf {
-    let stem = first_input
-        .file_stem()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let stem = crate::util::derive_output_stem(first_input.file_name().unwrap_or_default());
+    let stem = stem.to_string_lossy();
     first_input.with_file_name(format!("{stem} (Merged).{ext}"))
 }
 
 /// Derives the default split output directory for `input`: its stem plus
-/// `_split`, beside the input.
+/// `_split`, beside the input. Archive wrappers are stripped the way every
+/// default output is, so `game.tar.gz` and `game.nsp.zip` yield `game_split`.
 pub fn derive_split_dir(input: &Path) -> PathBuf {
-    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-    input.with_file_name(format!("{stem}_split"))
+    let stem = crate::util::derive_output_stem(input.file_name().unwrap_or_default());
+    let mut name = stem.to_os_string();
+    name.push("_split");
+    input.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -137,6 +138,38 @@ mod tests {
         assert_eq!(
             derive_decrypted_path(Path::new("/roms/game.XCI")),
             PathBuf::from("/roms/game.dxci")
+        );
+    }
+
+    #[test]
+    fn split_dir_strips_a_tar_stem() {
+        assert_eq!(
+            derive_split_dir(Path::new("/roms/game.tar.gz")),
+            PathBuf::from("/roms/game_split")
+        );
+        assert_eq!(
+            derive_split_dir(Path::new("/roms/GAME.TAR.GZ")),
+            PathBuf::from("/roms/GAME_split")
+        );
+    }
+
+    #[test]
+    fn split_and_merged_defaults_strip_archive_wrappers() {
+        assert_eq!(
+            derive_split_dir(Path::new("/roms/game.nsp.zip")),
+            PathBuf::from("/roms/game_split")
+        );
+        assert_eq!(
+            derive_split_dir(Path::new("/roms/x.tar.nsp")),
+            PathBuf::from("/roms/x.tar_split")
+        );
+        assert_eq!(
+            derive_merged_path(Path::new("/roms/game.tar.gz"), "nsp"),
+            PathBuf::from("/roms/game (Merged).nsp")
+        );
+        assert_eq!(
+            derive_merged_path(Path::new("/roms/game.iso.zip"), "xci"),
+            PathBuf::from("/roms/game (Merged).xci")
         );
     }
 }

@@ -28,6 +28,16 @@ use tokio::task;
 
 use crate::util::{CancelToken, ProgressReporter, await_with_progress_cancel, run_scratch_write};
 
+/// Default GoD output directory for `input`: its file stem with `_god`
+/// appended, beside the input. Archive wrappers are stripped the way every
+/// default output is, so `game.tar.gz` and `game.iso.zip` yield `game_god`.
+pub fn derive_god_dir(input: &Path) -> std::path::PathBuf {
+    let stem = crate::util::derive_output_stem(input.file_name().unwrap_or_default());
+    let mut name = stem.to_os_string();
+    name.push("_god");
+    input.with_file_name(name)
+}
+
 /// Pack the directory at `input` into a ZArchive at `output`; on
 /// cancel the partial archive is removed.
 pub async fn pack_zar(
@@ -196,6 +206,26 @@ mod tests {
         assert_eq!(
             std::fs::read(out_dir.join("data/save.bin")).unwrap(),
             b"save-bytes"
+        );
+    }
+
+    #[test]
+    fn god_dir_strips_a_tar_stem() {
+        assert_eq!(
+            derive_god_dir(Path::new("/roms/game.tar.gz")),
+            std::path::PathBuf::from("/roms/game_god")
+        );
+        assert_eq!(
+            derive_god_dir(Path::new("/roms/GAME.TAR.GZ")),
+            std::path::PathBuf::from("/roms/GAME_god")
+        );
+        assert_eq!(
+            derive_god_dir(Path::new("/roms/game.iso.zip")),
+            std::path::PathBuf::from("/roms/game_god")
+        );
+        assert_eq!(
+            derive_god_dir(Path::new("/roms/x.tar.nsp")),
+            std::path::PathBuf::from("/roms/x.tar_god")
         );
     }
 }

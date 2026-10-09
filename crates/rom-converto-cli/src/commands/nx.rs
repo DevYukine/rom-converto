@@ -220,18 +220,18 @@ pub struct NxMergeCommand {
 /// Split a super NSP or XCI into one NSP per title
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    after_long_help = "EXAMPLES:\n  rom-converto nx split super.nsp\n  rom-converto nx split super.xci --output-dir ./split\n"
+    after_long_help = "EXAMPLES:\n  rom-converto nx split super.nsp\n  rom-converto nx split super.xci --output-dir ./split\n  rom-converto nx split ./merged -R --output-dir ./titles\n"
 )]
 pub struct NxSplitCommand {
     /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Input NSP or XCI containing multiple titles. NSZ/XCZ inputs must be decompressed first
+    /// Input NSP or XCI containing multiple titles, or a directory with --recursive. NSZ/XCZ inputs must be decompressed first
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
-    /// Directory to write the per-title `.nsp` outputs into. Created if missing. Defaults to `<input's name>_split` next to the input
+    /// Directory to write the per-title `.nsp` outputs into. Created if missing. Defaults to `<input's name>_split` next to the input. With --recursive, each input gets its own `<name>_split` directory under it, mirroring the scanned tree
     #[arg(long = "output-dir", value_name = "DIR")]
     pub output_dir: Option<PathBuf>,
 
@@ -247,6 +247,13 @@ pub struct NxSplitCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+
+    /// Split every .nsp and .xci under INPUT, descending into subdirectories. Archives holding one are opened
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// `nx decompress` and `nx decrypt` are the same dispatch up to the
@@ -379,8 +386,15 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             let keys = load_keyset(cmd.keys.as_deref())?;
             if cmd.recursive {
                 require_dir(&cmd.input)?;
-                batch::nx_verify(&progress, &total_progress, &cmd.input, keys, cmd.max_depth)
-                    .await?;
+                batch::nx_verify(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    keys,
+                    cmd.max_depth,
+                    &cancel,
+                )
+                .await?;
                 return Ok(());
             }
             ensure_input_exists(&cmd.input)?;
@@ -450,13 +464,13 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         NxCommands::Split(cmd) => {
             let eff = &effective.nx;
-            ensure_input_exists(&cmd.input)?;
+            require_input(&cmd.input, cmd.recursive)?;
             let mut options = RunOptions::from(batch::Common {
-                recursive: false,
+                recursive: cmd.recursive,
                 output_dir: cmd.output_dir.or_else(|| eff.output_dir.clone()),
                 output_template: None,
-                max_depth: None,
-                report: None,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
                 policy: resolve_policy(cmd.on_conflict, cmd.force, ConflictPolicy::Error),
                 skip_space_check,
             });

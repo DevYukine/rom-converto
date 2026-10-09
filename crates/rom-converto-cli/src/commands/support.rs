@@ -1,6 +1,7 @@
 //! Helpers shared by the per-family command runners: output-path derivation,
 //! single-file summaries and reports, dry-run planning, and artwork export.
 
+use crate::batch::hash_cached;
 use crate::util::{IndicatifProgress, TotalProgress, ensure_input_exists, ok_str};
 use crate::{config, info_print};
 use anyhow::{Context, Result};
@@ -9,36 +10,27 @@ use rom_converto_lib::nintendo::disc::legacy::{
     LegacyFormat, detect_legacy_format, ensure_format_allowed_for,
 };
 use rom_converto_lib::nintendo::disc::rvz::RvzCompressOptions;
-use rom_converto_lib::util::{CancelToken, FileDigests, HashAlgo, Tally, hash_file};
-use std::path::Path;
+use rom_converto_lib::util::{
+    CancelToken, Cancelled, FileDigests, HashAlgo, ResolvedInput, Tally, hash_file,
+};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-// Extension sets mirror the lib-internal batch scanners so the closing
-// count summary matches what each lib batch function actually processed.
-pub(crate) const CTR_CRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
-
-// Union of image extensions the read side recognizes, used to pick the first
-// convertible member when a format-agnostic command (hash) is handed an archive.
+// Union of image extensions the per-console `info` commands recognize, used
+// to pick the first inspectable member when one is handed an archive.
 pub(crate) const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "gdi",
     "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca",
     "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
 ];
 
-/// Default GoD output directory for `input`: its file stem with `_god`
-/// appended, alongside the input.
-pub(crate) fn derive_god_dir(input: &Path) -> std::path::PathBuf {
-    let mut name = input.file_stem().unwrap_or_default().to_os_string();
-    name.push("_god");
-    input.with_file_name(name)
-}
-
 pub(crate) fn hash_single(
     progress: &dyn rom_converto_lib::util::ProgressReporter,
-    input: &Path,
+    display: &Path,
+    source: &Path,
     algos: &[HashAlgo],
     report: Option<&Path>,
-    cache: &rom_converto_lib::util::HashCache,
+    cache: Option<&rom_converto_lib::util::HashCache>,
 ) -> Result<()> {
     use rom_converto_lib::util::{
         FileStatus, HashReportRecord, ReportFormat, ReportTotals, write_hash_report,
@@ -46,24 +38,18 @@ pub(crate) fn hash_single(
 
     let started = Instant::now();
     let mut tally = Tally::new();
-    let result = match cache.lookup_raw(input, algos) {
-        Some(d) => Ok(d),
-        None => {
-            let computed = hash_file(input, algos, progress, &CancelToken::new());
-            if let Ok(d) = &computed {
-                cache.store_raw(input, d);
-            }
-            computed
-        }
+    let result = match cache {
+        Some(cache) => hash_cached(source, algos, progress, cache, &CancelToken::new()),
+        None => hash_file(source, algos, progress, &CancelToken::new()),
     };
     let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
     let (record, outcome) = match result {
         Ok(d) => {
-            print_hash_row(input, &d, algos);
+            print_hash_row(display, &d, algos);
             tally.record_ok(d.size_bytes, 0, started.elapsed());
             let record = HashReportRecord {
-                path: input.display().to_string(),
+                path: display.display().to_string(),
                 crc32: d.crc32.clone(),
                 sha1: d.sha1.clone(),
                 md5: d.md5.clone(),
@@ -76,10 +62,10 @@ pub(crate) fn hash_single(
             (record, Ok(d.size_bytes))
         }
         Err(e) => {
-            log::warn!("Failed to hash {}: {e}", input.display());
+            log::warn!("Failed to hash {}: {e}", display.display());
             tally.record_failed();
             let record = HashReportRecord {
-                path: input.display().to_string(),
+                path: display.display().to_string(),
                 crc32: None,
                 sha1: None,
                 md5: None,
@@ -116,12 +102,21 @@ pub(crate) fn hash_single(
             log_count_summary(tally.count(), tally);
             Ok(())
         }
-        Err(_) => anyhow::bail!("failed to hash {}", input.display()),
+        Err(_) => anyhow::bail!("failed to hash {}", display.display()),
     }
 }
 
 pub(crate) fn log_count_summary(count: usize, tally: Tally) {
     log::info!("{}", Tally::count_summary(count, tally.elapsed()));
+}
+
+/// Resolves a read input off the async runtime: staging an archive member
+/// lists and reads the whole container.
+pub(crate) async fn resolve_input_off_runtime(
+    path: PathBuf,
+    exts: &'static [&'static str],
+) -> Result<ResolvedInput> {
+    tokio::task::spawn_blocking(move || rom_converto_lib::util::resolve_input(&path, exts)).await?
 }
 
 pub(crate) fn print_hash_row(path: &Path, d: &FileDigests, algos: &[HashAlgo]) {
@@ -285,36 +280,23 @@ pub(crate) fn read_info_paths_file(path: &Path) -> Result<Vec<std::path::PathBuf
         .collect())
 }
 
-/// Recursively collects files under `dir` whose lowercase extension is in
-/// [`rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS`], sorted for a
-/// deterministic batch order.
-pub(crate) fn collect_info_batch_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
-    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
-        for entry in std::fs::read_dir(dir)
-            .with_context(|| format!("failed to read directory: {}", dir.display()))?
-        {
-            let entry =
-                entry.with_context(|| format!("failed to read directory: {}", dir.display()))?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out)?;
-            } else if path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_ascii_lowercase())
-                .is_some_and(|e| {
-                    rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS.contains(&e.as_str())
-                })
-            {
-                out.push(path);
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out)?;
-    out.sort();
-    Ok(out)
+/// Recursively collects the files under `dir` whose lowercase extension is
+/// in [`rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS`], plus archives
+/// holding such a member, sorted for a deterministic batch order.
+pub(crate) fn collect_info_batch_files(
+    dir: &Path,
+    cancel: &CancelToken,
+) -> Result<Vec<std::path::PathBuf>> {
+    Ok(rom_converto_lib::util::collect_inputs(
+        dir,
+        &rom_converto_lib::util::InputScan {
+            exts: rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+            member_exts: None,
+            max_depth: None,
+            skip_unpacked_twins: false,
+        },
+        cancel,
+    )?)
 }
 
 /// One result row of a batch `info` run, serialized as either
@@ -334,7 +316,11 @@ pub(crate) fn info_for_batch_entry(
     opts: &rom_converto_lib::info::InfoOptions,
     save_icon: Option<&Path>,
 ) -> Result<rom_converto_lib::info::InfoResult> {
-    let info = rom_converto_lib::info::read_info(path, opts)?;
+    let resolved = rom_converto_lib::util::resolve_input(
+        path,
+        rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+    )?;
+    let info = rom_converto_lib::info::read_info(resolved.path(), opts)?;
     if let Some(dir) = save_icon {
         save_info_icon(&info, dir)?;
     }
@@ -343,16 +329,22 @@ pub(crate) fn info_for_batch_entry(
 
 /// Runs `info` over every path, printing a single JSON array with `--json`
 /// or a separated pretty section per file otherwise. Per-file failures are
-/// reported inline and never affect the process exit code.
+/// reported inline and never affect the process exit code. Cancellation
+/// between entries stops the batch (in `--json` mode nothing is printed)
+/// and returns [`Cancelled`], so the process exits with the cancelled code.
 pub(crate) fn run_info_batch(
     paths: &[std::path::PathBuf],
     opts: &rom_converto_lib::info::InfoOptions,
     json: bool,
     save_icon: Option<&Path>,
-) {
+    cancel: &CancelToken,
+) -> Result<()> {
     if json {
         let mut results = Vec::with_capacity(paths.len());
         for path in paths {
+            if cancel.is_cancelled() {
+                return Err(Cancelled.into());
+            }
             let path_str = path.display().to_string();
             match info_for_batch_entry(path, opts, save_icon) {
                 Ok(info) => results.push(InfoBatchEntry {
@@ -375,6 +367,9 @@ pub(crate) fn run_info_batch(
         }
     } else {
         for path in paths {
+            if cancel.is_cancelled() {
+                return Err(Cancelled.into());
+            }
             println!("==> {}", path.display());
             match info_for_batch_entry(path, opts, save_icon) {
                 Ok(info) => {
@@ -386,6 +381,7 @@ pub(crate) fn run_info_batch(
             }
         }
     }
+    Ok(())
 }
 
 /// The partition-table hash line. `None` means the table was not read: the

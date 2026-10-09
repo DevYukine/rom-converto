@@ -71,8 +71,8 @@ const ntr: OpDef = {
 	title: "Encrypt Nintendo DS ROMs",
 	subtitle: "Restores standard encryption on decrypted dumps.",
 	dropText: "Drop decrypted .nds files or folders. Encryption state is detected automatically",
-	acceptedExts: ["nds", ...ARCHIVE_EXTS],
-	browseFilters: [{ name: "Nintendo DS", extensions: ["nds"] }],
+	acceptedExts: ["nds", "dsi", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Nintendo DS", extensions: ["nds", "dsi"] }],
 	fields: [...recursiveFields()],
 	note: "Only the KEY1 secure area is rewritten; homebrew ROMs without a secure area are skipped.",
 	outputRows: [

@@ -101,6 +101,7 @@ pub async fn convert_rom_batch(
     run_batch(
         input_dir,
         CONVERT_EXTS,
+        false,
         ("Converting", "convert"),
         max_depth,
         total_progress,

@@ -290,6 +290,7 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     &cmd.input,
                     cmd.full,
                     cmd.max_depth,
+                    &cancel,
                 )
                 .await?
             } else {

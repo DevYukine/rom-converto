@@ -7,8 +7,8 @@ use rom_converto_lib::runner::{is_cancelled_error, run_request};
 use rom_converto_lib::util::HashCache;
 use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts};
 use rom_converto_lib::util::{
-    CancelToken, ConflictPolicy, PlanLine, ProgressReporter, ReportFormat, ReportRecord,
-    ReportTotals, write_report,
+    ARCHIVE_EXTS, CancelToken, ConflictPolicy, InputScan, PlanLine, ProgressReporter, ReportFormat,
+    ReportRecord, ReportTotals, collect_inputs, write_report,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -280,14 +280,6 @@ pub struct ReportPayload {
     totals: ReportTotals,
 }
 
-/// Every image extension `info` reads, used to pick the member to inspect
-/// when the input is an archive.
-const ALL_IMAGE_EXTS: &[&str] = &[
-    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "gdi",
-    "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca",
-    "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar", "avi",
-];
-
 fn input_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
 }
@@ -340,7 +332,10 @@ pub async fn cmd_read_info(
         {
             return Ok(hit);
         }
-        let resolved = rom_converto_lib::util::resolve_input(&input, ALL_IMAGE_EXTS)?;
+        let resolved = rom_converto_lib::util::resolve_input(
+            &input,
+            rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+        )?;
         let opts = InfoOptions {
             keys_path: keys.clone(),
             parent_path: None,
@@ -374,13 +369,17 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
 
 /// Recursively scan `dir` for files matching `exts`, applying the same junk
 /// filter and sort as the CLI batch walk. A `"*"` entry in `exts` matches
-/// every file; an empty `exts` matches nothing. A non-directory path surfaces
-/// as an error so the caller can fall back to treating it as a single file.
+/// every file; an empty `exts` matches nothing. When archive extensions are
+/// selected, the scan also lists archives containing matching files, and
+/// with `skip_twins` leaves out an archive whose member also sits unpacked
+/// beside it. A non-directory path surfaces as an error so the caller can
+/// fall back to treating it as a single file.
 #[tauri::command]
 pub async fn cmd_scan_dir(
     dir: PathBuf,
     exts: Vec<String>,
     max_depth: Option<usize>,
+    skip_twins: bool,
 ) -> Result<Vec<PathBuf>, String> {
     tokio::task::spawn_blocking(move || {
         // "*" lists every file; an empty list still matches nothing so folder-input ops stay unexpanded.
@@ -388,8 +387,27 @@ pub async fn cmd_scan_dir(
             return collect_all_files(&dir, max_depth, &CancelToken::new()).map_err(err_to_string);
         }
         let ext_refs: Vec<&str> = exts.iter().map(String::as_str).collect();
-        collect_files_with_exts(&dir, &ext_refs, max_depth, &CancelToken::new())
-            .map_err(err_to_string)
+        let is_archive_ext = |e: &str| ARCHIVE_EXTS.iter().any(|a| a.eq_ignore_ascii_case(e));
+        let image_exts: Vec<&str> = ext_refs
+            .iter()
+            .copied()
+            .filter(|e| !is_archive_ext(e))
+            .collect();
+        if image_exts.len() < ext_refs.len() {
+            collect_inputs(
+                &dir,
+                &InputScan {
+                    exts: &image_exts,
+                    member_exts: None,
+                    max_depth,
+                    skip_unpacked_twins: skip_twins,
+                },
+                &CancelToken::new(),
+            )
+        } else {
+            collect_files_with_exts(&dir, &ext_refs, max_depth, &CancelToken::new())
+        }
+        .map_err(err_to_string)
     })
     .await
     .map_err(err_to_string)?

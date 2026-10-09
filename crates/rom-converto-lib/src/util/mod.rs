@@ -3,6 +3,9 @@
 //! templating, and the worker pool that drives compression on background
 //! threads.
 
+use std::ffi::OsStr;
+use std::path::Path;
+
 pub mod aes;
 pub mod archive;
 pub mod bounded_line;
@@ -33,8 +36,9 @@ pub mod worker_pool;
 pub mod zip_write;
 
 pub use archive::{
-    ArchiveMember, ArchiveSelection, NoMatchingMember, ResolvedInput, TempSpaceShortfall,
-    is_archive_path, list_members, probe_archive, resolve_input, resolve_input_with_selection,
+    ARCHIVE_EXTS, ArchiveMember, ArchiveSelection, CollectedInput, InputScan, NoMatchingMember,
+    ResolvedInput, TempSpaceShortfall, collect_input_entries, collect_inputs, is_archive_path,
+    list_members, probe_archive, resolve_for_hash, resolve_input, resolve_input_with_selection,
 };
 pub use conflict::{
     ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict, resolve_conflict_by,
@@ -45,7 +49,8 @@ pub use footgun::{
 };
 pub use fs::{DEFAULT_SPACE_HEADROOM, available_space, space_shortfall};
 pub use hash::{
-    ChecksumBounds, FileDigests, HashAlgo, hash_file, parse_algos, parse_checksum_bound,
+    ChecksumBounds, FileDigests, HASH_MEMBER_EXTS, HashAlgo, hash_file, parse_algos,
+    parse_checksum_bound,
 };
 pub use hash_cache::{CachedTrack, CueDigests, HashCache};
 pub use path::{contract_tilde, expand_tilde, with_tag};
@@ -62,6 +67,49 @@ pub use zip_write::write_zip;
 
 pub const BYTES_PER_MB: f64 = 1_000_000.0;
 
+/// Extensions a default output derives strip after an archive extension,
+/// the same set the frontend's derived-output helpers use.
+const DERIVE_IMAGE_EXTS: &[&str] = &[
+    "3ds", "3dsx", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax", "gcm", "gcz", "iso",
+    "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs", "wia", "wua", "wud", "wux", "xci", "xcz",
+    "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
+];
+
+/// The file-name stem a default output derives from. An archive extension
+/// peels first (`game.zip` keeps `game`), a `.tar.gz` or `.tgz` pair
+/// collapses in one step, and a known image extension peels after that, so
+/// `game.iso.zip` and `game.tar.gz` both derive from `game`. A name that
+/// only contains `.tar` (`x.tar.nsp`) keeps it. Trailing dots are dropped.
+pub(crate) fn derive_output_stem(name: &OsStr) -> &OsStr {
+    fn ext_is(path: &Path, exts: &[&str]) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| exts.iter().any(|known| ext.eq_ignore_ascii_case(known)))
+    }
+    let mut path = Path::new(name);
+    if ext_is(path, &["gz"])
+        && let Some(stem) = path.file_stem()
+        && ext_is(Path::new(stem), &["tar"])
+        && let Some(inner) = Path::new(stem).file_stem()
+    {
+        path = Path::new(inner);
+    } else if ext_is(path, ARCHIVE_EXTS)
+        && let Some(stem) = path.file_stem()
+    {
+        path = Path::new(stem);
+    }
+    if ext_is(path, DERIVE_IMAGE_EXTS)
+        && let Some(stem) = path.file_stem()
+    {
+        path = Path::new(stem);
+    }
+    // The frontend's `stemOf` drops trailing dots, so `game..zip` names `game`.
+    match path.as_os_str().to_str() {
+        Some(stem) => OsStr::new(stem.trim_end_matches('.')),
+        None => path.as_os_str(),
+    }
+}
+
 /// A dirent name safe to append to a real filesystem path: an untrusted
 /// image can otherwise plant an absolute or `..` name and escape
 /// `output_dir` (zip-slip).
@@ -72,10 +120,38 @@ pub(crate) fn is_safe_dirent_name(name: &str) -> bool {
     if name.contains(['/', '\\', '\0']) {
         return false;
     }
-    if cfg!(windows) && name.contains(':') {
+    if cfg!(windows)
+        && (name.contains(':') || name.ends_with(['.', ' ']) || is_windows_reserved_stem(name))
+    {
         return false;
     }
     true
+}
+
+/// A reserved DOS device stem: `CON`, `PRN`, `AUX`, `NUL`, `CONIN$`,
+/// `CONOUT$`, `COM1`..`COM9`, and `LPT1`..`LPT9` (the superscript digits
+/// `\u{b9}`, `\u{b2}`, `\u{b3}` count too), case-insensitively, with or
+/// without an extension and with trailing spaces before it (`con .txt`
+/// resolves to the device as well). Only meaningful on Windows, kept
+/// host-independent so every platform tests and compiles it.
+fn is_windows_reserved_stem(name: &str) -> bool {
+    let stem = name.split_once('.').map_or(name, |(stem, _)| stem);
+    let stem = stem.trim_end_matches(' ').to_ascii_uppercase();
+    if matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) {
+        return true;
+    }
+    stem.strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|digit| {
+            let mut chars = digit.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
 }
 
 /// True when `path`, joined onto a folder, lexically names a file inside it:
@@ -578,11 +654,83 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        extent_end, is_safe_relative_path, place_in_dir_mirrored, publish_set, publish_temp,
+        derive_output_stem, extent_end, is_safe_dirent_name, is_safe_relative_path,
+        is_windows_reserved_stem, place_in_dir_mirrored, publish_set, publish_temp,
         scratch_output_path,
     };
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn derive_output_stem_peels_archive_then_image_extensions() {
+        for (name, expected) in [
+            ("game.iso.zip", "game"),
+            ("game.tar.gz", "game"),
+            ("GAME.TAR.GZ", "GAME"),
+            ("game.tgz", "game"),
+            ("game.nsp.zip", "game"),
+            ("game.zip", "game"),
+            ("game.cue.rar", "game"),
+            ("x.tar.nsp", "x.tar"),
+            ("game.tar.zip", "game.tar"),
+            ("game.nsp", "game"),
+            ("game..zip", "game"),
+            ("noext", "noext"),
+            ("10.000 Bullets (Europe).iso", "10.000 Bullets (Europe)"),
+        ] {
+            assert_eq!(
+                derive_output_stem(std::ffi::OsStr::new(name)),
+                std::ffi::OsStr::new(expected),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_reserved_stems_are_recognized_on_every_host() {
+        for name in [
+            "CON",
+            "con",
+            "Con",
+            "PRN",
+            "Aux",
+            "NUL",
+            "nul.txt",
+            "COM1",
+            "com9.txt",
+            "LPT1",
+            "lpt4.gz",
+            "con.a.b",
+            "con .txt",
+            "CONIN$",
+            "conout$.x",
+            "COM\u{b9}",
+            "lpt\u{b3}.bin",
+        ] {
+            assert!(is_windows_reserved_stem(name), "{name}");
+        }
+        for name in [
+            "COM0",
+            "LPT0",
+            "COM10",
+            "console",
+            "nulf",
+            "",
+            "COM\u{b9}\u{b9}",
+            "ab\u{e9}",
+            "x\u{fffd}",
+            "\u{1f600}",
+        ] {
+            assert!(!is_windows_reserved_stem(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn safe_dirent_names_refuse_windows_only_traps_on_windows() {
+        for name in ["nul.bin", "CON", "game.iso.", "game.iso "] {
+            assert_eq!(is_safe_dirent_name(name), !cfg!(windows), "{name:?}");
+        }
+    }
 
     #[test]
     fn safe_relative_paths_follow_host_separators() {

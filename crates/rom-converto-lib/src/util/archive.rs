@@ -40,10 +40,12 @@ pub struct ArchiveMember {
 }
 
 /// Listing and selected member retained from an archive probe until staging.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ArchiveSelection {
     members: Vec<ArchiveMember>,
     member_index: usize,
+    /// How many members matched the probe's extensions.
+    candidates: usize,
 }
 
 impl ArchiveSelection {
@@ -51,6 +53,27 @@ impl ArchiveSelection {
     /// this selection, read from the member listing without extracting.
     pub fn output_basis(&self, archive: &Path) -> Result<PathBuf> {
         basis_for(archive, &self.members[self.member_index])
+    }
+
+    /// The picked member's in-archive name, for callers that must re-check
+    /// it: a collection walk keeps an archive only when its picked member
+    /// carries one of the plain extensions.
+    fn member_name(&self) -> &str {
+        &self.members[self.member_index].name
+    }
+
+    /// Logs the several-members warning for an archive a walk kept: the walk
+    /// probes quietly, and the child reuses this selection instead of
+    /// probing again, so nothing else would report it.
+    fn warn_if_ambiguous(&self, archive: &Path) {
+        if self.candidates > 1 {
+            log::warn!(
+                "{} contains {} matching members; using {}",
+                archive.display(),
+                self.candidates,
+                self.member_name()
+            );
+        }
     }
 }
 
@@ -120,6 +143,12 @@ fn keep_member(name: &str, size: u64, is_dir: bool) -> Option<ArchiveMember> {
 /// only, with OS junk and nested archives filtered out. Bare gzip returns a
 /// clear unsupported error.
 pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
+    list_members_with(path, &crate::util::CancelToken::new())
+}
+
+/// [`list_members`] that stops a long tar listing when `cancel` fires: a
+/// `.tar.gz` listing is a full decompression pass.
+fn list_members_with(path: &Path, cancel: &crate::util::CancelToken) -> Result<Vec<ArchiveMember>> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
             "gzip archives without a tar container are not supported, extract the file first: {}",
@@ -129,8 +158,8 @@ pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
     Ok(match kind {
         ArchiveKind::Zip => list_zip(path)?,
         ArchiveKind::SevenZ => list_7z(path)?,
-        ArchiveKind::Tar => list_tar(path, false)?,
-        ArchiveKind::TarGz => list_tar(path, true)?,
+        ArchiveKind::Tar => list_tar(path, false, cancel)?,
+        ArchiveKind::TarGz => list_tar(path, true, cancel)?,
         ArchiveKind::Rar => list_rar(path)?,
     })
 }
@@ -191,6 +220,106 @@ pub(crate) fn zip_member_head(path: &Path, member_name: &str, len: usize) -> Res
     Ok(buf)
 }
 
+/// Lists an archive once, picks the member a probe would, and reads up to
+/// `len` leading bytes of it without extracting the whole member. The head is
+/// `None` for a RAR, whose reader has no partial extraction, so those
+/// callers keep gating after staging. `None` overall for a plain file. The
+/// selection carries over to staging so the archive is not listed again.
+///
+/// # Errors
+/// Errors when listing the archive, picking its member, or reading it fails.
+pub(crate) fn probe_with_head(
+    path: &Path,
+    exts: &[&str],
+    len: usize,
+    cancel: &crate::util::CancelToken,
+) -> Result<Option<(ArchiveSelection, Option<Vec<u8>>)>> {
+    use std::io::Read;
+    if !is_archive_path(path) {
+        return Ok(None);
+    }
+    let kind = kind_of(path).ok_or_else(|| {
+        anyhow!(
+            "gzip archives without a tar container are not supported: {}",
+            path.display()
+        )
+    })?;
+    let selection = probe_selection(path, exts, false, cancel)?;
+    if kind == ArchiveKind::Rar {
+        return Ok(Some((selection, None)));
+    }
+    let name = selection.member_name().to_string();
+    let head = read_member(path, kind, &name, selection.member_index, |rd| {
+        let mut buf = Vec::with_capacity(len);
+        rd.take(len as u64).read_to_end(&mut buf)?;
+        Ok(buf)
+    })?;
+    Ok(Some((selection, Some(head))))
+}
+
+/// Streams one member of a zip, 7z, or tar archive into `read`. Tar uses
+/// `member_index`, the member's position among the listing's entries in
+/// archive order, and checks the lossy decoded name; distinct raw names can
+/// share that name. Zip and 7z resolve by exact decoded name.
+fn read_member<T>(
+    path: &Path,
+    kind: ArchiveKind,
+    member_name: &str,
+    member_index: usize,
+    read: impl FnOnce(&mut dyn std::io::Read) -> std::io::Result<T>,
+) -> Result<T> {
+    match kind {
+        ArchiveKind::Zip => {
+            let mut zip = zip::ZipArchive::new(File::open(path)?)?;
+            let index = zip_member_index(&mut zip, member_name)?;
+            let mut entry = zip.by_index(index)?;
+            Ok(read(&mut entry)?)
+        }
+        ArchiveKind::SevenZ => {
+            let mut reader =
+                sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
+            let mut read = Some(read);
+            let mut result: Option<std::io::Result<T>> = None;
+            reader.for_each_entries(|entry, rd| {
+                if entry.name() == member_name
+                    && let Some(read) = read.take()
+                {
+                    result = Some(read(rd));
+                    return Ok(false);
+                }
+                Ok(true)
+            })?;
+            result
+                .ok_or_else(|| anyhow!("member {member_name} not found in {}", path.display()))?
+                .map_err(Into::into)
+        }
+        ArchiveKind::Tar | ArchiveKind::TarGz => {
+            let mut archive = open_tar(path, kind == ArchiveKind::TarGz)?;
+            // Count members exactly as list_tar does, so member_index
+            // addresses the sequence the selection was built from.
+            let mut kept = 0;
+            for entry in archive.entries()? {
+                let mut entry = entry?;
+                let is_file = entry.header().entry_type().is_file();
+                let name = entry.path()?.to_string_lossy().replace('\\', "/");
+                if is_kept(&name, !is_file) {
+                    if kept == member_index {
+                        if name != member_name {
+                            bail!(
+                                "archive member at index {member_index} changed: expected {member_name}, found {name}"
+                            );
+                        }
+                        return Ok(read(&mut entry)?);
+                    }
+                    kept += 1;
+                }
+            }
+            bail!("member {member_name} not found in {}", path.display())
+        }
+        ArchiveKind::Rar => bail!("rar members are extracted, not streamed"),
+    }
+}
+
 fn list_7z(path: &Path) -> Result<Vec<ArchiveMember>> {
     let reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
     let mut out = Vec::new();
@@ -225,10 +354,17 @@ fn open_tar(path: &Path, gz: bool) -> Result<tar::Archive<Box<dyn std::io::Read>
     Ok(tar::Archive::new(reader))
 }
 
-fn list_tar(path: &Path, gz: bool) -> Result<Vec<ArchiveMember>> {
+fn list_tar(
+    path: &Path,
+    gz: bool,
+    cancel: &crate::util::CancelToken,
+) -> Result<Vec<ArchiveMember>> {
     let mut archive = open_tar(path, gz)?;
     let mut out = Vec::new();
     for entry in archive.entries()? {
+        if cancel.is_cancelled() {
+            return Err(crate::util::Cancelled.into());
+        }
         let entry = entry?;
         let is_file = entry.header().entry_type().is_file();
         let name = entry.path()?.to_string_lossy().replace('\\', "/");
@@ -240,10 +376,8 @@ fn list_tar(path: &Path, gz: bool) -> Result<Vec<ArchiveMember>> {
 }
 
 /// Extract one member to `dest_dir`, returning the written path. Streams so a
-/// multi-gigabyte member never buffers in memory. Tar and rar use `member_index`,
-/// the member's position among the listing's entries in archive order, and
-/// check the lossy decoded name; distinct raw names can share that name. Zip
-/// also decodes names lossily but resolves by exact decoded name, as does 7z.
+/// multi-gigabyte member never buffers in memory. See [`read_member`] for how
+/// each format finds its member.
 fn extract_one(
     path: &Path,
     kind: ArchiveKind,
@@ -252,62 +386,13 @@ fn extract_one(
     dest_dir: &Path,
 ) -> Result<PathBuf> {
     match kind {
-        ArchiveKind::Zip => {
-            let mut zip = zip::ZipArchive::new(File::open(path)?)?;
-            let index = zip_member_index(&mut zip, member_name)?;
-            let mut entry = zip.by_index(index)?;
+        ArchiveKind::Zip | ArchiveKind::SevenZ | ArchiveKind::Tar | ArchiveKind::TarGz => {
             let out = dest_dir.join(safe_basename(member_name)?);
-            let mut writer = File::create(&out)?;
-            std::io::copy(&mut entry, &mut writer)?;
-            Ok(out)
-        }
-        ArchiveKind::SevenZ => {
-            let mut reader =
-                sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
-            let out = dest_dir.join(safe_basename(member_name)?);
-            let mut written: Option<PathBuf> = None;
-            let mut io_err: Option<std::io::Error> = None;
-            reader.for_each_entries(|entry, rd| {
-                if entry.name() == member_name {
-                    match File::create(&out).and_then(|mut f| std::io::copy(rd, &mut f).map(|_| ()))
-                    {
-                        Ok(()) => written = Some(out.clone()),
-                        Err(e) => io_err = Some(e),
-                    }
-                    return Ok(false);
-                }
-                Ok(true)
+            read_member(path, kind, member_name, member_index, |rd| {
+                let mut writer = File::create(&out)?;
+                std::io::copy(rd, &mut writer).map(|_| ())
             })?;
-            if let Some(e) = io_err {
-                return Err(e.into());
-            }
-            written.ok_or_else(|| anyhow!("member {member_name} not found in {}", path.display()))
-        }
-        ArchiveKind::Tar | ArchiveKind::TarGz => {
-            let mut archive = open_tar(path, kind == ArchiveKind::TarGz)?;
-            // Count members exactly as list_tar does, so member_index
-            // addresses the sequence the selection was built from.
-            let mut kept = 0;
-            for entry in archive.entries()? {
-                let mut entry = entry?;
-                let is_file = entry.header().entry_type().is_file();
-                let name = entry.path()?.to_string_lossy().replace('\\', "/");
-                if is_kept(&name, !is_file) {
-                    if kept == member_index {
-                        if name != member_name {
-                            bail!(
-                                "archive member at index {member_index} changed: expected {member_name}, found {name}"
-                            );
-                        }
-                        let out = dest_dir.join(safe_basename(member_name)?);
-                        let mut writer = File::create(&out)?;
-                        std::io::copy(&mut entry, &mut writer)?;
-                        return Ok(out);
-                    }
-                    kept += 1;
-                }
-            }
-            bail!("member {member_name} not found in {}", path.display())
+            Ok(out)
         }
         ArchiveKind::Rar => {
             let out = dest_dir.join(safe_basename(member_name)?);
@@ -453,28 +538,50 @@ pub fn entry_count(path: &Path) -> Result<usize> {
     })
 }
 
-/// The member [`probe_archive`] extracts for `exts`: the first match by
-/// sorted name. Several qualifying members log a warning. `members` is in
-/// archive order and the returned position addresses that sequence.
-fn pick_member(path: &Path, members: &[ArchiveMember], exts: &[&str]) -> Result<usize> {
-    let mut total = 0;
-    let picked = members
+/// Extensions a cue or gdi sheet's tracks carry: when a sheet is a candidate
+/// these are its tracks, not images of their own (a 2048-byte data track is a
+/// plain `.iso`).
+const SHEET_TRACK_EXTS: &[&str] = &["iso", "bin", "raw"];
+
+/// The member [`probe_archive`] extracts for `exts`: the first match by sorted
+/// name, except that a sheet candidate displaces the track-like candidates
+/// (`.iso`, `.bin`, `.raw`) it would reference, and `.md` ranks last, where a
+/// readme competes with the Mega Drive extension. A `.chd` next to a sheet
+/// still wins by name, as it always did. `quiet` drops the several-members
+/// warning, which a collection walk must not log once per candidate archive;
+/// it logs the ones it keeps. `members` is in archive order and the returned
+/// position addresses that sequence, with the count of matches.
+fn pick_member(
+    path: &Path,
+    members: &[ArchiveMember],
+    exts: &[&str],
+    quiet: bool,
+) -> Result<(usize, usize)> {
+    let candidates: Vec<(usize, &ArchiveMember)> = members
         .iter()
         .enumerate()
         .filter(|(_, member)| name_has_ext(&member.name, exts))
-        .inspect(|_| total += 1)
-        .min_by(|a, b| a.1.name.cmp(&b.1.name))
-        .map(|(index, _)| index);
+        .collect();
+    let total = candidates.len();
+    let has_sheet = candidates
+        .iter()
+        .any(|(_, member)| name_has_ext(&member.name, &["cue", "gdi"]));
+    let rank = |name: &str| u8::from(name_has_ext(name, &["md"]));
+    let picked = candidates
+        .iter()
+        .filter(|(_, member)| !(has_sheet && name_has_ext(&member.name, SHEET_TRACK_EXTS)))
+        .min_by(|a, b| (rank(&a.1.name), &a.1.name).cmp(&(rank(&b.1.name), &b.1.name)))
+        .map(|(index, _)| *index);
     match picked {
         Some(index) => {
-            if total > 1 {
+            if total > 1 && !quiet {
                 log::warn!(
                     "{} contains {total} matching members; using {}",
                     path.display(),
                     members[index].name
                 );
             }
-            Ok(index)
+            Ok((index, total))
         }
         None => Err(anyhow::Error::new(NoMatchingMember).context(format!(
             "archive {} contains no matching image ({:?})",
@@ -495,22 +602,232 @@ fn basis_for(path: &Path, member: &ArchiveMember) -> Result<PathBuf> {
 
 /// Lists an archive once and retains its selected member for later staging.
 /// Plain files return `None`; archives without a matching member return an error.
-pub fn probe_archive(path: &Path, exts: &[&str]) -> Result<Option<ArchiveSelection>> {
+pub fn probe_archive(
+    path: &Path,
+    exts: &[&str],
+    cancel: &crate::util::CancelToken,
+) -> Result<Option<ArchiveSelection>> {
     if !is_archive_path(path) {
         return Ok(None);
     }
-    Ok(Some(probe_selection(path, exts)?))
+    Ok(Some(probe_selection(path, exts, false, cancel)?))
 }
 
 /// Lists an archive and retains its selected member. Callers pass the path
 /// through [`is_archive_path`] first, so the selection always exists.
-fn probe_selection(path: &Path, exts: &[&str]) -> Result<ArchiveSelection> {
-    let members = list_members(path)?;
-    let member_index = pick_member(path, &members, exts)?;
+fn probe_selection(
+    path: &Path,
+    exts: &[&str],
+    quiet: bool,
+    cancel: &crate::util::CancelToken,
+) -> Result<ArchiveSelection> {
+    let members = list_members_with(path, cancel)?;
+    let (member_index, candidates) = pick_member(path, &members, exts, quiet)?;
     Ok(ArchiveSelection {
         members,
         member_index,
+        candidates,
     })
+}
+
+/// True for the second and later volumes of a split rar set
+/// (`name.part2.rar`, in any letter case): opening `part1` reads the whole
+/// set, so the others are no inputs of their own.
+fn is_rar_continuation(path: &Path) -> bool {
+    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    crate::util::fs::has_ext(path, "rar")
+        && stem
+            .rsplit_once('.')
+            .and_then(|(_, tag)| {
+                if tag.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("part")) {
+                    tag[4..].parse::<u32>().ok()
+                } else {
+                    None
+                }
+            })
+            .is_some_and(|n| n > 1)
+}
+
+/// Stages the member a hash should read, or `None` when the archive bytes
+/// themselves are the input: a plain file, no member with one of `exts`, a
+/// continuation volume of a split rar set, or an archive that cannot be
+/// listed. An extraction failure after a member was picked, and a temp-space
+/// shortfall, are errors.
+///
+/// # Errors
+/// Errors when staging a picked archive member fails; an archive whose
+/// listing or member search fails is logged and returned as `None`.
+pub fn resolve_for_hash(path: &Path, exts: &[&str]) -> anyhow::Result<Option<ResolvedInput>> {
+    if !is_archive_path(path) {
+        return Ok(None);
+    }
+    // A bare gzip or a later rar volume is no container to open.
+    if kind_of(path).is_none() || is_rar_continuation(path) {
+        return Ok(None);
+    }
+    match probe_selection(path, exts, false, &crate::util::CancelToken::new()) {
+        Err(err) if err.downcast_ref::<NoMatchingMember>().is_some() => {
+            log::debug!("hashing {} as a file: {err:#}", path.display());
+            Ok(None)
+        }
+        Err(err) => {
+            log::warn!("hashing {} as a file: {err:#}", path.display());
+            Ok(None)
+        }
+        Ok(selection) => resolve_input_with_selection(path, exts, Some(selection)).map(Some),
+    }
+}
+
+/// What a recursive walk collects.
+pub struct InputScan<'a> {
+    /// Extensions of the plain files to collect.
+    pub exts: &'a [&'a str],
+    /// Extensions the member pick considers, the same set staging picks
+    /// with; `None` reuses `exts`. The archive is an input only when the
+    /// picked member carries one of `exts`.
+    pub member_exts: Option<&'a [&'a str]>,
+    /// How deep the walk descends; `None` for unlimited.
+    pub max_depth: Option<usize>,
+    /// Leave out an archive whose member also sits unpacked beside it (both would write the same output).
+    pub skip_unpacked_twins: bool,
+}
+
+/// One input a [`collect_inputs`] walk kept.
+#[derive(Debug, Clone)]
+pub struct CollectedInput {
+    /// The walked path: a plain file, or an archive the run opens.
+    pub path: PathBuf,
+    /// Default-output basis for the run: the file itself, or for an archive
+    /// the picked member's name placed beside the archive. An archive kept
+    /// despite a failed listing has no member to name and reports its own
+    /// path.
+    pub output_basis: PathBuf,
+    /// The listing and pick the walk already made for an archive, so the
+    /// child run does not list it again (a `.tar.gz` listing is a full
+    /// decompression).
+    pub selection: Option<ArchiveSelection>,
+}
+
+/// [`collect_input_entries`] reduced to the walked paths.
+///
+/// # Errors
+/// Same as [`collect_input_entries`].
+pub fn collect_inputs(
+    dir: &Path,
+    scan: &InputScan<'_>,
+    cancel: &crate::util::CancelToken,
+) -> std::io::Result<Vec<PathBuf>> {
+    Ok(collect_input_entries(dir, scan, cancel)?
+        .into_iter()
+        .map(|input| input.path)
+        .collect())
+}
+
+/// Every file under `dir` carrying one of `scan.exts`, plus every archive
+/// under `dir` whose picked member (picked with `scan.member_exts`, or
+/// `scan.exts` when that is `None`) carries one of `scan.exts`, in one
+/// sorted walk up to `scan.max_depth`. An archive without such a member is
+/// left out, as is one whose member also sits unpacked beside it when
+/// `scan.skip_unpacked_twins`. One that cannot be listed stays in, so the
+/// run reports it as a failed item rather than silently passing over it.
+///
+/// # Errors
+/// Cancellation stops the walk, or stops before the next archive is listed,
+/// and a failing directory walk is an error.
+pub fn collect_input_entries(
+    dir: &Path,
+    scan: &InputScan<'_>,
+    cancel: &crate::util::CancelToken,
+) -> std::io::Result<Vec<CollectedInput>> {
+    let member_exts = scan.member_exts.unwrap_or(scan.exts);
+    let mut wanted: Vec<&str> = scan.exts.to_vec();
+    wanted.extend(ARCHIVE_EXTS);
+    let candidates =
+        crate::util::fs::collect_files_with_exts(dir, &wanted, scan.max_depth, cancel)?;
+    // Twin detection folds case, so a member and a plain file that differ
+    // only in case are one output on case-insensitive volumes.
+    let plain: HashSet<String> = candidates
+        .iter()
+        .filter(|path| !is_archive_path(path))
+        .map(|path| path.to_string_lossy().to_lowercase())
+        .collect();
+    let mut inputs = Vec::with_capacity(candidates.len());
+    for path in &candidates {
+        if !is_archive_path(path) {
+            inputs.push(CollectedInput {
+                path: path.clone(),
+                output_basis: path.clone(),
+                selection: None,
+            });
+            continue;
+        }
+        // A bare gzip is no container the batch could open.
+        if kind_of(path).is_none() || is_rar_continuation(path) {
+            log::debug!("skipping {}: not an archive to open", path.display());
+            continue;
+        }
+        if cancel.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                crate::util::Cancelled,
+            ));
+        }
+        match probe_selection(path, member_exts, true, cancel) {
+            Ok(selection) if name_has_ext(selection.member_name(), scan.exts) => {
+                let basis = selection
+                    .output_basis(path)
+                    .unwrap_or_else(|_| path.clone());
+                if scan.skip_unpacked_twins
+                    && plain.contains(&basis.to_string_lossy().to_lowercase())
+                {
+                    log::warn!(
+                        "skipping {}: its member is also present unpacked as {}",
+                        path.display(),
+                        basis.display()
+                    );
+                    continue;
+                }
+                selection.warn_if_ambiguous(path);
+                inputs.push(CollectedInput {
+                    path: path.clone(),
+                    output_basis: basis,
+                    selection: Some(selection),
+                });
+            }
+            Ok(_) => {
+                log::debug!(
+                    "skipping {}: its picked member carries none of {:?}",
+                    path.display(),
+                    scan.exts
+                );
+            }
+            Err(err) if err.downcast_ref::<NoMatchingMember>().is_some() => {
+                log::debug!(
+                    "skipping {}: no member matches {member_exts:?}",
+                    path.display()
+                );
+            }
+            // A damaged archive stays in the batch: the item fails on
+            // staging and is reported, instead of vanishing from the tally.
+            Err(_) if cancel.is_cancelled() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    crate::util::Cancelled,
+                ));
+            }
+            Err(err) => {
+                log::debug!("keeping {} for the run to report: {err:#}", path.display());
+                inputs.push(CollectedInput {
+                    path: path.clone(),
+                    output_basis: path.clone(),
+                    selection: None,
+                });
+            }
+        }
+    }
+    Ok(inputs)
 }
 
 /// Directory portion of an in-archive member path (empty at the archive
@@ -594,11 +911,12 @@ pub fn resolve_input_with_selection(
     })?;
     let selection = match selection {
         Some(selection) => selection,
-        None => probe_selection(path, exts)?,
+        None => probe_selection(path, exts, false, &crate::util::CancelToken::new())?,
     };
     let ArchiveSelection {
         members,
         member_index,
+        ..
     } = selection;
     let member = &members[member_index];
 
@@ -858,6 +1176,276 @@ mod tests {
     }
 
     #[test]
+    fn collect_inputs_keeps_plain_files_and_archives_with_a_matching_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("sub");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(dir.path().join("plain.iso"), b"iso").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), b"txt").unwrap();
+        write_zip(
+            &nested.join("packed.zip"),
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"x"), ("game.iso", b"iso")],
+        );
+        write_zip(
+            &dir.path().join("docs.zip"),
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"x")],
+        );
+        std::fs::write(dir.path().join("broken.7z"), b"not an archive").unwrap();
+        std::fs::write(dir.path().join("log.gz"), b"gz").unwrap();
+        std::fs::write(dir.path().join("set.part2.rar"), b"rar").unwrap();
+        std::fs::write(dir.path().join("Game.Part2.rar"), b"rar").unwrap();
+        write_tar(&dir.path().join("disc.tar"), false, &[("disc.cue", b"cue")]);
+        // The same image unpacked beside its archive: the plain file wins.
+        write_zip(
+            &dir.path().join("plain.zip"),
+            zip::CompressionMethod::Stored,
+            &[("plain.iso", b"iso")],
+        );
+
+        let scan = InputScan {
+            exts: &["iso", "cue"],
+            member_exts: None,
+            max_depth: None,
+            skip_unpacked_twins: true,
+        };
+        let found = collect_input_entries(dir.path(), &scan, &CancelToken::new()).unwrap();
+        assert_eq!(
+            collected_paths(found),
+            vec![
+                dir.path().join("broken.7z"),
+                dir.path().join("disc.tar"),
+                dir.path().join("plain.iso"),
+                nested.join("packed.zip"),
+            ]
+        );
+
+        let shallow = collect_input_entries(
+            dir.path(),
+            &InputScan {
+                exts: &["iso"],
+                member_exts: None,
+                max_depth: Some(1),
+                skip_unpacked_twins: true,
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            collected_paths(shallow),
+            vec![dir.path().join("broken.7z"), dir.path().join("plain.iso")]
+        );
+
+        // `Game.Part2.rar` is a continuation volume in any letter case, and
+        // without the twin rule the unpacked archive stays an input too.
+        let keep_twin = collect_input_entries(
+            dir.path(),
+            &InputScan {
+                exts: &["iso"],
+                member_exts: None,
+                max_depth: None,
+                skip_unpacked_twins: false,
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            collected_paths(keep_twin),
+            vec![
+                dir.path().join("broken.7z"),
+                dir.path().join("plain.iso"),
+                dir.path().join("plain.zip"),
+                nested.join("packed.zip"),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_inputs_probes_archives_with_their_own_member_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        // The pick considers `member_exts`, but the archive is kept only when
+        // the picked member carries one of the plain `exts`: a `.chd`-only
+        // member leaves it out.
+        write_zip(
+            &dir.path().join("chd_only.zip"),
+            zip::CompressionMethod::Stored,
+            &[("game.chd", b"chd")],
+        );
+        // Holding both, the pick goes by name order and the archive is kept
+        // because the picked member carries an `exts` extension.
+        write_zip(
+            &dir.path().join("both.zip"),
+            zip::CompressionMethod::Stored,
+            &[("game.iso", b"iso"), ("readme.chd", b"chd")],
+        );
+
+        let found = collect_input_entries(
+            dir.path(),
+            &InputScan {
+                exts: &["iso"],
+                member_exts: Some(&["iso", "chd"]),
+                max_depth: None,
+                skip_unpacked_twins: false,
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(collected_paths(found), vec![dir.path().join("both.zip")]);
+
+        // With `member_exts: None` the pick considers the plain `exts` only,
+        // so the keep rule never rejects what the pick chose.
+        let none = collect_input_entries(
+            dir.path(),
+            &InputScan {
+                exts: &["iso"],
+                member_exts: None,
+                max_depth: None,
+                skip_unpacked_twins: false,
+            },
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(collected_paths(none), vec![dir.path().join("both.zip")]);
+    }
+
+    #[test]
+    fn a_cancelled_tar_listing_stops_with_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let tar = dir.path().join("set.tar.gz");
+        write_tar(&tar, true, &[("game.iso", b"iso"), ("b.iso", b"iso")]);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = list_members_with(&tar, &cancel).unwrap_err();
+        assert!(crate::util::Cancelled::in_chain(&err));
+        assert_eq!(list_members(&tar).unwrap().len(), 2);
+    }
+
+    /// The walked paths of a [`collect_inputs`] result.
+    fn collected_paths(inputs: Vec<CollectedInput>) -> Vec<PathBuf> {
+        inputs.into_iter().map(|input| input.path).collect()
+    }
+
+    #[test]
+    fn member_pick_prefers_a_sheet_over_its_tracks_and_ranks_md_last() {
+        let dir = tempfile::tempdir().unwrap();
+        // A 2048-byte data track named like a disc image sorts before the
+        // sheet; the sheet must still win.
+        let gdi = b"2\n1 0 4 2048 track01.iso 0\n2 450 0 2352 track02.raw 0\n";
+        let set = dir.path().join("set.zip");
+        write_zip(
+            &set,
+            zip::CompressionMethod::Stored,
+            &[
+                ("track01.iso", b"track"),
+                ("track02.raw", b"audio"),
+                ("zombie.gdi", gdi.as_slice()),
+            ],
+        );
+        let selection = probe_archive(&set, &["iso", "cue", "gdi"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.member_name(), "zombie.gdi");
+
+        // A `.chd` beside a cue sheet still wins by name, as it did before
+        // sheets ranked first for tracks.
+        let mixed = dir.path().join("mixed.zip");
+        write_zip(
+            &mixed,
+            zip::CompressionMethod::Stored,
+            &[("Game.chd", b"chd"), ("Game.cue", b"cue")],
+        );
+        let all = ["chd", "cue", "iso"];
+        let selection = probe_archive(&mixed, &all, &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.member_name(), "Game.chd");
+
+        // A readme must not beat a ROM through the Mega Drive extension.
+        let rom = dir.path().join("rom.zip");
+        write_zip(
+            &rom,
+            zip::CompressionMethod::Stored,
+            &[("README.md", b"notes"), ("zelda.nes", b"rom")],
+        );
+        let selection = probe_archive(&rom, &["md", "nes"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.member_name(), "zelda.nes");
+        // With nothing else, the md member is still the pick.
+        let only = dir.path().join("only.zip");
+        write_zip(
+            &only,
+            zip::CompressionMethod::Stored,
+            &[("sonic.md", b"rom")],
+        );
+        let selection = probe_archive(&only, &["md", "nes"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        assert_eq!(selection.member_name(), "sonic.md");
+    }
+
+    #[test]
+    fn resolve_for_hash_stages_a_matching_member_and_skips_plain_files() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(
+            &dir.path().join("docs.zip"),
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"x")],
+        );
+        write_zip(
+            &dir.path().join("game.zip"),
+            zip::CompressionMethod::Stored,
+            &[("readme.txt", b"x"), ("game.iso", b"iso")],
+        );
+        std::fs::write(dir.path().join("broken.zip"), b"not an archive").unwrap();
+        let plain = dir.path().join("game.iso");
+        std::fs::write(&plain, b"iso").unwrap();
+
+        // No matching member, and an archive that cannot be listed: the
+        // archive bytes themselves are the input.
+        assert!(
+            resolve_for_hash(&dir.path().join("docs.zip"), &["iso"])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            resolve_for_hash(&dir.path().join("broken.zip"), &["iso"])
+                .unwrap()
+                .is_none()
+        );
+
+        let resolved = resolve_for_hash(&dir.path().join("game.zip"), &["iso"])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            resolved.path().file_name(),
+            Some(std::ffi::OsStr::new("game.iso"))
+        );
+        assert_ne!(resolved.path(), dir.path().join("game.zip"));
+
+        let passthrough = resolve_for_hash(&plain, &["iso"]).unwrap();
+        assert!(passthrough.is_none());
+    }
+
+    #[test]
+    fn rar_continuation_volumes_are_recognized_by_name() {
+        for (name, expected) in [
+            ("set.part2.rar", true),
+            ("set.part10.rar", true),
+            ("set.PART02.rar", true),
+            ("Game.Part2.rar", true),
+            ("set.part1.rar", false),
+            ("set.part01.rar", false),
+            ("set.rar", false),
+            ("part2.rar", false),
+            ("set.part2.zip", false),
+        ] {
+            assert_eq!(is_rar_continuation(Path::new(name)), expected, "{name}");
+        }
+    }
+
+    #[test]
     fn zip_codec_round_trip_extraction() {
         for method in [
             zip::CompressionMethod::Stored,
@@ -911,6 +1499,7 @@ mod tests {
         let selection = ArchiveSelection {
             members,
             member_index: 2,
+            candidates: 3,
         };
         let resolved = resolve_input_with_selection(&tar, &["iso"], Some(selection)).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"second");
@@ -922,7 +1511,9 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(if gz { "g.tar.gz" } else { "g.tar" });
             write_tar(&path, gz, &[("game.iso", b"original")]);
-            let selection = probe_archive(&path, &["iso"]).unwrap().unwrap();
+            let selection = probe_archive(&path, &["iso"], &CancelToken::new())
+                .unwrap()
+                .unwrap();
             write_tar(&path, gz, &[("other.iso", b"replacement")]);
             let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
                 .unwrap_err()
@@ -998,7 +1589,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("g.rar");
         std::fs::write(&path, RAR_FIXTURE).unwrap();
-        let mut selection = probe_archive(&path, &["iso"]).unwrap().unwrap();
+        let mut selection = probe_archive(&path, &["iso"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
         selection.members[selection.member_index].name = "other.iso".into();
         let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
             .unwrap_err()
@@ -1174,7 +1767,9 @@ mod tests {
             zip::CompressionMethod::Stored,
             &[("b.iso", b"second"), ("a.iso", b"first")],
         );
-        let selection = probe_archive(&zip, &["iso"]).unwrap().unwrap();
+        let selection = probe_archive(&zip, &["iso"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             selection.output_basis(&zip).unwrap(),
             dir.path().join("a.iso")

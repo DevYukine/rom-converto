@@ -111,10 +111,11 @@ WUX to WUD to WUX reproduces the original file. A split `.wud` set must be compl
 the NCAs. `solid` stores one zstd frame per NCA. `block` stores independent frames and
 uses `block_size_exp` to set the block size.
 
-`nx merge` combines uncompressed NSP/XCI containers; `nx split` writes per-title NSPs.
-Merge selects the highest content versions and drops unselected files, so splitting
-is not a lossless reversal. Selected NCA bytes are preserved, but generated XCI headers
-are unsigned. The tool warns that merged output is intended for emulator use.
+`nx merge` combines uncompressed NSP/XCI containers; `nx split` writes per-title NSPs
+and skips an NSP that holds a single title, while a single-title XCI converts to one
+NSP. Both read their inputs from archives as well. Merge selects the highest content versions and drops unselected files, so
+splitting is not a lossless reversal. Selected NCA bytes are preserved, but generated
+XCI headers are unsigned. The tool warns that merged output is intended for emulator use.
 
 `nx decrypt` writes the plaintext container that [NxEmu](https://www.nxemu.com/) loads:
 `<name>.dnsp` from an NSP and `<name>.dxci` from an XCI. The layout is unchanged; every
@@ -173,7 +174,7 @@ Both commands also accept an extracted game directory.
 `<TITLEID>/00007000/<MEDIAID>` and parts under `<MEDIAID>.data/DataNNNN`. It trims
 unused disc data and adds hashes; it does not compress the data. The container is
 unsigned and intended for modified consoles. This command requires a disc image
-with a root `default.xex`, not an extracted game folder.
+with a root `default.xex`, plain or inside an archive, not an extracted game folder.
 
 ## Recommended formats
 

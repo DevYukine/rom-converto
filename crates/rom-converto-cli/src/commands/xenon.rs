@@ -1,15 +1,15 @@
-use crate::commands::ConflictPolicyArg;
 use crate::commands::info_command::InfoCommand;
+use crate::commands::{BatchArgs, ConflictPolicyArg};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, derive_god_dir, require_info_input, save_xex_icon,
+    ALL_IMAGE_EXTS, DispatchCtx, require_info_input, require_input, save_xex_icon,
 };
 use crate::util::{ensure_input_exists, ok_str, resolve_policy};
 use crate::{batch, info_print};
 use anyhow::Result;
-use rom_converto_lib::microsoft::xenon::verify_zar;
+use rom_converto_lib::microsoft::xenon::{derive_god_dir, verify_zar};
 use rom_converto_lib::runner::models::{RunData, RunOptions};
 use rom_converto_lib::util::ConflictPolicy;
 
@@ -63,19 +63,23 @@ Copies the game partition out of the XDVDFS image into the hash-chained part-fil
 installs under its content directory. The output installs on modified consoles and emulators, not \
 on unmodified retail systems.\n\n\
 Output defaults to a directory next to the input, named after it with _god appended.",
-    after_long_help = "EXAMPLES:\n  rom-converto xenon convert game.iso\n  rom-converto xenon convert game.iso ./out --title \"Custom Title\"\n"
+    after_long_help = "EXAMPLES:\n  rom-converto xenon convert game.iso\n  rom-converto xenon convert game.iso ./out --title \"Custom Title\"\n  rom-converto xenon convert ./isos -R --output-dir ./god\n"
 )]
 pub struct ConvertCommand {
-    /// Input full disc image (.iso)
+    /// Input full disc image (.iso), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
     /// Output directory, defaults to the input path with _god appended
-    #[arg(value_name = "OUTPUT_DIR")]
+    #[arg(value_name = "OUTPUT_DIR", conflicts_with = "recursive")]
     pub output_dir: Option<PathBuf>,
 
+    /// Output directory. With --recursive, each input gets its own `<stem>_god` directory under it, mirroring the scanned tree; without --recursive it is the GoD directory itself, like the positional OUTPUT_DIR
+    #[arg(long = "output-dir", value_name = "DIR", conflicts_with = "output_dir")]
+    pub output_dir_flag: Option<PathBuf>,
+
     /// Display name written into the GoD container header, overriding the name read from the executable
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", conflicts_with = "recursive")]
     pub title: Option<String>,
 
     /// What to do when the output directory already exists: error, overwrite, skip, rename, or overwrite-invalid. rename is rejected for directory outputs, and overwrite-invalid behaves like skip
@@ -90,6 +94,13 @@ pub struct ConvertCommand {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+
+    /// Convert every .iso under INPUT, descending into subdirectories. Archives holding one are opened
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Extract every file from an Xbox 360 ZArchive
@@ -164,23 +175,30 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             .await?;
         }
         XenonCommands::Convert(cmd) => {
-            ensure_input_exists(&cmd.input)?;
-            let output_dir = cmd
-                .output_dir
-                .clone()
-                .unwrap_or_else(|| derive_god_dir(&cmd.input));
+            require_input(&cmd.input, cmd.recursive)?;
+            let (output, output_dir) = if cmd.recursive {
+                (None, cmd.output_dir_flag)
+            } else {
+                (
+                    Some(
+                        cmd.output_dir_flag
+                            .or(cmd.output_dir)
+                            .unwrap_or_else(|| derive_god_dir(&cmd.input)),
+                    ),
+                    None,
+                )
+            };
             let mut options = RunOptions::from(batch::Common {
-                recursive: false,
-                output_dir: None,
+                recursive: cmd.recursive,
+                output_dir,
                 output_template: None,
-                max_depth: None,
-                report: None,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report,
                 policy: resolve_policy(Some(cmd.on_conflict), cmd.force, ConflictPolicy::Error),
                 skip_space_check,
             });
             options.title = cmd.title;
-            let response =
-                batch::run(&run, "xenon.convert", cmd.input, Some(output_dir), options).await?;
+            let response = batch::run(&run, "xenon.convert", cmd.input, output, options).await?;
             if let Some(RunData::XenonConvert(data)) = &response.data {
                 log::info!("Title ID: {:08X}", data.title_id);
                 log::info!("Media ID: {:08X}", data.media_id);

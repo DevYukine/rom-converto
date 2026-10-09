@@ -7,6 +7,22 @@ use sha2::Digest as _;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+/// Every extension the `hash` operation reads, as a plain file in a
+/// recursive walk or as an archive member: every format [`crate::info`]
+/// reads except cue and gdi sheets (hashing the sheet text of a disc set
+/// is useless, so such an archive hashes as a file), plus the Switch
+/// container parts (`nca`, `ncz`) and NKit images, which a hash reads but
+/// `info` does not.
+pub static HASH_MEMBER_EXTS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        crate::info::SUPPORTED_INFO_EXTENSIONS
+            .iter()
+            .copied()
+            .filter(|ext| !matches!(*ext, "cue" | "gdi"))
+            .chain(["nca", "ncz", "nkit"])
+            .collect()
+    });
+
 /// A supported file-digest algorithm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HashAlgo {
@@ -379,6 +395,21 @@ mod tests {
         let path = dir.path().join("input.bin");
         std::fs::write(&path, data).unwrap();
         hash_file(&path, algos, &NoProgress, &CancelToken::new()).unwrap()
+    }
+
+    #[test]
+    fn hash_member_exts_carry_the_extra_extensions() {
+        assert_eq!(
+            HASH_MEMBER_EXTS
+                .iter()
+                .filter(|ext| !crate::info::SUPPORTED_INFO_EXTENSIONS.contains(ext))
+                .copied()
+                .collect::<Vec<_>>(),
+            ["nca", "ncz", "nkit"]
+        );
+        // Sheets of a disc set are no useful hash input, so they stay out.
+        assert!(!HASH_MEMBER_EXTS.contains(&"cue"));
+        assert!(!HASH_MEMBER_EXTS.contains(&"gdi"));
     }
 
     #[test]

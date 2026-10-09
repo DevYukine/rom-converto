@@ -3,13 +3,13 @@
 use super::invalid_arg;
 use super::models::{RunData, RunRequest, RunResponse, WupTitleInputOption};
 use super::ops::{
-    ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, required_input,
-    skipped_already_done,
+    ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, preflight_space,
+    required_input, skipped_already_done,
 };
 use crate::nintendo::ntr::NtrError;
-use crate::nintendo::nx::NxMergeFormat;
+use crate::nintendo::nx::{NxError, NxMergeFormat};
 use crate::util::fs::file_len;
-use crate::util::{CancelToken, OutputVerify, ProgressReporter};
+use crate::util::{CancelToken, Cancelled, OutputVerify, ProgressReporter};
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -134,6 +134,23 @@ fn ntr_already_done(
     Ok(skipped_already_done(input, operation, reason, &err))
 }
 
+/// Stages every merge input, stopping before the next extraction once
+/// `cancel` fires so Ctrl-C does not wait for each remaining archive.
+fn stage_merge_inputs(
+    inputs: &[PathBuf],
+    cancel: &CancelToken,
+) -> Result<Vec<crate::util::ResolvedInput>> {
+    inputs
+        .iter()
+        .map(|path| {
+            if cancel.is_cancelled() {
+                return Err(Cancelled.into());
+            }
+            crate::util::resolve_input(path, &["nsp", "xci"])
+        })
+        .collect()
+}
+
 pub(crate) async fn nx_merge(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -164,10 +181,14 @@ pub(crate) async fn nx_merge(
         NxMergeFormat::Xci => ("xci", "XCI"),
     };
     let (keys, missing_keys) = nx_keys_for_run(&req)?;
+    let skip_space_check = req.options.skip_space_check.unwrap_or(false);
     // The merge has many inputs but one record; the first one names it.
     let mut req = req;
     let first = req.input.clone().unwrap_or_else(|| inputs[0].clone());
     req.input = Some(first.clone());
+    // The staged total is the only honest preflight: convert_op would only
+    // size the first input.
+    req.options.skip_space_check = Some(true);
     let mut response = convert_op(
         progress,
         &req,
@@ -179,8 +200,24 @@ pub(crate) async fn nx_merge(
         },
         cancel,
         |_input, output, cancel| async move {
+            let stage_cancel = cancel.clone();
+            let staged =
+                tokio::task::spawn_blocking(move || stage_merge_inputs(&inputs, &stage_cancel))
+                    .await??;
+            if !skip_space_check {
+                preflight_space(
+                    output.parent().unwrap_or(&output),
+                    staged.iter().map(|r| file_len(r.path())).sum(),
+                )?;
+            }
+            // `staged` owns the temp dirs the merge reads from; it must
+            // outlive the merge future.
+            let paths = staged
+                .iter()
+                .map(|resolved| resolved.path().to_path_buf())
+                .collect();
             crate::nintendo::nx::merge_containers_async(
-                inputs, output, format, keys, progress, cancel,
+                paths, output, format, keys, progress, cancel,
             )
             .await
             .map_err(anyhow::Error::from)
@@ -206,7 +243,39 @@ pub(crate) async fn nx_split(
         .or_else(|| req.options.output_dir.clone())
         .unwrap_or_else(|| crate::nintendo::nx::derive_split_dir(&input));
     let (keys, missing_keys) = nx_keys_for_run(&req)?;
-    let mut response = dir_op(
+    // A single-title container is a skip, not a conversion. Counting titles
+    // before staging and the space preflight keeps a plain NSP from being
+    // extracted, or a full disk from turning the skip into an error; the
+    // dry run settles it as a skipped record too. Undecidable inputs fall
+    // through to the normal path, which surfaces the same error.
+    if !crate::util::is_archive_path(&input) {
+        match tokio::task::spawn_blocking({
+            let input = input.clone();
+            let keys = keys.clone();
+            move || crate::nintendo::nx::plan_split(&input, &keys)
+        })
+        .await
+        {
+            // A split that proceeds replays the warnings itself; only the
+            // skip path, which never reaches it, reports them here.
+            Ok(Ok(plan)) if plan.is_single_title_skip() => {
+                for warning in plan.warnings() {
+                    progress.warn(warning);
+                }
+                return Ok(skipped_already_done(
+                    &input,
+                    "nx.split",
+                    "single title",
+                    &NxError::SingleTitle,
+                ));
+            }
+            Ok(Ok(_)) => {}
+            // Planning errors are re-raised by the split itself.
+            Ok(Err(_)) => {}
+            Err(join) => return Err(join.into()),
+        }
+    }
+    let mut response = match dir_op(
         &req,
         &input,
         &desired,
@@ -220,7 +289,21 @@ pub(crate) async fn nx_split(
             Ok((files.iter().map(|p| file_len(p)).sum(), None))
         },
     )
-    .await?;
+    .await
+    {
+        Ok(response) => response,
+        Err(err) => match err.downcast_ref::<NxError>() {
+            Some(NxError::SingleTitle) => {
+                return Ok(skipped_already_done(
+                    &input,
+                    "nx.split",
+                    "single title",
+                    &err,
+                ));
+            }
+            _ => return Err(err),
+        },
+    };
     if let Some(RunData::Plan(line)) = &mut response.data {
         line.missing_keys = missing_keys;
     }
@@ -230,8 +313,190 @@ pub(crate) async fn nx_split(
 #[cfg(test)]
 mod tests {
     use super::super::run_json;
+    use crate::nintendo::nx::test_fixtures::{TEST_HEADER_KEY, TEST_KAK_APPLICATION_00};
+    use crate::runner::models::ProgressEvent;
     use crate::util::CancelToken;
     use serde_json::json;
+
+    /// The synthetic key set the test containers are built with, written as
+    /// a keys file so the runner loads it like a user's `prod.keys`.
+    fn write_keys_file(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("prod.keys");
+        std::fs::write(
+            &path,
+            format!(
+                "header_key = {}\nkey_area_key_application_00 = {}\n",
+                hex::encode(TEST_HEADER_KEY),
+                hex::encode(TEST_KAK_APPLICATION_00)
+            ),
+        )
+        .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn single_title_nsp_is_a_skipped_record_with_plan_warnings() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+        use crate::nintendo::nx::test_fixtures::{build_meta_nca, build_test_nsp};
+
+        let meta = build_meta_nca(
+            0x0100_5151_0000_0000,
+            0,
+            CNMT_TYPE_APPLICATION,
+            &[[0x77; 16]],
+        );
+        let files = vec![
+            (format!("{}.cnmt.nca", hex::encode([0x66; 16])), meta),
+            (
+                format!("{}.nca", hex::encode([0x77; 16])),
+                vec![0xAB; 0x800],
+            ),
+            // No CNMT references this NCA and its header is unreadable, so
+            // planning warns about it; the warning must reach the run even
+            // though the split itself is skipped.
+            (format!("{}.nca", hex::encode([0x99; 16])), vec![0u8; 0x400]),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let nsp_path = dir.path().join("single.nsp");
+        std::fs::write(&nsp_path, build_test_nsp(&files)).unwrap();
+        let keys = write_keys_file(dir.path());
+        let req = json!({
+            "operation": "nx.split",
+            "input": nsp_path,
+            "options": { "keys": keys }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 1, "{res:?}");
+        assert_eq!(res.records[0].status, crate::util::FileStatus::Skipped);
+        assert!(
+            res.records[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("single title")),
+            "{res:?}"
+        );
+        assert!(
+            res.events.iter().any(|event| matches!(
+                event,
+                ProgressEvent::Warn { message } if message.contains(&hex::encode([0x99; 16]))
+            )),
+            "{res:?}"
+        );
+        // Nothing was written: the skip leaves no split directory behind.
+        assert!(!dir.path().join("single_split").exists());
+    }
+
+    #[tokio::test]
+    async fn multi_title_split_reports_each_plan_warning_once() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+        use crate::nintendo::nx::test_fixtures::{build_meta_nca, build_test_nsp};
+
+        let mut files = Vec::new();
+        for n in [1u8, 2] {
+            files.push((
+                format!("{}.cnmt.nca", hex::encode([n; 16])),
+                build_meta_nca(
+                    0x0100_0000_0000_0000 + u64::from(n) * 0x1000,
+                    0,
+                    CNMT_TYPE_APPLICATION,
+                    &[[0x10 + n; 16]],
+                ),
+            ));
+            files.push((
+                format!("{}.nca", hex::encode([0x10 + n; 16])),
+                vec![0xAB; 0x800],
+            ));
+        }
+        files.push((format!("{}.nca", hex::encode([0x99; 16])), vec![0u8; 0x400]));
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = dir.path().join("multi.nsp");
+        std::fs::write(&nsp, build_test_nsp(&files)).unwrap();
+        let keys = write_keys_file(dir.path());
+        let req = json!({
+            "operation": "nx.split",
+            "input": nsp,
+            "options": { "keys": keys }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let warned = res
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    ProgressEvent::Warn { message } if message.contains(&hex::encode([0x99; 16]))
+                )
+            })
+            .count();
+        assert_eq!(warned, 1, "{res:?}");
+    }
+
+    #[test]
+    fn merge_staging_stops_once_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let inputs: Vec<std::path::PathBuf> = ["a.nsp", "b.nsp"]
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, b"nsp").unwrap();
+                path
+            })
+            .collect();
+        let token = CancelToken::new();
+        assert_eq!(super::stage_merge_inputs(&inputs, &token).unwrap().len(), 2);
+        token.cancel();
+        let err = super::stage_merge_inputs(&inputs, &token).unwrap_err();
+        assert!(crate::runner::is_cancelled_error(&err));
+    }
+
+    #[tokio::test]
+    async fn nx_merge_stages_archive_inputs() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+        use crate::nintendo::nx::test_fixtures::{build_meta_nca, build_test_nsp};
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let mut inputs = Vec::new();
+        for (n, title) in [(1u8, 0x0100_AAAA_0000_0000u64), (2, 0x0100_BBBB_0000_0000)] {
+            let meta = build_meta_nca(title, 0, CNMT_TYPE_APPLICATION, &[[0x10 + n; 16]]);
+            let nsp = build_test_nsp(&[
+                (format!("{}.cnmt.nca", hex::encode([n; 16])), meta),
+                (
+                    format!("{}.nca", hex::encode([0x10 + n; 16])),
+                    vec![0xAB; 0x800],
+                ),
+            ]);
+            let archive = dir.path().join(format!("title{n}.zip"));
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file(format!("title{n}.nsp"), opts).unwrap();
+            zip.write_all(&nsp).unwrap();
+            zip.finish().unwrap();
+            inputs.push(archive);
+        }
+        let output = dir.path().join("merged.nsp");
+        let req = json!({
+            "operation": "nx.merge",
+            "input": inputs[0],
+            "output": output,
+            "options": { "inputs": inputs, "keys": keys }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let merged = std::fs::read(&output).unwrap();
+        let names = crate::nintendo::nx::models::Pfs0::read(&mut std::io::Cursor::new(&merged))
+            .unwrap()
+            .files
+            .into_iter()
+            .map(|file| file.name)
+            .collect::<Vec<_>>();
+        // Both archives' contents were staged and merged.
+        assert_eq!(names.len(), 4, "{names:?}");
+    }
 
     #[tokio::test]
     async fn misc_ops_dry_run_plans() {

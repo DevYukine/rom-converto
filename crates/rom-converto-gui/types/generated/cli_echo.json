@@ -1163,8 +1163,11 @@
     ],
     "nx.split": [
       "keys",
+      "max_depth",
       "on_conflict",
-      "output_dir"
+      "output_dir",
+      "recursive",
+      "report"
     ],
     "nx.verify": [
       "keys",
@@ -1363,7 +1366,11 @@
     "xbox.extract": [],
     "xenon.compress": [],
     "xenon.convert": [
+      "max_depth",
       "on_conflict",
+      "output_dir",
+      "recursive",
+      "report",
       "title"
     ],
     "xenon.extract": [],

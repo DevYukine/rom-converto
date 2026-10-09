@@ -4,7 +4,7 @@
 //! library directly: they print a per-file `[OK]`/`[FAIL]` or digest row, and
 //! `hash` walks every file rather than a fixed extension set.
 
-use crate::commands::support::print_hash_row;
+use crate::commands::support::{print_hash_row, resolve_input_off_runtime};
 use crate::util::{
     CliProgress, IndicatifProgress, TotalProgress, WriteDecision, file_len, totals_from,
 };
@@ -14,10 +14,12 @@ use rom_converto_lib::runner::models::{
     OrganizeRow, PlaylistsData, RunData, RunOptions, RunRequest, RunResponse, RunRow,
 };
 use rom_converto_lib::runner::{VERIFIED_VALID, run_request};
-use rom_converto_lib::util::fs::{collect_all_files, collect_files_with_exts, is_os_junk_dir};
+use rom_converto_lib::util::fs::{collect_all_files, is_os_junk_dir};
 use rom_converto_lib::util::{
-    CancelToken, FileDigests, FileStatus, HashAlgo, HashCache, HashReportRecord, ProgressReporter,
-    ReportFormat, ReportRecord, ReportTotals, Tally, TallyDirection, hash_file, write_hash_report,
+    CancelToken, Cancelled, FileDigests, FileStatus, HASH_MEMBER_EXTS, HashAlgo, HashCache,
+    HashReportRecord, InputScan, ProgressReporter, ReportFormat, ReportRecord, ReportTotals,
+    ResolvedInput, Tally, TallyDirection, collect_inputs, hash_file, resolve_for_hash,
+    write_hash_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -359,12 +361,27 @@ fn files_bytes(files: &[PathBuf]) -> u64 {
     files.iter().map(|p| file_len(p)).sum()
 }
 
-fn collect_or_warn(
+async fn collect_or_warn(
     input_dir: &Path,
-    exts: &[&str],
+    exts: &'static [&'static str],
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<Vec<PathBuf>> {
-    let files = collect_files_with_exts(input_dir, exts, max_depth, &CancelToken::new())?;
+    let dir = input_dir.to_path_buf();
+    let cancel = cancel.clone();
+    let files = tokio::task::spawn_blocking(move || {
+        collect_inputs(
+            &dir,
+            &InputScan {
+                exts,
+                member_exts: None,
+                max_depth,
+                skip_unpacked_twins: false,
+            },
+            &cancel,
+        )
+    })
+    .await??;
     if files.is_empty() {
         warn!(
             "No matching files found in {} (looked for {:?})",
@@ -385,16 +402,35 @@ fn finish_verify(tally: VerifyTally) -> Result<()> {
     }
     Ok(())
 }
+
+/// Stages one walked input off the async runtime. A staging failure counts
+/// the file as failed instead of aborting the batch.
+async fn stage_or_fail(
+    path: &Path,
+    exts: &'static [&'static str],
+    failed: &mut usize,
+) -> Option<ResolvedInput> {
+    match resolve_input_off_runtime(path.to_path_buf(), exts).await {
+        Ok(resolved) => Some(resolved),
+        Err(e) => {
+            *failed += 1;
+            warn!("[FAIL] {}: {e}", path.display());
+            None
+        }
+    }
+}
 pub async fn cso_verify(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::cso::verify_cso;
 
-    let files = collect_or_warn(input_dir, &["cso", "zso", "dax"], max_depth)?;
+    const EXTS: &[&str] = &["cso", "zso", "dax"];
+    let files = collect_or_warn(input_dir, EXTS, max_depth, cancel).await?;
     if files.is_empty() {
         return Ok(());
     }
@@ -403,13 +439,30 @@ pub async fn cso_verify(
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
-        match verify_cso(progress, path.clone(), full, CancelToken::new()).await {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+            total_progress.advance(bytes);
+            continue;
+        };
+        match verify_cso(
+            progress,
+            resolved.path().to_path_buf(),
+            full,
+            cancel.clone(),
+        )
+        .await
+        {
             Ok(()) => {
                 ok += 1;
                 info!("[OK] {}", path.display());
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 failed += 1;
                 warn!("[FAIL] {}: {e}", path.display());
             }
@@ -425,10 +478,12 @@ pub async fn dol_verify(
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::dol::verify::{DolVerifyOptions, verify_dol};
 
-    let files = collect_or_warn(input_dir, &["iso", "gcm", "rvz"], max_depth)?;
+    const EXTS: &[&str] = &["iso", "gcm", "rvz"];
+    let files = collect_or_warn(input_dir, EXTS, max_depth, cancel).await?;
     if files.is_empty() {
         return Ok(());
     }
@@ -438,8 +493,15 @@ pub async fn dol_verify(
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
-        match verify_dol(&path, &opts, progress, &CancelToken::new()) {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+            total_progress.advance(bytes);
+            continue;
+        };
+        match verify_dol(resolved.path(), &opts, progress, cancel) {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -452,6 +514,9 @@ pub async fn dol_verify(
                 }
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 failed += 1;
                 warn!("[FAIL] {}: {e}", path.display());
             }
@@ -468,10 +533,12 @@ pub async fn rvl_verify(
     input_dir: &Path,
     full: bool,
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
 
-    let files = collect_or_warn(input_dir, &["iso", "wbfs", "rvz"], max_depth)?;
+    const EXTS: &[&str] = &["iso", "wbfs", "rvz"];
+    let files = collect_or_warn(input_dir, EXTS, max_depth, cancel).await?;
     if files.is_empty() {
         return Ok(());
     }
@@ -481,8 +548,15 @@ pub async fn rvl_verify(
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
-        match verify_rvl(&path, &opts, progress, &CancelToken::new()) {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+            total_progress.advance(bytes);
+            continue;
+        };
+        match verify_rvl(resolved.path(), &opts, progress, cancel) {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -495,6 +569,9 @@ pub async fn rvl_verify(
                 }
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 failed += 1;
                 warn!("[FAIL] {}: {e}", path.display());
             }
@@ -510,14 +587,12 @@ pub async fn nx_verify(
     input_dir: &Path,
     keys: rom_converto_lib::nintendo::nx::KeySet,
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::nx::verify_container_async;
 
-    let files = collect_or_warn(
-        input_dir,
-        &["nsp", "xci", "nsz", "xcz", "dnsp", "dxci"],
-        max_depth,
-    )?;
+    const EXTS: &[&str] = &["nsp", "xci", "nsz", "xcz", "dnsp", "dxci"];
+    let files = collect_or_warn(input_dir, EXTS, max_depth, cancel).await?;
     if files.is_empty() {
         return Ok(());
     }
@@ -526,8 +601,21 @@ pub async fn nx_verify(
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in files {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
-        match verify_container_async(path.clone(), keys.clone(), progress, CancelToken::new()).await
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+            total_progress.advance(bytes);
+            continue;
+        };
+        match verify_container_async(
+            resolved.path().to_path_buf(),
+            keys.clone(),
+            progress,
+            cancel.clone(),
+        )
+        .await
         {
             Ok(result) if result.ok => {
                 ok += 1;
@@ -538,6 +626,9 @@ pub async fn nx_verify(
                 warn!("[FAIL] {}", path.display());
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 failed += 1;
                 warn!("[FAIL] {}: {e}", path.display());
             }
@@ -576,11 +667,28 @@ pub async fn wup_verify(
     total_progress: &crate::util::TotalProgress,
     input_dir: &Path,
     max_depth: Option<usize>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::nintendo::wup::verify_wup_async;
 
-    let mut inputs =
-        collect_files_with_exts(input_dir, &["wud", "wux"], max_depth, &CancelToken::new())?;
+    const FILE_EXTS: &[&str] = &["wud", "wux"];
+    let dir = input_dir.to_path_buf();
+    let mut inputs = {
+        let cancel = cancel.clone();
+        tokio::task::spawn_blocking(move || {
+            collect_inputs(
+                &dir,
+                &InputScan {
+                    exts: FILE_EXTS,
+                    member_exts: None,
+                    max_depth,
+                    skip_unpacked_twins: false,
+                },
+                &cancel,
+            )
+        })
+        .await??
+    };
     if let Ok(entries) = std::fs::read_dir(input_dir) {
         let mut dirs: Vec<PathBuf> = entries
             .flatten()
@@ -611,8 +719,28 @@ pub async fn wup_verify(
     let mut ok = 0usize;
     let mut failed = 0usize;
     for path in inputs {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
-        match verify_wup_async(path.clone(), None, progress, CancelToken::new()).await {
+        // A NUS title directory is verified in place; disc files resolve
+        // through an archive when one holds the .wud/.wux member. The
+        // staging stays alive until the verify below has finished.
+        let staging = if path.is_dir() {
+            None
+        } else {
+            match stage_or_fail(&path, FILE_EXTS, &mut failed).await {
+                Some(resolved) => Some(resolved),
+                None => {
+                    total_progress.advance(bytes);
+                    continue;
+                }
+            }
+        };
+        let target = staging
+            .as_ref()
+            .map_or_else(|| path.clone(), |r| r.path().to_path_buf());
+        match verify_wup_async(target, None, progress, cancel.clone()).await {
             Ok(result) if result.ok => {
                 ok += 1;
                 info!("[OK] {}", path.display());
@@ -622,6 +750,9 @@ pub async fn wup_verify(
                 warn!("[FAIL] {}", path.display());
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 failed += 1;
                 warn!("[FAIL] {}: {e}", path.display());
             }
@@ -663,6 +794,26 @@ fn hash_failed_record(
     }
 }
 
+pub(crate) fn hash_cached(
+    path: &Path,
+    algos: &[HashAlgo],
+    progress: &dyn ProgressReporter,
+    cache: &HashCache,
+    cancel: &CancelToken,
+) -> std::io::Result<FileDigests> {
+    match cache.lookup_raw(path, algos) {
+        Some(d) => Ok(d),
+        None => {
+            let computed = hash_file(path, algos, progress, cancel);
+            if let Ok(d) = &computed {
+                cache.store_raw(path, d);
+            }
+            computed
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn hash_batch(
     progress: &dyn ProgressReporter,
     total_progress: &crate::util::TotalProgress,
@@ -671,8 +822,9 @@ pub async fn hash_batch(
     max_depth: Option<usize>,
     report_path: Option<&Path>,
     cache: &HashCache,
+    cancel: &CancelToken,
 ) -> Result<()> {
-    let files = collect_all_files(input_dir, max_depth, &CancelToken::new())?;
+    let files = collect_all_files(input_dir, max_depth, cancel)?;
     if files.is_empty() {
         warn!("No files found in {}", input_dir.display());
         return Ok(());
@@ -682,16 +834,23 @@ pub async fn hash_batch(
     let mut tally = Tally::new();
     let mut records: Vec<HashReportRecord> = Vec::new();
     for path in files {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
         let bytes = file_len(&path);
         let started = Instant::now();
-        let hashed = match cache.lookup_raw(&path, algos) {
-            Some(d) => Ok(d),
-            None => {
-                let computed = hash_file(&path, algos, progress, &CancelToken::new());
-                if let Ok(d) = &computed {
-                    cache.store_raw(&path, d);
-                }
-                computed
+        // A staged member lives in a temp dir and its digests are the
+        // member's, so it hashes without the cache; `None` hashed the raw
+        // bytes at the walked path, which the cache may serve.
+        let hashed = {
+            let walk = path.clone();
+            match tokio::task::spawn_blocking(move || resolve_for_hash(&walk, &HASH_MEMBER_EXTS))
+                .await
+            {
+                Ok(Ok(None)) => hash_cached(&path, algos, progress, cache, cancel),
+                Ok(Ok(Some(resolved))) => hash_file(resolved.path(), algos, progress, cancel),
+                Ok(Err(e)) => Err(std::io::Error::other(e)),
+                Err(e) => Err(std::io::Error::other(e)),
             }
         };
         match hashed {
@@ -701,6 +860,9 @@ pub async fn hash_batch(
                 records.push(hash_ok_record(&path, &d, started));
             }
             Err(e) => {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
                 warn!("Failed to hash {}: {e}", path.display());
                 tally.record_failed();
                 records.push(hash_failed_record(&path, started, e));
@@ -719,7 +881,7 @@ pub async fn hash_batch(
             &records,
             &totals_from(&tally),
             ReportFormat::from_path(path),
-            &CancelToken::new(),
+            cancel,
         )?;
     }
     Ok(())

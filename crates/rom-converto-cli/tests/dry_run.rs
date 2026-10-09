@@ -852,3 +852,73 @@ fn failed_batch_still_writes_its_report() {
     let written = fs::read_to_string(&report).unwrap();
     assert!(written.contains("\"failed\""), "{written}");
 }
+
+/// A CD CHD built through the CLI whose stored overall SHA-1 is corrupted,
+/// so `chd verify --fix` would rewrite its header.
+fn chd_with_bad_header_sha1(dir: &Path) -> std::path::PathBuf {
+    fs::write(dir.join("cd.bin"), vec![0u8; 4 * 2352]).unwrap();
+    fs::write(
+        dir.join("cd.cue"),
+        "FILE \"cd.bin\" BINARY\r\n  TRACK 01 MODE1/2352\r\n    INDEX 01 00:00:00\r\n",
+    )
+    .unwrap();
+    let output = bin()
+        .args(["chd", "compress"])
+        .arg(dir.join("cd.cue"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", combined(&output));
+    let chd = dir.join("cd.chd");
+    let mut bytes = fs::read(&chd).unwrap();
+    // Offset of the overall SHA-1 in a v5 header.
+    bytes[84] ^= 0xFF;
+    fs::write(&chd, bytes).unwrap();
+    chd
+}
+
+#[test]
+fn chd_verify_fix_dry_run_never_rewrites_the_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let chd = chd_with_bad_header_sha1(dir.path());
+    let original = fs::read(&chd).unwrap();
+
+    let single = bin()
+        .args(["--dry-run", "chd", "verify", "--fix"])
+        .arg(&chd)
+        .output()
+        .unwrap();
+    assert!(!single.status.success(), "{}", combined(&single));
+    assert_eq!(fs::read(&chd).unwrap(), original);
+
+    // An archive beside it: a fix walk is plain-only, dry run or not.
+    let archive = dir.path().join("packed.zip");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+    zip.start_file(
+        "packed.chd",
+        zip::write::FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored),
+    )
+    .unwrap();
+    std::io::Write::write_all(&mut zip, &original).unwrap();
+    zip.finish().unwrap();
+
+    let batch = bin()
+        .args(["--dry-run", "chd", "verify", "--fix", "-R"])
+        .arg(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        combined(&batch).contains("mismatch"),
+        "{}",
+        combined(&batch)
+    );
+    assert_eq!(fs::read(&chd).unwrap(), original);
+
+    // Without --dry-run the same command repairs the header.
+    let real = bin()
+        .args(["chd", "verify", "--fix"])
+        .arg(&chd)
+        .output()
+        .unwrap();
+    assert!(real.status.success(), "{}", combined(&real));
+    assert_ne!(fs::read(&chd).unwrap(), original);
+}

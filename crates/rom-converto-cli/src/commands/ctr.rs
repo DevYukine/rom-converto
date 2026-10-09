@@ -4,14 +4,14 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, CTR_CRYPT_EXTS, DispatchCtx, require_info_input, require_input, save_ctr_icon,
+    ALL_IMAGE_EXTS, DispatchCtx, require_info_input, require_input, save_ctr_icon,
 };
 use crate::util::{WriteDecision, ensure_input_exists, resolve_policy};
 use crate::{batch, dry_run, info_print};
 use anyhow::Result;
 use rom_converto_lib::nintendo::ctr::generate_ticket_from_cdn;
 use rom_converto_lib::nintendo::ctr::verify::{
-    CtrVerifyOptions, CtrVerifyResult, verify_ctr, verify_ctr_batch,
+    CtrVerifyOptions, CtrVerifyResult, VERIFY_EXTS, verify_ctr, verify_ctr_batch,
 };
 use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::CancelToken;
@@ -555,7 +555,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 }
             } else {
                 ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, CTR_CRYPT_EXTS)?;
+                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, VERIFY_EXTS)?;
                 let result =
                     verify_ctr(resolved.path(), &opts, &progress, &CancelToken::new()).await?;
                 match &result {

@@ -200,8 +200,8 @@ const nx: OpDef = {
 	title: "Decompress / Extract",
 	subtitle: "Restores the raw image from a compressed container.",
 	dropText: "Drop compressed files or folders",
-	acceptedExts: ["nsz", "xcz", ...ARCHIVE_EXTS],
-	browseFilters: [{ name: "NSZ/XCZ", extensions: ["nsz", "xcz"] }],
+	acceptedExts: ["nsz", "xcz", "ncz", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "NSZ/XCZ", extensions: ["nsz", "xcz", "ncz"] }],
 	fields: [
 		{
 			kind: "file",

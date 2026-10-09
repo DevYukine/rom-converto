@@ -538,7 +538,17 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     ("nx merge", &["format", "keys", "on_conflict"]),
-    ("nx split", &["keys", "on_conflict", "output_dir"]),
+    (
+        "nx split",
+        &[
+            "keys",
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "recursive",
+            "report",
+        ],
+    ),
     ("nx verify", &["keys", "max_depth", "recursive"]),
     (
         "organize",
@@ -685,7 +695,17 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     ("xbox convert", &[]),
     ("xbox extract", &[]),
     ("xenon compress", &[]),
-    ("xenon convert", &["on_conflict", "title"]),
+    (
+        "xenon convert",
+        &[
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "recursive",
+            "report",
+            "title",
+        ],
+    ),
     ("xenon extract", &[]),
     ("xenon verify", &[]),
 ];

@@ -20,7 +20,9 @@ async function fileSize(path: string): Promise<number> {
 
 export function useStaging(def: OpDef) {
 	const staged = ref<StagedItem[]>([]);
-	const scan = useFolderScan(def.acceptedExts);
+	// An op with a conflict picker has file outputs, so an unpacked twin of
+	// an archive member would collide with it: skip such archives on scan.
+	const scan = useFolderScan(def.acceptedExts, def.showConflict !== false);
 
 	async function add(paths: string[]) {
 		const store = def.useStore();

@@ -98,19 +98,25 @@ Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `nt
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
 `nx.merge` takes its containers in `options.inputs` (the first names the
-record) and its format in `options.format` (`nsp`, default, or `xci`).
+record) and its format in `options.format` (`nsp`, default, or `xci`); each
+input may be an archive holding an NSP or XCI.
 `nx.decrypt` writes a single output file, `<name>.dnsp` or `<name>.dxci`, and
 takes the same options as `nx.decompress`. It needs `prod.keys`, and the
 output loads only in NxEmu.
 `nx.split` writes into `output` or `options.output_dir`, defaulting to a
-`<name>_split` directory next to the input. Directory-output operations
-(`nx.split`, `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
+`<name>_split` directory next to the input. A plain single-title NSP is a
+`skipped` record: the request returns `ok` with no output, and the plan's
+warnings are logged first, so a key problem shows up instead of hiding behind
+the skip. An archive holding one is staged before the title count is read,
+and its dry run plans a write. A single-title XCI converts to one NSP.
+Directory-output operations (`nx.split`, `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
 `xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`,
 and `skip` but not `rename`; `overwrite` replaces an existing file at the path
 and writes into a non-empty directory as it is.
 
 `xenon.convert` writes a Games on Demand container and returns `data` with
-`title_id`, `media_id`, `part_count`, and `total_bytes`.
+`title_id`, `media_id`, `part_count`, and `total_bytes`. `options.title`
+cannot be combined with `options.recursive`.
 
 `chd.migrate` upgrades legacy CHDs to v5. It behaves like every other
 conversion: `output` names a single file, otherwise the output is
@@ -122,10 +128,53 @@ reports all apply.
 
 `options.recursive: true` walks `input` for the extensions the operation
 handles (`ctr.cdn_to_cia` enumerates title directories instead) and processes
-each file as its own child request. `options.output_dir` mirrors the source
-tree under itself. When `input` is a single file, the request runs as a
-single-file request instead of failing. Read-only operations (`hash` and the
-`*.verify` operations) skip the free-space preflight.
+each file as its own child request. Archives (`zip`, `7z`, `rar`, `tar`,
+`tar.gz`, `tgz`) are inputs too when the member picked by name order carries
+one of those extensions; the record names the archive. A member with an
+extension the operation does not scan can win that pick, which leaves such an
+archive out. `options.output_dir` mirrors the source
+tree under itself; for `nx.split` and `xenon.convert` it is the root under
+which each child writes its own `<name>_split` or `<name>_god` directory,
+whereas a non-recursive request treats it as the output directory itself.
+When `input` is a single file, the request runs as a single-file request
+instead of failing; `nx.split` and `xenon.convert` still name their output
+directory the batch way (`<name>_split`, `<name>_god`, under `output_dir`
+when set) unless `output` is set. Read-only operations (`hash` and the `*.verify` operations) skip
+the free-space preflight and open archives as well. `chd.verify` with
+`options.fix: true` rewrites the header SHA-1s only on a real run: under
+`dry_run` it verifies read-only and never writes. `fix` rejects an archive
+input (`invalid_arg`, "fix needs a plain .chd"), and a recursive fix run walks
+plain files only, dry run or not.
+
+A single `hash` of an archive returns the digests of the member inside it
+when the archive holds a known image (any format `info` reads except `cue`
+and `gdi`, plus `nca`, `ncz`, and `nkit`), and of the archive bytes
+otherwise. A recursive `hash` walks every file under `input`, like the CLI,
+and applies the same rule to each archive; an archive that cannot be listed
+is hashed as raw bytes. Rows carry the walked path, not the member name.
+
+A write operation leaves out an archive whose member also sits unpacked beside
+it, in favor of the plain file; this is logged and produces no record.
+
+When two other children of a recursive run would write the same output (two
+archives holding the same member name, a plain file and an archive member
+that share an output, or names that differ only in case), the first one that
+succeeds keeps the output and each later one is a `skipped` record naming it;
+a plain file is decided before an archive. With `on_conflict: "overwrite"`, a
+child whose output is another input of the run is a `skipped` record too (the
+check uses the mirrored path when `output_dir` is set); other policies keep or
+verify an existing output themselves. Names compare without regard to case, but
+not to Unicode normalization. `on_conflict: "rename"` turns both checks off,
+since each child gets its own output, and so does an `output_template`: the
+rendered paths are not known in advance, and a collision between them follows
+`on_conflict`.
+
+A `*.migrate` request whose input is a zip, 7z, or tar archive reads the
+member's header before staging it: `chd.migrate` fails on a v5 or newer CHD
+and on a member that is not a CHD, and the other `*.migrate` operations fail
+on a member that is not a legacy container, in a dry run too, instead of
+extracting it. A RAR member cannot be read partially, so it is checked after
+staging.
 
 Under `on_conflict: "error"`, a child whose output already exists is not a
 failure: the run stays `ok` with status 0, and that file's record is

@@ -137,11 +137,13 @@ pub async fn compress_to_cso_batch(
             output_dir,
             exts: &["iso"],
             max_depth,
+            open_archives: false,
             verb: "Compressing",
             action: "compress",
             noun: "images",
         },
         total_progress,
+        &CancelToken::new(),
         |path| {
             Some(crate::util::place_in_dir_mirrored(
                 &path.with_extension(opts.format.extension()),

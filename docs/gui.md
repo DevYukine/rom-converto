@@ -20,8 +20,27 @@ expose those per-file queue controls.
 
 Dropping a folder queues matching input files. Recursive scanning and its maximum
 depth use the same library walker as the CLI. Pages with archive support accept
-`.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, and `.tgz` archives. The app extracts
-the first matching member to a temporary directory and removes it after the job.
+`.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, and `.tgz` archives, and a folder scan
+queues an archive only when it holds a matching member, picked with the
+extensions the page accepts, which match what the job later extracts with. Wii U
+conversion scans both `.wud` and `.wux` whichever direction is set, so an archive
+holding only the other kind is queued and then fails with "no matching image".
+On pages that write output, an archive whose member also sits unpacked beside it
+is left out in favor of the plain file; verify pages queue both.
+
+The GUI does not compare the outputs of queued files. With On conflict set to
+Overwrite, two files that name the same output (the same game as `.zip` and `.7z`,
+or a `.cue` and an archive holding its `.iso`) replace each other, and so does a
+file whose output is another queued input (converting `game.3ds` replaces a queued
+`game.cia`). Use Skip, Rename, or Error for such folders. The CLI's `-R` skips them.
+
+The app extracts the first matching member to a temporary directory and removes it
+after the job. CHD verify with **Fix SHA-1** needs a plain `.chd`: an archive job
+fails with that message, while the CLI `-R --fix` walks plain files only.
+
+The Hash page hashes the file inside an archive that holds a known image, and the
+archive's own bytes otherwise, like `rom-converto hash`. With Recursive on, dropping a
+folder hashes every file in it.
 
 ### CHD migration
 
@@ -44,24 +63,27 @@ The warning appears for both output formats. Selected NCA bytes stay unchanged;
 generated XCI gamecard headers are unsigned.
 
 **Split Switch NSP/XCI** takes one container and writes one NSP per title, defaulting
-to `<stem>_split`. Both pages require unpacked NSP/XCI files and `prod.keys`; decompress
-NSZ/XCZ first. Merge defaults to `<first stem> (Merged).nsp` or `.xci`.
+to `<stem>_split`. A single-title NSP is skipped; a single-title XCI converts to one
+NSP. Both pages take plain NSP/XCI files or archives holding one, and need `prod.keys`;
+decompress NSZ/XCZ first.
+Merge defaults to `<first stem> (Merged).nsp` or `.xci`.
 
 **Decrypt Switch NSP/XCI** converts an encrypted NSP or XCI into the DNSP or DXCI that
-[NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and unpacked inputs;
+[NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and uncompressed inputs;
 decompress NSZ/XCZ first. The output is `<name>.dnsp` or `<name>.dxci` and loads only
 in NxEmu.
 
 ### Xbox 360 GoD conversion
 
-**Convert ISO to GoD** takes a disc ISO and writes `<stem>_god` by default. You can
-choose an output directory and title, start a dry run, or add folders to the queue.
-Archive inputs are supported here even though the CLI conversion takes an ISO directly.
+**Convert ISO to GoD** takes a disc ISO, plain or inside an archive, and writes
+`<stem>_god` by default. You can choose an output directory and title, start a dry
+run, or add folders to the queue.
 
 The page has no key, report, output-template, or verification setting. Unlike the CLI,
 GUI conflict handling supports Rename; Overwrite if invalid skips existing output
 because GoD has no integrity probe. Folder scanning creates separate queue jobs,
-not a recursive `xenon convert` command.
+not a recursive `xenon convert` command, so the title applies to every job while the
+CLI rejects `--title` with `-R`.
 
 ### Organize a library
 
@@ -184,4 +206,5 @@ The GUI does not expose shell completions, `self-update`, terminal verbosity
 flags, `--config`, `--preset`, `--no-update-check`, or `info --json`. It also
 does not provide `dat identify`, `dat fixdat`, `dol migrate`, or `rvl migrate`
 as dedicated pages. The relevant compression pages accept supported legacy inputs
-and migrate them through their normal conversion flow.
+and migrate them through their normal conversion flow. `nx split -R` (recursive
+split with `--output-dir`) is also CLI-only: the Split page takes one container.

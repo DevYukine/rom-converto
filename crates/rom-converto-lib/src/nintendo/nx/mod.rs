@@ -48,6 +48,7 @@ pub use keys::{KeyAreaKind, KeySet, find_keys_file, load_keyset};
 pub use merge::{NxMergeFormat, merge_containers, merge_containers_async};
 pub use models::{Hfs0, NcaHeader, Pfs0};
 pub use ncz::NczMode;
+pub(crate) use split::plan_split;
 pub use split::{split_container, split_container_async};
 pub use verify::{NcaVerdict, NxVerifyResult, verify_container, verify_container_async};
 pub use walker::{NcaSection, NcaWalker};

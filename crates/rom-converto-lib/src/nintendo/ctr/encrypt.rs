@@ -139,6 +139,7 @@ pub async fn encrypt_rom_batch(
     run_batch(
         input_dir,
         ENCRYPT_EXTS,
+        false,
         ("Encrypting", "encrypt"),
         max_depth,
         total_progress,

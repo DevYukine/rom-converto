@@ -139,10 +139,10 @@ This rule does not apply to `docs/*.md`, the README, clap help text, UI strings,
 Operations flow lib -> runner -> front ends. A new operation touches all of these:
 
 1. Library: the implementation module, its `error.rs`, and `info`/`verify` support where the format allows it. Unit tests with synthetic fixtures.
-2. Runner: an `OpSpec` row in `runner/ops.rs` `OPS` and a handler in `ops.rs` or one of the `ops_*.rs` files. New options are fields on `RunOptions` in `runner/models.rs`.
+2. Runner: an `OpSpec` row in `runner/ops.rs` `OPS` and a handler in `ops.rs` or one of the `ops_*.rs` files. A row that writes files and recurses also sets `derive_output` (the default output for an input basis) or `batch_output_dir`, which the batch uses to skip two children that would write the same output; a table test checks it, and `cue.merge`, which writes to an explicit output only, is exempt. New options are fields on `RunOptions` in `runner/models.rs`.
 3. CLI echo: rows in `runner/cli_echo.rs` (`FIELDS`, `PATH_FLAGS`, `PATH_OUTPUT`). The test `cli_echo_derivations_parse` in `rom-converto-cli/src/commands/mod.rs` checks that every derived command parses; add required arguments to `REQUIRED_EXTRA` there.
 4. CLI: a subcommand in the family's file under `rom-converto-cli/src/commands/`, new extensions in `ALL_IMAGE_EXTS` (`commands/support.rs`).
-5. GUI: an op definition in `lib/opdefs/*.ts`, a store via `makeOpStore` in `stores/<op>.ts`, regenerated `types/generated`. Add mock data in `lib/ipc-mock.ts` only for a new Tauri command or a new result shape.
+5. GUI: an op definition in `lib/opdefs/*.ts`, a store via `makeOpStore` in `stores/<op>.ts`, regenerated `types/generated`. The def's `acceptedExts` (minus archive extensions) must equal the `input_exts` of the op the page runs, or its `batch_exts` when that is unset, so a folder scan and the job pick the same archive member. A page that toggles between two ops takes the union of their lists (Wii U conversion), and a def whose op stages its inputs itself, such as `nx.merge`, lists what that op reads. Add mock data in `lib/ipc-mock.ts` only for a new Tauri command or a new result shape.
 6. Docs as listed under Documentation, plus the README table if a console or format is new.
 
 The FFI needs no change unless the JSON contract changes.

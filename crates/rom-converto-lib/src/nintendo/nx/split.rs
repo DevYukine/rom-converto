@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use crate::nintendo::nx::container::{detect_container, list_container};
+use crate::nintendo::nx::container::{ContainerKind, detect_container, list_container};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::meta::{merge_inline_tickets, read_meta_cnmt};
@@ -23,8 +23,9 @@ use crate::util::{
 /// byte-verbatim, and returns the written paths.
 ///
 /// # Errors
-/// Returns an error if `input` is a compressed container or a meta NCA
-/// cannot be decrypted with `keys`.
+/// Returns an error if `input` is a compressed container, holds no title
+/// content, is a single-title NSP (a single-title XCI converts), or a meta
+/// NCA cannot be decrypted with `keys`.
 pub fn split_container(
     input: &Path,
     output_dir: &Path,
@@ -32,19 +33,18 @@ pub fn split_container(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> NxResult<Vec<PathBuf>> {
-    let plan = plan_split(input, keys)?;
-    for warning in &plan.warnings {
-        progress.warn(warning);
-    }
+    let plan = settle_plan(plan_split(input, keys)?, input, progress)?;
     write_split(&plan, output_dir, progress, cancel)
 }
 
 /// The per-title source ranges a split will copy, plus the naming inputs
 /// for the output files.
-struct SplitPlan {
+pub(crate) struct SplitPlan {
     groups: BTreeMap<u64, Vec<Pfs0Source>>,
     titles: BTreeMap<u64, TitleInfo>,
     stem: String,
+    /// What the container was detected as, whatever its file name says.
+    kind: ContainerKind,
     /// Planning runs off the reporter (behind a byte-counter proxy under
     /// `spawn_blocking`), so its warnings are replayed by the caller.
     warnings: Vec<String>,
@@ -53,6 +53,18 @@ struct SplitPlan {
 impl SplitPlan {
     fn total_bytes(&self) -> u64 {
         self.groups.values().flatten().map(|s| s.size).sum()
+    }
+
+    /// A single-title container would only be re-copied when the output is
+    /// another NSP, so a detected NSP with one title group is a skip; a
+    /// single-title XCI is a real XCI-to-NSP conversion.
+    pub(crate) fn is_single_title_skip(&self) -> bool {
+        self.groups.len() == 1 && self.kind == ContainerKind::Nsp
+    }
+
+    /// The planner's warnings, replayed by the caller that owns the reporter.
+    pub(crate) fn warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     fn output_paths(&self, output_dir: &Path) -> Vec<PathBuf> {
@@ -77,7 +89,14 @@ impl SplitPlan {
     }
 }
 
-fn plan_split(input: &Path, keys: &KeySet) -> NxResult<SplitPlan> {
+/// The split plan for `input`: one source group per title. Never refuses a
+/// plan; callers decide what to refuse with [`SplitPlan::is_single_title_skip`]
+/// and the group count.
+///
+/// # Errors
+/// Returns an error if `input` is a compressed container or unreadable, or
+/// a meta NCA cannot be decrypted with `keys`.
+pub(crate) fn plan_split(input: &Path, keys: &KeySet) -> NxResult<SplitPlan> {
     let kind = detect_container(input)?;
     if kind.is_compressed() {
         return Err(NxError::CompressedInputUnsupported(input.to_path_buf()));
@@ -168,8 +187,29 @@ fn plan_split(input: &Path, keys: &KeySet) -> NxResult<SplitPlan> {
         groups,
         titles,
         stem,
+        kind,
         warnings,
     })
+}
+
+/// Replays the plan's warnings and settles the two plans a split refuses:
+/// an empty container and, for an NSP input, a single title that would only
+/// be re-copied. A single-title XCI still converts to one NSP.
+fn settle_plan(
+    plan: SplitPlan,
+    input: &Path,
+    progress: &dyn ProgressReporter,
+) -> NxResult<SplitPlan> {
+    for warning in plan.warnings() {
+        progress.warn(warning);
+    }
+    if plan.groups.is_empty() {
+        return Err(NxError::NoContentInInput(input.to_path_buf()));
+    }
+    if plan.is_single_title_skip() {
+        return Err(NxError::SingleTitle);
+    }
+    Ok(plan)
 }
 
 fn write_split(
@@ -211,10 +251,9 @@ pub async fn split_container_async(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> NxResult<Vec<PathBuf>> {
-    let plan = tokio::task::spawn_blocking(move || plan_split(&input, &keys)).await??;
-    for warning in &plan.warnings {
-        progress.warn(warning);
-    }
+    let planned_input = input.clone();
+    let planned = tokio::task::spawn_blocking(move || plan_split(&input, &keys)).await??;
+    let plan = settle_plan(planned, &planned_input, progress)?;
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
     }
@@ -275,7 +314,7 @@ mod tests {
     };
     use crate::nintendo::nx::models::pfs0::Pfs0;
     use crate::nintendo::nx::test_fixtures::{
-        WarnRecorder, build_meta_nca, build_test_nsp, synthetic_keyset,
+        WarnRecorder, build_meta_nca, build_test_nsp, build_test_xci, synthetic_keyset,
     };
     use crate::util::NoProgress;
     use std::io::{Cursor, Write};
@@ -439,6 +478,14 @@ mod tests {
             prog(id(0x11), 0x800),
             meta_file(id(0x02), title, 0x30000, CNMT_TYPE_PATCH, &[id(0x22)]),
             prog(id(0x22), 0x800),
+            meta_file(
+                id(0x03),
+                0x0100_CCCC_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x33)],
+            ),
+            prog(id(0x33), 0x800),
         ]);
         let dir = tempdir().unwrap();
         let out = split_container(
@@ -449,8 +496,13 @@ mod tests {
             &CancelToken::new(),
         )
         .unwrap();
-        assert_eq!(out.len(), 1);
-        let name = out[0].file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(out.len(), 2);
+
+        let name = out
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .find(|name| name.contains("[0100DDDD00000800]"))
+            .unwrap();
         assert!(name.contains("[v196608]"), "{name}");
     }
 
@@ -465,6 +517,14 @@ mod tests {
                 &[id(0x11)],
             ),
             prog(id(0x11), 0x800),
+            meta_file(
+                id(0x02),
+                0x0100_BBBB_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x22)],
+            ),
+            prog(id(0x22), 0x800),
             (format!("{}.nca", hex::encode(id(0x99))), vec![0u8; 0x400]),
         ]);
         let dir = tempdir().unwrap();
@@ -477,8 +537,13 @@ mod tests {
             &CancelToken::new(),
         )
         .unwrap();
-        assert_eq!(out.len(), 1);
-        assert_eq!(nsp_names(&out[0]), {
+        assert_eq!(out.len(), 2);
+        let names = out
+            .iter()
+            .map(|path| nsp_names(path))
+            .find(|names| names.contains(&format!("{}.cnmt.nca", hex::encode(id(0x01)))))
+            .unwrap();
+        assert_eq!(names, {
             let mut v = vec![
                 format!("{}.cnmt.nca", hex::encode(id(0x01))),
                 format!("{}.nca", hex::encode(id(0x11))),
@@ -518,6 +583,14 @@ mod tests {
                 &[id(0x11)],
             ),
             prog(id(0x11), 0x800),
+            meta_file(
+                id(0x02),
+                0x0100_BBBB_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x22)],
+            ),
+            prog(id(0x22), 0x800),
         ]);
         let dir = tempdir().unwrap();
         let cancel = CancelToken::new();
@@ -545,6 +618,14 @@ mod tests {
                 &[id(0x11)],
             ),
             prog(id(0x11), 0x800),
+            meta_file(
+                id(0x02),
+                0x0100_BBBB_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x22)],
+            ),
+            prog(id(0x22), 0x800),
             (format!("{}.nca", hex::encode(id(0x99))), vec![0u8; 0x400]),
         ]);
         let dir = tempdir().unwrap();
@@ -558,7 +639,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(out.len(), 1);
+        assert_eq!(out.len(), 2);
         let warnings = recorder.warnings.lock().unwrap();
         assert!(
             warnings
@@ -566,6 +647,90 @@ mod tests {
                 .any(|w| w.contains(&hex::encode(id(0x99))) && w.contains("skipping")),
             "{warnings:?}"
         );
+    }
+
+    #[test]
+    fn single_title_container_is_refused_without_writes() {
+        let nsp = write_nsp(&[
+            meta_file(
+                id(0x01),
+                0x0100_FFFF_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x11)],
+            ),
+            prog(id(0x11), 0x800),
+        ]);
+        let dir = tempdir().unwrap();
+        let err = split_container(
+            nsp.path(),
+            dir.path(),
+            &synthetic_keyset(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, NxError::SingleTitle));
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// A single-title XCI is a real XCI-to-NSP conversion, not a skip: the
+    /// one title group is written out.
+    #[test]
+    fn single_title_xci_converts_instead_of_skipping() {
+        let ncas = [
+            meta_file(
+                id(0x01),
+                0x0100_FFFF_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x11)],
+            ),
+            prog(id(0x11), 0x800),
+        ];
+        let mut xci = Builder::new().suffix(".xci").tempfile().unwrap();
+        std::io::Write::write_all(&mut xci, &build_test_xci(&ncas)).unwrap();
+        xci.flush().unwrap();
+        let dir = tempdir().unwrap();
+        let out = split_container(
+            xci.path(),
+            dir.path(),
+            &synthetic_keyset(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].extension().is_some_and(|ext| ext == "nsp"));
+    }
+
+    /// The skip follows the detected container, not the file name: an NSP
+    /// saved as `.xci` is still a pointless re-copy.
+    #[test]
+    fn single_title_nsp_named_xci_is_still_skipped() {
+        let nsp = write_nsp(&[
+            meta_file(
+                id(0x01),
+                0x0100_FFFF_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x11)],
+            ),
+            prog(id(0x11), 0x800),
+        ]);
+        let renamed = nsp.path().with_extension("xci");
+        std::fs::copy(nsp.path(), &renamed).unwrap();
+        let dir = tempdir().unwrap();
+        let err = split_container(
+            &renamed,
+            dir.path(),
+            &synthetic_keyset(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        let _ = std::fs::remove_file(&renamed);
+        assert!(matches!(err, NxError::SingleTitle));
     }
 
     #[test]

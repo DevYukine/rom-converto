@@ -2,8 +2,8 @@ use clap::{ArgGroup, Parser};
 use std::path::PathBuf;
 
 use crate::commands::support::{
-    ALL_IMAGE_EXTS, DispatchCtx, collect_info_batch_files, read_info_paths_file,
-    require_info_input, run_info_batch, save_info_icon,
+    DispatchCtx, collect_info_batch_files, info_for_batch_entry, read_info_paths_file,
+    require_info_input, run_info_batch,
 };
 use crate::info_print;
 use crate::util::ensure_input_exists;
@@ -43,7 +43,7 @@ pub struct InfoCommand {
 
 /// Runs one `info` subcommand.
 pub async fn run(cmd: InfoCommand, ctx: DispatchCtx<'_>) -> Result<()> {
-    let DispatchCtx { .. } = ctx;
+    let DispatchCtx { cancel, .. } = ctx;
     let opts = rom_converto_lib::info::InfoOptions {
         keys_path: cmd.keys.clone(),
         parent_path: None,
@@ -53,7 +53,12 @@ pub async fn run(cmd: InfoCommand, ctx: DispatchCtx<'_>) -> Result<()> {
     } else {
         let input = require_info_input(&cmd.input)?;
         if cmd.batch && input.is_dir() {
-            let paths = collect_info_batch_files(input)?;
+            let dir = input.to_path_buf();
+            let paths = {
+                let cancel = cancel.clone();
+                tokio::task::spawn_blocking(move || collect_info_batch_files(&dir, &cancel))
+                    .await??
+            };
             if paths.is_empty() {
                 anyhow::bail!("no supported files found under {}", input.display());
             }
@@ -64,15 +69,26 @@ pub async fn run(cmd: InfoCommand, ctx: DispatchCtx<'_>) -> Result<()> {
     };
 
     if let Some(paths) = batch_paths {
-        run_info_batch(&paths, &opts, cmd.json, cmd.save_icon.as_deref());
+        let save_icon = cmd.save_icon.clone();
+        let json = cmd.json;
+        // `run_info_batch` is sync and prints to stdout, so it must stay off
+        // the runtime; the staged member dirs it reads live inside it.
+        tokio::task::spawn_blocking(move || {
+            run_info_batch(&paths, &opts, json, save_icon.as_deref(), &cancel)
+        })
+        .await??;
     } else {
         let input = require_info_input(&cmd.input)?;
         ensure_input_exists(input)?;
-        let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
-        let info = rom_converto_lib::info::read_info(resolved.path(), &opts)?;
-        if let Some(dir) = &cmd.save_icon {
-            save_info_icon(&info, dir)?;
-        }
+        let input = input.to_path_buf();
+        let save_icon = cmd.save_icon.clone();
+        // Resolve, read and icon export share one blocking section: the
+        // staged member dir the info read holds never crosses back onto the
+        // runtime between steps.
+        let info = tokio::task::spawn_blocking(move || {
+            info_for_batch_entry(&input, &opts, save_icon.as_deref())
+        })
+        .await??;
         info_print::print(&info, cmd.json)?;
     }
     Ok(())

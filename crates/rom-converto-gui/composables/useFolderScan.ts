@@ -1,6 +1,6 @@
 import { invoke } from "~/lib/ipc";
 
-export function useFolderScan(exts: string[]) {
+export function useFolderScan(exts: string[], skipTwins: boolean) {
   // Returns null when the path is not a scannable directory. A successful
   // scan is authoritative even when it finds nothing, so callers can tell an
   // empty directory apart from a plain file.
@@ -10,6 +10,7 @@ export function useFolderScan(exts: string[]) {
         dir: path,
         exts,
         maxDepth,
+        skipTwins,
       });
     } catch {
       return null;

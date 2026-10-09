@@ -15,7 +15,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA); convert WUD and WUX disc images |
-| `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split unpacked NSP/XCI |
+| `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split uncompressed NSP/XCI |
 | `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
@@ -112,6 +112,16 @@ With `overwrite-invalid`, the preview reads and verifies an existing output befo
 Recursive `ctr` batches show resolved output paths;
 recursive `ctr cdn-to-cia` also shows each conflict decision.
 
+A conversion dry run lists an archive without extracting it, with two exceptions: `chd extract`,
+and any run with an output template, read the member to plan the output, so they extract it
+to a temporary directory that is removed afterward. Verification, `hash`, and `info` have no
+plan to make, so they run normally and extract under `--dry-run` too. A `dol`, `rvl`, or
+`chd` `migrate` dry run reads only the header of a zip, 7z, or tar member:
+`chd migrate` refuses a v5 or newer CHD and a member that is not a CHD, the others refuse
+a member that is not a GCZ, WIA, or NKit image. A RAR member cannot be read partially, so
+its check runs after staging and a dry run plans it. `chd verify --fix --dry-run` verifies
+without rewriting the header.
+
 ### Verbosity
 
 `-v` shows debug messages, `-vv` shows rom-converto trace messages, and `-vvv` includes
@@ -134,18 +144,52 @@ size or modification time changes. DAT commands still query the remote database.
 
 ### Archive input
 
-`nx merge`, `nx split`, and `xenon convert` require unpacked inputs in the CLI.
+Every command that takes one input file can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`,
+and `.tgz` archives: conversion, extraction, verification, and info under `ctr`, `dol`,
+`rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `vita`, `xbox`, and `xenon`,
+including `nx merge`, `nx split`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
+and `dat identify`. Commands that take a directory, such as `wup decrypt` and
+`ctr cdn-to-cia`, cannot.
 
-Single-file operations can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`, and `.tgz`
-archives. This applies to conversion, extraction, verification, and info under `ctr`, `dol`,
-`rvl`, `nx`, `chd`, `cso`, `wup`, and `ps3`, including `chd to-cso`, `cso to-chd`,
-`wup to-wux`, and `wup to-wud`. It also applies to `hash`, `dat verify`, and `dat identify`.
+The first matching member in name order is extracted to a temporary directory, with a cue
+or gdi sheet first and a `.md` member last. Cue and GDI track files are extracted with
+their sheet. Output is named after the member and written next to the archive unless another
+output path is set; directory outputs (`nx split`, `xenon convert`) and `nx merge` are named
+after the archive. An archive holding several matching members converts only the first and
+logs a warning, also for the archives a recursive run keeps. Encrypted archives and plain `.gz` files are unsupported. RAR input is read
+only. The temp filesystem needs room for the unpacked input.
 
-The first matching member in name order is extracted to a temporary directory. Cue track
-files are extracted with their cue sheet. Output is named after the member and written next
-to the archive unless another output path is set. Recursive walkers do not open archives.
-Encrypted archives and plain `.gz` files are unsupported. RAR input is read only. The temp
-filesystem needs room for the unpacked input.
+Recursive runs (`-R`, `info --batch`) open archives too: an archive counts as an input when
+the member picked by name order carries one of the extensions the command scans, and the
+report row names the archive. A member with an extension the command does not scan can win
+that pick, so an archive holding `a.avi` and `b.iso` is left out of `chd compress -R`.
+Archives without such a member and `.part2.rar` and later volumes of a split set are
+skipped, except under `hash -R`, which hashes them as raw bytes. An archive that cannot be
+read fails as its own row, except under `hash -R` for the same reason.
+
+A conversion leaves out an archive whose member also sits unpacked beside it, in favor of
+the plain file. This is logged but has no report row, and it also applies under
+`--on-conflict rename` and `--output-template`. Verification, `hash`, and `info` keep both
+the archive and its unpacked twin.
+
+A conversion also skips an input that would write the same output as another one, with a
+report row that names that input: the first one that succeeds keeps the output, and a plain
+file is decided before an archive. With `--on-conflict overwrite`, it also skips an input
+whose output is another input of the run, such as the `game.cia` that converting `game.3ds`
+would produce while `game.cia` is itself an input; with `--output-dir`, that is checked
+against the mirrored output path. Other policies keep or verify an existing output
+themselves. Output names compare without regard to case, but not to Unicode normalization.
+`--on-conflict rename` turns both checks off, since each input gets its own name, and so
+does an `--output-template`: the rendered paths are not known in advance, and a collision
+between them follows `--on-conflict`.
+
+`hash` hashes the member of an archive that holds a known image (cue and gdi sheets do not
+count) and the archive bytes otherwise; `hash -R` does the same for every file it walks.
+`chd verify --fix` needs a plain `.chd`: a recursive `--fix` run walks plain files only,
+with or without `--dry-run`, and a single archive input is rejected. The batch disk-space
+preflight counts an archive at its packed size; the per-file check before each write uses
+the extracted member. `nx merge` opens each of its inputs. `playlist` and
+`chd migrate --in-place -R` never open archives.
 
 ### Run reports
 
@@ -407,7 +451,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `decompress <INPUT> [-o OUTPUT]` | Restore NSZ/XCZ to NSP/XCI |
 | `decrypt <INPUT> [-o OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
 | `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
-| `split <INPUT> [--output-dir DIR]` | Write one NSP per title from an NSP or XCI |
+| `split <INPUT> [--output-dir DIR] [-R]` | Write one NSP per title from an NSP or XCI, or from every one under a directory |
 | `verify <INPUT>` | Check NCA hashes, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
@@ -420,6 +464,9 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `split` | Choose the output directory |
 | `--format <nsp\|xci>` | `merge` | Default NSP. XCI output requires every input to be an XCI |
 | `--on-conflict <POLICY>`, `-f, --force` | `merge`, `split` | Default `error`; `-f` means overwrite. The flags conflict |
+| `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Process every container found in `INPUT` and its subdirectories |
+| `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Maximum directory depth under `--recursive`. 1 = top level only |
+| `--report <FILE>` | `compress`, `decompress`, `decrypt`, `split` | Write a run report. See [Run reports](#run-reports) |
 
 A valid `prod.keys` is required and is never modified. Merge and split accept only
 uncompressed NSP/XCI inputs; decompress NSZ/XCZ first.
@@ -462,9 +509,18 @@ Default outputs:
 - The configured `[nx].output_dir`, including presets, overrides those directories.
   An explicit `-o` (merge) or `--output-dir` (split) takes precedence.
 
-Neither command supports recursion, reports, output templates, or a positional output.
-Merge has no `--output-dir` flag; use `-o`. Configured conflict policies are not used:
-set `--on-conflict` or `-f` on the command.
+Split skips an NSP that holds a single title: there is nothing to split, and the
+skip keeps a rerun of `nx split -R` from splitting its own outputs again. A
+single-title XCI still converts to one NSP. The title count is read before anything
+is staged or written, so a dry run reports the skip too; without usable `prod.keys`
+the dry run plans the container instead. This early check covers plain NSP files only: an
+archive is staged first, and its dry run plans a write.
+
+Merge supports neither recursion, reports, output templates, nor a positional output.
+Merge has no `--output-dir` flag; use `-o`. Split takes `-R`, `--max-depth`, and
+`--report`; with `-R`, `--output-dir` is the directory under which each input gets its own
+`<stem>_split` directory, mirroring the scanned tree. Configured conflict policies are not
+used: set `--on-conflict` or `-f` on the command.
 
 `overwrite-invalid` acts as `skip` because these commands do not verify existing
 outputs. Split rejects `rename` in the CLI. Its overwrite mode reuses the directory,
@@ -474,6 +530,7 @@ replacing planned NSP files while leaving unrelated files in place.
 rom-converto nx merge base.nsp update.nsp dlc.nsp --keys prod.keys -o merged.nsp
 rom-converto nx merge base.xci update.xci --format xci -o merged.xci
 rom-converto nx split merged.nsp --output-dir ./titles
+rom-converto nx split ./merged -R --output-dir ./titles
 rom-converto nx decrypt game.nsp --keys prod.keys
 ```
 
@@ -531,7 +588,7 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `--output-dir <DIR>` | `compress`, `migrate`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
 | `-p, --parent <PARENT>` | `extract`, `verify` | Specify a parent CHD for parent-child relationships |
-| `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found |
+| `--fix` | `verify` | Correct SHA-1 values in the CHD header if mismatches are found. Needs a plain `.chd`: an archive input is rejected, and `-R --fix` walks plain files only |
 
 `compress` probes the media type from the image: a `.cue` is CD mode, an `.iso` is CD or DVD
 mode depending on the detected console, and an `.avi` is LD mode, the `createld` equivalent.
@@ -739,7 +796,7 @@ rom-converto xenon <SUBCOMMAND> <INPUT>
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Pack a disc ISO or extracted game folder into ZAR |
-| `convert <INPUT> [OUTPUT_DIR]` | Convert a disc ISO to an unsigned Games on Demand install tree |
+| `convert <INPUT> [OUTPUT_DIR]` | Convert a disc ISO, or every disc ISO under a directory with `-R`, to an unsigned Games on Demand install tree |
 | `extract <INPUT> <OUTPUT_DIR>` | Extract ZAR files |
 | `verify <INPUT>` | Verify a ZAR archive |
 | `info <INPUT>` | Inspect Xbox 360 disc or archive metadata. See [info](#info) |
@@ -754,14 +811,18 @@ from `default.xex` when present. `--save-icon <DIR>` saves the icon as `<title_i
 
 | Flag | Description |
 |---|---|
-| `--title <NAME>` | Override the display title read from `default.xex` |
+| `--title <NAME>` | Override the display title read from `default.xex`. Conflicts with `-R` |
+| `--output-dir <DIR>` | Write each `<stem>_god` tree under this directory, mirroring the scanned tree with `-R`. Without `-R` it behaves like the positional `OUTPUT_DIR` |
+| `-R, --recursive` | Convert every `.iso` found in `INPUT` and its subdirectories. Conflicts with the positional `OUTPUT_DIR` |
+| `--max-depth <N>` | Maximum directory depth under `--recursive`. 1 = top level only |
+| `--report <FILE>` | Write a run report. See [Run reports](#run-reports) |
 | `--on-conflict <POLICY>` | Choose how to handle an existing output directory |
 | `-f, --force` | Overwrite; conflicts with `--on-conflict` |
 
-`convert` requires a disc ISO with a root `default.xex`; extracted folders and archives
-are not accepted by the CLI. The optional output directory is positional. There is no
-`-o`, recursion, output-template, report, or GoD verification option. No key file is
-required. The default output is `<stem>_god` beside the input.
+`convert` requires a disc ISO with a root `default.xex`, as a plain file or inside an
+archive; extracted folders are not accepted by the CLI. There is no `-o`, output-template,
+or GoD verification option. No key file is required. The default output is `<stem>_god`
+beside the input, one tree per input under `-R`.
 
 The output has a header at `<TITLEID>/00007000/<MEDIAID>` and parts under
 `<MEDIAID>.data/DataNNNN`. It trims unused disc data and adds hashes, without compression.
@@ -775,6 +836,7 @@ titles in the tree.
 ```sh
 rom-converto xenon convert game.iso
 rom-converto xenon convert game.iso ./god --title "Game title" --dry-run
+rom-converto xenon convert ./isos -R --output-dir ./god
 ```
 
 ## psp (PSP EBOOT.PBP)
@@ -1194,12 +1256,14 @@ rom-converto hash <INPUT> [--algo crc32,sha1,md5,sha256] [-R] [--max-depth N] [-
 
 Compute plain checksums for a file, or for every file in a directory with `-R`. This is a
 digest tool only: it reads the bytes and prints the hashes, with no DAT or database lookup.
+An archive that holds a known image is hashed by that member (see
+[Archive input](#archive-input)); any other archive is hashed as a file.
 
 | Flag | Description |
 |---|---|
 | `<INPUT>` | A file, or a directory with `-R` |
 | `--algo <ALGOS>` | Comma-separated digests: `crc32`, `sha1`, `md5`, `sha256`. Default `crc32,sha1` |
-| `-R`, `--recursive` | Hash every file under INPUT, descending into subdirectories |
+| `-R`, `--recursive` | Hash every file under INPUT, descending into subdirectories. Archives holding a known image are opened |
 | `--max-depth <N>` | Limit recursion depth when `-R` is set. `1` = top level only. Requires `-R` |
 | `--report <FILE>` | Write a run report. See [Run reports](#run-reports) |
 
@@ -1254,7 +1318,7 @@ returns the same data as structured JSON. Encrypted 3DS CIA headers are read in 
 | Flag | Description |
 |---|---|
 | `--json` | Emit a machine-readable payload instead of the formatted report |
-| `--batch` | Generic `info` only. Recursively inspect every supported file under directory `INPUT` instead of reading it as one title |
+| `--batch` | Generic `info` only. Recursively inspect every supported file under directory `INPUT` instead of reading it as one title. Archives holding a supported file are opened |
 | `--paths-file <FILE>` | Generic `info` only. Read one input path per line; skip blank lines and `#` comments. Conflicts with `INPUT` |
 | `--save-icon <DIR>` | Write embedded artwork to `DIR`. Supported for `ctr`, `dol`, `rvl`, `nx`, `wup`, `xbox`, `xenon`, `ps3`, PSP images, VPK, and PKG files (PSP, PS3, Vita, PS4, PS5) |
 | `--keys <FILE>` | `prod.keys` for `nx info`, a disc master key file for `wup info` on `.wud`/`.wux` (optional), or a `.dkey` file for `ps3 info`. Other consoles do not use it |

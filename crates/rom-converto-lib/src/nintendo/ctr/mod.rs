@@ -656,6 +656,7 @@ pub async fn decrypt_rom_batch(
     run_batch(
         input_dir,
         DECRYPT_EXTS,
+        false,
         ("Decrypting", "decrypt"),
         max_depth,
         total_progress,

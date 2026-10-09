@@ -165,8 +165,8 @@ export const compressOps: OpDef[] = [
 		optionsTitle: "Compression",
 		subtitle: "Output is nsz-compatible. Requires prod.keys.",
 		dropText: "Drop NSP or XCI files or folders. Archives (.zip, .7z, .rar) work too",
-		acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
-		browseFilters: [{ name: "Switch", extensions: ["nsp", "xci", ...ARCHIVE_EXTS] }],
+		acceptedExts: ["nsp", "xci", "nca", ...ARCHIVE_EXTS],
+		browseFilters: [{ name: "Switch", extensions: ["nsp", "xci", "nca", ...ARCHIVE_EXTS] }],
 		fields: [
 			{
 				kind: "slider",

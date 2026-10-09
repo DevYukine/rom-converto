@@ -3,10 +3,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 use crate::batch;
-use crate::commands::support::{ALL_IMAGE_EXTS, DispatchCtx, hash_single, require_dir};
+use crate::commands::support::{DispatchCtx, hash_single, require_dir};
 use crate::util::ensure_input_exists;
 use anyhow::Result;
-use rom_converto_lib::util::parse_algos;
+use rom_converto_lib::util::{HASH_MEMBER_EXTS, parse_algos, resolve_for_hash};
 
 /// Compute checksums for a file or, with --recursive, every file in a directory
 ///
@@ -25,7 +25,7 @@ pub struct HashCommand {
     #[arg(long, value_name = "ALGOS", default_value = "crc32,sha1")]
     pub algo: String,
 
-    /// Hash every file in INPUT, descending into subdirectories
+    /// Hash every file in INPUT, descending into subdirectories. Archives holding a known image are opened
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -39,6 +39,7 @@ pub async fn run(cmd: crate::commands::hash::HashCommand, ctx: DispatchCtx<'_>) 
         progress,
         total_progress,
         cache,
+        cancel,
         ..
     } = ctx;
     let algos = parse_algos(&cmd.algo).map_err(|e| anyhow::anyhow!(e))?;
@@ -52,17 +53,30 @@ pub async fn run(cmd: crate::commands::hash::HashCommand, ctx: DispatchCtx<'_>) 
             cmd.batch.max_depth,
             cmd.batch.report.as_deref(),
             cache,
+            &cancel,
         )
         .await?;
     } else {
         ensure_input_exists(&cmd.input)?;
-        let resolved = rom_converto_lib::util::resolve_input(&cmd.input, ALL_IMAGE_EXTS)?;
+        let input = cmd.input.clone();
+        let resolved =
+            tokio::task::spawn_blocking(move || resolve_for_hash(&input, &HASH_MEMBER_EXTS))
+                .await??;
+        // A staged member lives in a temp dir and its digests are the
+        // member's, not the archive's: the path-keyed cache must neither
+        // answer for nor record it. `None` hashed the raw bytes at the
+        // walked path, which the cache may serve.
+        let cached = resolved.is_none().then(|| &**cache);
+        let source = resolved
+            .as_ref()
+            .map_or_else(|| cmd.input.clone(), |r| r.path().to_path_buf());
         hash_single(
             &progress,
-            resolved.path(),
+            &cmd.input,
+            &source,
             &algos,
             cmd.batch.report.as_deref(),
-            cache,
+            cached,
         )?;
     }
     Ok(())

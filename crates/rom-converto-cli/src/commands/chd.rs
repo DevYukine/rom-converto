@@ -414,6 +414,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     None,
                     cmd.batch.max_depth,
                     true,
+                    &cancel,
                 )
                 .await
                 .map_err(Into::into);
@@ -483,18 +484,26 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     &progress,
                     &total_progress,
                     cmd.input,
+                    cmd.fix && !dry_run,
                     cmd.fix,
                     cmd.max_depth,
+                    &cancel,
                 )
                 .await?
             } else {
                 ensure_input_exists(&cmd.input)?;
+                if cmd.fix && rom_converto_lib::util::is_archive_path(&cmd.input) {
+                    anyhow::bail!(
+                        "--fix needs a plain .chd, not an archive: {}",
+                        cmd.input.display()
+                    );
+                }
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
                 verify_chd(
                     &progress,
                     resolved.path().to_path_buf(),
                     cmd.parent,
-                    cmd.fix,
+                    cmd.fix && !dry_run,
                     CancelToken::new(),
                 )
                 .await?

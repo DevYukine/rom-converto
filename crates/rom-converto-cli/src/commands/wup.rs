@@ -334,7 +334,14 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         WupCommands::Verify(cmd) => {
             if cmd.recursive {
                 require_dir(&cmd.input)?;
-                batch::wup_verify(&progress, &total_progress, &cmd.input, cmd.max_depth).await?
+                batch::wup_verify(
+                    &progress,
+                    &total_progress,
+                    &cmd.input,
+                    cmd.max_depth,
+                    &cancel,
+                )
+                .await?
             } else {
                 ensure_input_exists(&cmd.input)?;
                 let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["wud", "wux"])?;

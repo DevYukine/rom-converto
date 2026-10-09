@@ -61,8 +61,8 @@ export const verifyOps: OpDef[] = [
 		title: "Verify GameCube files",
 		subtitle: SUBTITLE,
 		dropText: DROP_TEXT,
-		acceptedExts: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"],
-		browseFilters: [{ name: "GameCube disc", extensions: ["iso", "gcm", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
+		acceptedExts: ["iso", "gcm", "rvz", "gcz", "zip", "7z", "rar", "tar", "tgz", "gz"],
+		browseFilters: [{ name: "GameCube disc", extensions: ["iso", "gcm", "rvz", "gcz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
 		fields: [
 			{
 				kind: "toggle",
@@ -94,8 +94,8 @@ export const verifyOps: OpDef[] = [
 		title: "Verify Wii files",
 		subtitle: SUBTITLE,
 		dropText: DROP_TEXT,
-		acceptedExts: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"],
-		browseFilters: [{ name: "Wii disc", extensions: ["iso", "wbfs", "rvz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
+		acceptedExts: ["iso", "wbfs", "rvz", "wia", "gcz", "zip", "7z", "rar", "tar", "tgz", "gz"],
+		browseFilters: [{ name: "Wii disc", extensions: ["iso", "wbfs", "rvz", "wia", "gcz", "zip", "7z", "rar", "tar", "tgz", "gz"] }],
 		fields: [
 			{
 				kind: "toggle",
@@ -164,9 +164,9 @@ export const verifyOps: OpDef[] = [
 		title: "Verify Switch files",
 		subtitle: SUBTITLE,
 		dropText: DROP_TEXT,
-		acceptedExts: ["nsp", "nsz", "xci", "xcz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"],
+		acceptedExts: ["nsp", "nsz", "xci", "xcz", "nca", "ncz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"],
 		browseFilters: [
-			{ name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"] },
+			{ name: "Switch container", extensions: ["nsp", "nsz", "xci", "xcz", "nca", "ncz", "dnsp", "dxci", "zip", "7z", "rar", "tar", "tgz", "gz"] },
 		],
 		fields: [
 			{

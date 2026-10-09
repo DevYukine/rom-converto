@@ -30,8 +30,44 @@ use crate::util::{
     space_shortfall, spawn_blocking_with_progress, verify_existing_cached, verify_existing_output,
 };
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// The case-folded output one batch child would claim, for duplicate
+/// detection: the derived directory of a directory-output operation, else
+/// the operation's default output derived from the child's output basis (the
+/// walked file itself, or the archive member the run stages). Case-insensitive
+/// volumes treat names that differ only in case as one. An archive whose
+/// listing failed has no member to name, so it claims nothing.
+fn batch_output_key(op: &OpSpec, path: &Path, output_basis: &Path) -> Option<String> {
+    if !op.writes_output {
+        return None;
+    }
+    let claim = match (op.batch_output_dir, op.derive_output) {
+        (Some(derive), _) => derive(path),
+        (None, Some(_)) if crate::util::is_archive_path(path) && output_basis == path => {
+            return None;
+        }
+        (None, Some(derive)) => derive(output_basis),
+        (None, None) => return None,
+    };
+    Some(claim.to_string_lossy().to_lowercase())
+}
+
+/// The output of a directory-output child: the derived directory name for
+/// `input`, placed under `output_dir` when one is set.
+fn batch_dir_output(
+    derive: fn(&Path) -> PathBuf,
+    input: &Path,
+    output_dir: Option<PathBuf>,
+) -> PathBuf {
+    let derived = derive(input);
+    match output_dir {
+        Some(dir) => dir.join(derived.file_name().unwrap_or_default()),
+        None => derived,
+    }
+}
 
 pub(crate) type OpFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<RunResponse>> + 'a>>;
@@ -43,6 +79,10 @@ pub(crate) struct OpSpec {
     name: &'static str,
     aliases: &'static [&'static str],
     batch_exts: Option<&'static [&'static str]>,
+    /// Directory-output operations: the per-input output directory a
+    /// recursive run derives, placed under the mirrored output directory
+    /// when one is set.
+    batch_output_dir: Option<fn(&Path) -> PathBuf>,
     /// Extensions an archive input is searched for; `None` reuses
     /// `batch_exts`. A few operations read formats a recursive run does not
     /// scan for: a legacy container or a LaserDisc source is a valid single
@@ -50,8 +90,15 @@ pub(crate) struct OpSpec {
     input_exts: Option<&'static [&'static str]>,
     /// False for read-only operations, which need no output space.
     writes_output: bool,
+    /// Default output a recursive child derives from its input basis, used
+    /// to detect two children writing the same output; the handler derives
+    /// the same path when it runs. `None` for read-only operations and for
+    /// directory-output operations, which claim `batch_output_dir` instead.
+    /// A format option that only renames the extension (cso/zso) is keyed
+    /// on the default, which cannot change who collides.
+    derive_output: Option<fn(&Path) -> PathBuf>,
     /// Bytes the output needs when the source file's own size is the wrong
-    /// estimate: a decoded ISO, a merge's inputs, a source tree.
+    /// estimate: a decoded ISO, a source tree.
     required_bytes: Option<fn(&RunRequest, &Path) -> u64>,
     run: for<'a> fn(RunRequest, &'a dyn ProgressReporter, CancelToken) -> OpFuture<'a>,
 }
@@ -62,8 +109,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(cso_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -71,8 +120,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cso", "zso", "dax"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("iso")),
         run: |req, progress, cancel| Box::pin(cso_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -80,7 +131,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cso", "zso", "dax"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(cso_verify(req, progress, cancel)),
     },
@@ -89,12 +142,14 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["cso.to-chd"],
         batch_exts: Some(&["cso", "zso", "dax"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: Some(|_, source| {
             crate::cso::info::read_info(source)
                 .map(|info| info.uncompressed_size)
                 .unwrap_or_else(|_| file_len(source))
         }),
+        derive_output: Some(|basis: &Path| basis.with_extension("chd")),
         run: |req, progress, cancel| Box::pin(cso_to_chd(req, progress, cancel)),
     },
     OpSpec {
@@ -102,8 +157,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "cue", "gdi"]),
         input_exts: Some(&["iso", "cue", "gdi", "avi"]),
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("chd")),
         run: |req, progress, cancel| Box::pin(chd_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -111,8 +168,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["chd"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::disc::chd::migrated_chd_path),
         run: |req, progress, cancel| Box::pin(chd_migrate(req, progress, cancel)),
     },
     OpSpec {
@@ -120,8 +179,13 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["chd"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        // Only a collision key: the real extension depends on the CHD's
+        // flavor, which the walk cannot read. Two inputs naming one basis
+        // still collide on it.
+        derive_output: Some(std::path::Path::to_path_buf),
         run: |req, progress, cancel| Box::pin(chd_extract(req, progress, cancel)),
     },
     OpSpec {
@@ -129,7 +193,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["chd"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(chd_verify(req, progress, cancel)),
     },
@@ -138,12 +204,14 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["chd.to-cso"],
         batch_exts: Some(&["chd"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: Some(|_, source| {
             crate::disc::chd::info::read_info(source)
                 .map(|info| info.logical_bytes)
                 .unwrap_or_else(|_| file_len(source))
         }),
+        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(chd_to_cso(req, progress, cancel)),
     },
     OpSpec {
@@ -151,8 +219,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "gcm"]),
         input_exts: Some(&["iso", "gcm", "gcz"]),
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -160,8 +230,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["rvz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -169,8 +241,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["gcz", "iso"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, DOL_MIGRATE_FORMATS))
         },
@@ -180,7 +254,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "gcm", "rvz", "gcz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dol_verify(req, progress, cancel)),
     },
@@ -189,8 +265,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "wbfs"]),
         input_exts: Some(&["iso", "wbfs", "gcz", "wia"]),
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -198,8 +276,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["rvz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -207,8 +287,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["wia", "gcz", "iso"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, ALL_MIGRATE_FORMATS))
         },
@@ -218,7 +300,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "wbfs", "rvz", "wia", "gcz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(rvl_verify(req, progress, cancel)),
     },
@@ -227,8 +311,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso", "gcm", "wbfs"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -236,8 +322,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["rvz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -245,8 +333,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["wia", "gcz", "iso"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, ALL_MIGRATE_FORMATS))
         },
@@ -256,8 +346,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["ctr.cdn-to-cia"],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("cia")),
         run: |req, progress, cancel| Box::pin(ctr_cdn_to_cia(req, progress, cancel)),
     },
     OpSpec {
@@ -265,7 +357,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["ctr.generate-cdn-ticket"],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(ctr_generate_cdn_ticket(req, progress, cancel)),
     },
@@ -274,8 +368,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cia", "3ds", "cci", "cxi"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ctr::derive_decrypted_path),
         run: |req, progress, cancel| Box::pin(ctr_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -283,8 +379,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cia", "3ds", "cci", "cxi"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ctr::derive_encrypted_path),
         run: |req, progress, cancel| Box::pin(ctr_encrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -292,8 +390,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cia", "cci", "3ds", "cxi", "3dsx"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ctr::z3ds::derive_compressed_path),
         run: |req, progress, cancel| Box::pin(ctr_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -301,8 +401,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["zcia", "zcci", "zcxi", "z3dsx"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ctr::z3ds::derive_decompressed_path),
         run: |req, progress, cancel| Box::pin(ctr_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -310,11 +412,13 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cia", "3ds", "cci"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: Some(|req, source| {
             crate::nintendo::ctr::convert::converted_size(source, req.options.trim.unwrap_or(false))
                 .unwrap_or_else(|_| file_len(source))
         }),
+        derive_output: Some(crate::nintendo::ctr::convert::derive_converted_path),
         run: |req, progress, cancel| Box::pin(ctr_convert(req, progress, cancel)),
     },
     OpSpec {
@@ -322,7 +426,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(ctr_verify(req, progress, cancel)),
     },
@@ -331,8 +437,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["nsp", "xci", "nca"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::nx::derive_compressed_path),
         run: |req, progress, cancel| Box::pin(nx_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -340,8 +448,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["nsz", "xcz", "ncz"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::nx::derive_decompressed_path),
         run: |req, progress, cancel| Box::pin(nx_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -349,8 +459,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["nsp", "xci"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::nx::derive_decrypted_path),
         run: |req, progress, cancel| Box::pin(nx_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -358,7 +470,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["nsp", "xci", "nca", "nsz", "xcz", "ncz", "dnsp", "dxci"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(nx_verify(req, progress, cancel)),
     },
@@ -367,8 +481,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["wud", "wux"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::wup::derive_wua_path),
         run: |req, progress, cancel| Box::pin(wup_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -376,7 +492,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(wup_decrypt(req, progress, cancel)),
     },
@@ -385,7 +503,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["wud", "wux", "wua"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(wup_verify(req, progress, cancel)),
     },
@@ -394,6 +514,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["wup.to-wux"],
         batch_exts: Some(&["wud"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: Some(|_, source| {
             // A continuation part is converted with its game_part1.wud, so
@@ -405,6 +526,7 @@ pub(crate) static OPS: &[OpSpec] = &[
                     .unwrap_or_else(|_| file_len(source))
             }
         }),
+        derive_output: Some(|basis: &Path| basis.with_extension("wux")),
         run: |req, progress, cancel| Box::pin(wup_to_wux(req, progress, cancel)),
     },
     OpSpec {
@@ -412,11 +534,13 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["wup.to-wud"],
         batch_exts: Some(&["wux"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: Some(|_, source| {
             crate::nintendo::wup::disc::logical_disc_size(source)
                 .unwrap_or_else(|_| file_len(source))
         }),
+        derive_output: Some(|basis: &Path| basis.with_extension("wud")),
         run: |req, progress, cancel| Box::pin(wup_to_wud(req, progress, cancel)),
     },
     OpSpec {
@@ -424,7 +548,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["cue"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(cue_merge(req, progress, cancel)),
     },
@@ -433,8 +559,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["cue.to-iso"],
         batch_exts: Some(&["cue"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("iso")),
         run: |req, progress, cancel| Box::pin(cue_to_iso(req, progress, cancel)),
     },
     OpSpec {
@@ -442,8 +570,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["cue.to-cso"],
         batch_exts: Some(&["cue"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(cue_to_cso(req, progress, cancel)),
     },
     OpSpec {
@@ -451,8 +581,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["nds.encrypt"],
         batch_exts: Some(&["nds", "dsi"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ntr::derive_encrypted_path),
         run: |req, progress, cancel| Box::pin(ntr_encrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -460,8 +592,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["nds.decrypt"],
         batch_exts: Some(&["nds", "dsi"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::nintendo::ntr::derive_decrypted_path),
         run: |req, progress, cancel| Box::pin(ntr_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -469,27 +603,20 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
-        required_bytes: Some(|req, _| {
-            req.options
-                .inputs
-                .iter()
-                .flatten()
-                .map(|input| match input {
-                    WupTitleInputOption::Path(path) | WupTitleInputOption::Object { path, .. } => {
-                        file_len(path)
-                    }
-                })
-                .sum()
-        }),
+        derive_output: None,
+        required_bytes: None,
         run: |req, progress, cancel| Box::pin(nx_merge(req, progress, cancel)),
     },
     OpSpec {
         name: "nx.split",
         aliases: &[],
-        batch_exts: None,
-        input_exts: Some(&["nsp", "xci"]),
+        batch_exts: Some(&["nsp", "xci"]),
+        input_exts: None,
+        batch_output_dir: Some(crate::nintendo::nx::derive_split_dir),
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(nx_split(req, progress, cancel)),
     },
@@ -498,8 +625,10 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: Some(&["iso"]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
+        derive_output: Some(crate::sony::ps3::derive_decrypted_path),
         run: |req, progress, cancel| Box::pin(ps3_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -507,7 +636,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["psp.to-iso"],
         batch_exts: None,
         input_exts: Some(&["pbp", "pkg"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(psp_to_iso(req, progress, cancel)),
     },
@@ -516,7 +647,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["pbp"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(psp_extract(req, progress, cancel)),
     },
@@ -525,7 +658,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["pkg"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(vita_extract(req, progress, cancel)),
     },
@@ -534,7 +669,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["iso"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: Some(|_, source| {
             if !source.is_dir() {
                 return file_len(source);
@@ -548,7 +685,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["xiso", "iso"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(xbox_extract(req, progress, cancel)),
     },
@@ -557,7 +696,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["iso"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: Some(|_, source| {
             if !source.is_dir() {
                 return file_len(source);
@@ -571,16 +712,20 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["zar"]),
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(xenon_extract(req, progress, cancel)),
     },
     OpSpec {
         name: "xenon.convert",
         aliases: &[],
-        batch_exts: None,
-        input_exts: Some(&["iso"]),
+        batch_exts: Some(&["iso"]),
+        input_exts: None,
+        batch_output_dir: Some(crate::microsoft::xenon::derive_god_dir),
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(xenon_convert(req, progress, cancel)),
     },
@@ -589,7 +734,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: Some(&["zar"]),
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(xenon_verify(req, progress, cancel)),
     },
@@ -598,7 +745,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["playlist"],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(playlist_write(req, progress, cancel)),
     },
@@ -607,7 +756,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dat_verify(req, progress, cancel)),
     },
@@ -616,7 +767,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dat_scan(req, progress, cancel)),
     },
@@ -625,7 +778,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dat_rename(req, progress, cancel)),
     },
@@ -634,7 +789,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dat_identify(req, progress, cancel)),
     },
@@ -643,20 +800,21 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(dat_fixdat(req, progress, cancel)),
     },
     OpSpec {
         name: "hash",
         aliases: &[],
-        batch_exts: Some(&[
-            "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue",
-            "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci",
-            "nca", "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux",
-        ]),
+        // Marks the operation recursive; the walk itself is every file.
+        batch_exts: Some(&[]),
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(hash(req, progress, cancel)),
     },
@@ -665,7 +823,9 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &[],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: true,
+        derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(organize(req, progress, cancel)),
     },
@@ -674,9 +834,11 @@ pub(crate) static OPS: &[OpSpec] = &[
         aliases: &["info.read"],
         batch_exts: None,
         input_exts: None,
+        batch_output_dir: None,
         writes_output: false,
+        derive_output: None,
         required_bytes: None,
-        run: |req, _progress, _cancel| Box::pin(std::future::ready(info(req))),
+        run: |req, _progress, cancel| Box::pin(info(req, cancel)),
     },
 ];
 
@@ -714,26 +876,108 @@ pub(crate) async fn run_single_request(
 }
 
 pub(crate) async fn run_batch_request(
-    req: RunRequest,
+    mut req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let root = required_input(&req)?;
-    // A recursive run staged onto a single file still processes that file.
-    if !root.is_dir() {
-        return run_single_request(req, progress, cancel).await;
-    }
     let op = find_op(&req.operation)
         .ok_or_else(|| invalid_arg(format!("unknown operation {:?}", req.operation)))?;
+    if op.batch_output_dir.is_some() && req.options.output_template.is_some() {
+        return Err(invalid_arg(
+            "output_template cannot be combined with recursive for this operation",
+        ));
+    }
+    if op.name == "xenon.convert" && req.options.title.is_some() {
+        return Err(invalid_arg("title cannot be combined with recursive"));
+    }
+    // A recursive run staged onto a single file still processes that file,
+    // and directory-output ops still name the output the batch way so one
+    // file and a folder run agree on the layout. An explicit `output` stays.
+    if !root.is_dir() {
+        if let Some(derive) = op.batch_output_dir
+            && req.output.is_none()
+        {
+            req.output = Some(batch_dir_output(
+                derive,
+                &root,
+                req.options.output_dir.clone(),
+            ));
+        }
+        return run_single_request(req, progress, cancel).await;
+    }
     // A CDN dump is a tree of title directories, not of files, so its batch
     // form enumerates the subdirectories instead of scanning for extensions.
     let (files, wanted) = if op.name == "ctr.cdn_to_cia" {
-        (cdn_content_dirs(&root)?, "title directories".to_string())
+        let files = cdn_content_dirs(&root)?
+            .into_iter()
+            .map(|path| crate::util::CollectedInput {
+                output_basis: path.clone(),
+                path,
+                selection: None,
+            })
+            .collect::<Vec<_>>();
+        (files, "title directories".to_string())
+    } else if op.name == "hash" {
+        // Hashing is the CLI's plain digest walk: every file hashes as
+        // itself, and an archive through the member the hash operation
+        // would convert (raw bytes when it holds none).
+        let scan_root = root.clone();
+        let scan_cancel = cancel.clone();
+        let files = tokio::task::spawn_blocking(move || {
+            crate::util::fs::collect_all_files(&scan_root, req.options.max_depth, &scan_cancel)
+        })
+        .await?
+        .with_context(|| format!("scanning {}", root.display()))?;
+        let files = files
+            .into_iter()
+            .map(|path| crate::util::CollectedInput {
+                output_basis: path.clone(),
+                path,
+                selection: None,
+            })
+            .collect::<Vec<_>>();
+        (files, "files".to_string())
     } else {
         let exts = batch_exts(&req.operation)?;
-        let files =
-            crate::util::fs::collect_files_with_exts(&root, exts, req.options.max_depth, &cancel)
-                .with_context(|| format!("scanning {}", root.display()))?;
+        // A fix rewrites the .chd in place, so an archive member is never a
+        // fixable input and the walk collects plain files only.
+        let plain_only = op.name == "chd.verify" && req.options.fix.unwrap_or(false);
+        let scan_root = root.clone();
+        let scan_cancel = cancel.clone();
+        let files = tokio::task::spawn_blocking(move || {
+            if plain_only {
+                crate::util::fs::collect_files_with_exts(
+                    &scan_root,
+                    exts,
+                    req.options.max_depth,
+                    &scan_cancel,
+                )
+                .map(|files| {
+                    files
+                        .into_iter()
+                        .map(|path| crate::util::CollectedInput {
+                            path: path.clone(),
+                            output_basis: path,
+                            selection: None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+            } else {
+                crate::util::collect_input_entries(
+                    &scan_root,
+                    &crate::util::InputScan {
+                        exts,
+                        member_exts: Some(op.input_exts()),
+                        max_depth: req.options.max_depth,
+                        skip_unpacked_twins: op.writes_output,
+                    },
+                    &scan_cancel,
+                )
+            }
+        })
+        .await?
+        .with_context(|| format!("scanning {}", root.display()))?;
         (files, format!("files with extensions {}", exts.join(", ")))
     };
     if files.is_empty() {
@@ -743,71 +987,118 @@ pub(crate) async fn run_batch_request(
         )));
     }
 
-    if op.writes_output && !req.dry_run && !req.options.skip_space_check.unwrap_or(false) {
+    // Directory-output children preflight their own output directory, and a
+    // skipped single-title container must not count against the free space.
+    if op.writes_output
+        && op.batch_output_dir.is_none()
+        && !req.dry_run
+        && !req.options.skip_space_check.unwrap_or(false)
+    {
         let required = files
             .iter()
             .map(|p| {
                 op.required_bytes
-                    .map_or_else(|| file_len(p), |estimate| estimate(&req, p))
+                    .map_or_else(|| file_len(&p.path), |estimate| estimate(&req, &p.path))
             })
             .sum();
         preflight_space(req.options.output_dir.as_deref().unwrap_or(&root), required)?;
     }
 
     let started = Instant::now();
-    progress.batch_start(files.len() as u64, files.iter().map(|p| file_len(p)).sum());
+    progress.batch_start(
+        files.len() as u64,
+        files.iter().map(|p| file_len(&p.path)).sum(),
+    );
     let mut records = Vec::new();
     let mut plans = Vec::new();
     let mut hashes = Vec::new();
     let child_options = child_options(&req.options);
-    for input in files {
+    // Two children that would write the same output must not both run: the
+    // first one that succeeds (or is planned, or finds the output already
+    // there) holds it and later ones become skipped records. A plain file
+    // beats an archive, the way the unpacked-twin rule does. Under `rename`
+    // the second child gets its own name, and an output template places
+    // outputs somewhere the default name does not predict, so neither
+    // claims anything.
+    let claims = op.writes_output
+        && req.options.output_template.is_none()
+        && conflict_policy(&req).is_ok_and(|policy| policy != ConflictPolicy::Rename);
+    // An archive whose output a plain file also derives runs after every
+    // plain file, so the plain file's outcome decides: a plain file that
+    // fails or writes nothing leaves the output free for the archive.
+    let files = if claims {
+        let plain_keys: std::collections::HashSet<String> = files
+            .iter()
+            .filter(|collected| !crate::util::is_archive_path(&collected.path))
+            .filter_map(|collected| batch_output_key(op, &collected.path, &collected.output_basis))
+            .collect();
+        let (late, mut ordered): (Vec<_>, Vec<_>) = files.into_iter().partition(|collected| {
+            crate::util::is_archive_path(&collected.path)
+                && batch_output_key(op, &collected.path, &collected.output_basis)
+                    .is_some_and(|key| plain_keys.contains(&key))
+        });
+        ordered.extend(late);
+        ordered
+    } else {
+        files
+    };
+    // Under `overwrite`, a child must never replace a file the run walks:
+    // `ctr.convert` maps game.3ds to game.cia and game.cia to game.3ds, and
+    // the second input would be gone before it is read. Other policies keep
+    // or verify an existing output themselves (`overwrite-invalid` may
+    // repair one), so they are left alone.
+    let guard_walked =
+        claims && conflict_policy(&req).is_ok_and(|p| p == ConflictPolicy::Overwrite);
+    let walked: std::collections::HashSet<String> = if guard_walked {
+        files
+            .iter()
+            .map(|collected| collected.path.to_string_lossy().to_lowercase())
+            .collect()
+    } else {
+        std::collections::HashSet::new()
+    };
+    let mut claimed: HashMap<String, String> = HashMap::new();
+    for collected in files {
+        let input = collected.path;
+        let selection = collected.selection;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
-        let mut child = req.clone();
-        child.input = Some(input.clone());
-        child.output = None;
-        child.options = child_options.clone();
-        child.options.output_dir = mirrored_output_dir(&req.options, &root, &input);
         let mut new_records = Vec::new();
-        match run_single_request(child, progress, cancel.clone()).await {
-            Ok(mut response) => {
-                match response.data.take() {
-                    Some(RunData::Plan(line)) if req.dry_run => {
-                        progress.row(&RunRow::Plan(line.clone()));
-                        plans.push(line);
-                    }
-                    Some(RunData::Hash(digests)) => {
-                        let row = HashRow {
-                            path: input.clone(),
-                            digests,
-                        };
-                        progress.row(&RunRow::Hash(row.clone()));
-                        hashes.push(row);
-                    }
-                    _ => {}
-                }
-                if response.records.is_empty() {
-                    new_records.push(ReportRecord::new(ReportRecordInput {
-                        input_path: input.display().to_string(),
-                        output_path: String::new(),
-                        operation: planned_verb(&req.operation, req.dry_run),
-                        status: FileStatus::Ok,
-                        input_bytes: file_len(&input),
-                        output_bytes: 0,
-                        elapsed_ms: 0,
-                        error: None,
-                    }));
-                } else {
-                    new_records.append(&mut response.records);
-                }
-            }
-            Err(_) if cancel.is_cancelled() => return Err(Cancelled.into()),
-            Err(err) if is_cancelled_error(&err) => return Err(err),
-            // An existing output under `on_conflict error` skips that file and
-            // leaves the run passing, the way the CLI's batches always did.
-            Err(err) if OutputExists::in_chain(&err) => {
-                progress.warn(&err.to_string());
+        let key = claims
+            .then(|| batch_output_key(op, &input, &collected.output_basis))
+            .flatten();
+        let own_path = input.to_string_lossy().to_lowercase();
+        // Where the child really writes: under the mirrored output directory
+        // when one is set, else next to its source like the claim key.
+        let destination =
+            key.as_ref().map(
+                |key| match mirrored_output_dir(&req.options, &root, &input) {
+                    Some(dir) => Path::new(key).file_name().map_or_else(
+                        || key.clone(),
+                        |name| dir.join(name).to_string_lossy().to_lowercase(),
+                    ),
+                    None => key.clone(),
+                },
+            );
+        let duplicate = key.as_ref().and_then(|key| {
+            claimed
+                .get(key)
+                .cloned()
+                .map(|winner| format!("would write the same output as {winner}"))
+                .or_else(|| {
+                    destination
+                        .as_ref()
+                        .filter(|dest| walked.contains(*dest) && **dest != own_path)
+                        .map(|_| {
+                            "its output is another input of this run, which it would overwrite"
+                                .to_string()
+                        })
+                })
+        });
+        let mut holds_output = false;
+        match duplicate {
+            Some(reason) => {
                 new_records.push(ReportRecord::new(ReportRecordInput {
                     input_path: input.display().to_string(),
                     output_path: String::new(),
@@ -816,19 +1107,95 @@ pub(crate) async fn run_batch_request(
                     input_bytes: file_len(&input),
                     output_bytes: 0,
                     elapsed_ms: 0,
-                    error: Some(err.to_string()),
+                    error: Some(reason),
                 }));
             }
-            Err(err) => new_records.push(ReportRecord::new(ReportRecordInput {
-                input_path: input.display().to_string(),
-                output_path: String::new(),
-                operation: planned_verb(&req.operation, req.dry_run),
-                status: FileStatus::Failed,
-                input_bytes: file_len(&input),
-                output_bytes: 0,
-                elapsed_ms: 0,
-                error: Some(err.to_string()),
-            })),
+            None => {
+                let mut child = req.clone();
+                child.input = Some(input.clone());
+                child.ctx.archive_selection = selection;
+                child.output = None;
+                child.options = child_options.clone();
+                child.options.output_dir = mirrored_output_dir(&req.options, &root, &input);
+                if let Some(derive) = op.batch_output_dir {
+                    child.output = Some(batch_dir_output(
+                        derive,
+                        &input,
+                        child.options.output_dir.take(),
+                    ));
+                }
+                match run_single_request(child, progress, cancel.clone()).await {
+                    Ok(mut response) => {
+                        match response.data.take() {
+                            Some(RunData::Plan(line)) if req.dry_run => {
+                                progress.row(&RunRow::Plan(line.clone()));
+                                plans.push(line);
+                            }
+                            Some(RunData::Hash(digests)) => {
+                                let row = HashRow {
+                                    path: input.clone(),
+                                    digests,
+                                };
+                                progress.row(&RunRow::Hash(row.clone()));
+                                hashes.push(row);
+                            }
+                            _ => {}
+                        }
+                        // A skip that names no output (already in the target
+                        // format) leaves the default output free.
+                        holds_output = response.records.is_empty()
+                            || response.records.iter().any(|record| {
+                                record.status != FileStatus::Skipped
+                                    || !record.output_path.is_empty()
+                            });
+                        if response.records.is_empty() {
+                            new_records.push(ReportRecord::new(ReportRecordInput {
+                                input_path: input.display().to_string(),
+                                output_path: String::new(),
+                                operation: planned_verb(&req.operation, req.dry_run),
+                                status: FileStatus::Ok,
+                                input_bytes: file_len(&input),
+                                output_bytes: 0,
+                                elapsed_ms: 0,
+                                error: None,
+                            }));
+                        } else {
+                            new_records.append(&mut response.records);
+                        }
+                    }
+                    Err(_) if cancel.is_cancelled() => return Err(Cancelled.into()),
+                    Err(err) if is_cancelled_error(&err) => return Err(err),
+                    // An existing output under `on_conflict error` skips that file and
+                    // leaves the run passing, the way the CLI's batches always did.
+                    Err(err) if OutputExists::in_chain(&err) => {
+                        holds_output = true;
+                        progress.warn(&err.to_string());
+                        new_records.push(ReportRecord::new(ReportRecordInput {
+                            input_path: input.display().to_string(),
+                            output_path: String::new(),
+                            operation: planned_verb(&req.operation, req.dry_run),
+                            status: FileStatus::Skipped,
+                            input_bytes: file_len(&input),
+                            output_bytes: 0,
+                            elapsed_ms: 0,
+                            error: Some(err.to_string()),
+                        }));
+                    }
+                    Err(err) => new_records.push(ReportRecord::new(ReportRecordInput {
+                        input_path: input.display().to_string(),
+                        output_path: String::new(),
+                        operation: planned_verb(&req.operation, req.dry_run),
+                        status: FileStatus::Failed,
+                        input_bytes: file_len(&input),
+                        output_bytes: 0,
+                        elapsed_ms: 0,
+                        error: Some(err.to_string()),
+                    })),
+                }
+            }
+        }
+        if holds_output && let Some(key) = key {
+            claimed.insert(key, input.display().to_string());
         }
         for record in new_records {
             progress.row(&RunRow::Record(record.clone()));
@@ -946,9 +1313,11 @@ pub(crate) async fn cso_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let resolved = stage_input(&input, "cso.verify").await?;
+    let source = staged_path(&resolved, &input);
     crate::cso::verify_cso(
         progress,
-        input.clone(),
+        source.to_path_buf(),
         req.options.full.unwrap_or(true),
         cancel,
     )
@@ -984,6 +1353,19 @@ pub(crate) async fn chd_compress(
     .await
 }
 
+/// Refuses a CHD header a migration would reject: not a CHD at all, already
+/// v5, or a version this tool does not read (0, or newer than 5).
+fn chd_migrate_header_gate(head: &[u8]) -> Result<()> {
+    let Some(head) = head.get(..16).filter(|head| &head[0..8] == b"MComprHD") else {
+        anyhow::bail!("input is not a CHD image");
+    };
+    match u32::from_be_bytes([head[12], head[13], head[14], head[15]]) {
+        5 => Err(ChdError::ChdAlreadyV5.into()),
+        0 | 6.. => Err(ChdError::UnsupportedChdVersion.into()),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) async fn chd_migrate(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -992,8 +1374,33 @@ pub(crate) async fn chd_migrate(
     let req = &req;
     let input = required_input(req)?;
     // A migrated CHD keeps the .chd extension, so the derived name carries a
-    // v5 infix to stay off its own source.
-    convert_op(
+    // v5 infix to stay off its own source. The member's header proves it is
+    // a pre-v5 CHD before anything is staged or planned.
+    let mut selection = None;
+    if crate::util::is_archive_path(&input) {
+        let probe_input = input.clone();
+        let probe_cancel = cancel.clone();
+        let probed = tokio::task::spawn_blocking(move || {
+            crate::util::archive::probe_with_head(&probe_input, &["chd"], 16, &probe_cancel)
+        })
+        .await??;
+        if let Some((picked, head)) = probed {
+            if let Some(head) = head {
+                chd_migrate_header_gate(&head)?;
+            }
+            selection = Some(picked);
+        }
+    } else if req.dry_run {
+        // The real run gates inside the lib; a dry run applies the same
+        // header check so a plain v5 CHD is not planned as a write.
+        let mut head = Vec::with_capacity(16);
+        std::io::Read::read_to_end(
+            &mut std::io::Read::take(std::fs::File::open(&input)?, 16),
+            &mut head,
+        )?;
+        chd_migrate_header_gate(&head)?;
+    }
+    convert_op_with_selection(
         progress,
         req,
         ConvertTarget {
@@ -1002,6 +1409,7 @@ pub(crate) async fn chd_migrate(
             operation: "chd.migrate",
             verify: OutputVerify::Chd,
         },
+        selection,
         cancel,
         |input, output, cancel| async move {
             crate::disc::chd::migrate_chd_to_v5(progress, input, output, chd_options(req)?, cancel)
@@ -1115,11 +1523,19 @@ pub(crate) async fn chd_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let fix = req.options.fix.unwrap_or(false);
+    if fix && crate::util::is_archive_path(&input) {
+        return Err(invalid_arg("fix needs a plain .chd, not an archive"));
+    }
+    // A dry run verifies read-only: it never rewrites the header.
+    let fix = fix && !req.dry_run;
+    let resolved = stage_input(&input, "chd.verify").await?;
+    let source = staged_path(&resolved, &input);
     crate::disc::chd::verify_chd(
         progress,
-        input,
+        source.to_path_buf(),
         req.options.parent.clone(),
-        req.options.fix.unwrap_or(false),
+        fix,
         cancel,
     )
     .await?;
@@ -1261,9 +1677,38 @@ pub(crate) async fn migrate_disc(
 ) -> Result<RunResponse> {
     let req = &req;
     let input = required_input(req)?;
-    // A real run gates inside the lib; a dry run never gets there, so it has
-    // to refuse a non-legacy or wrong-console input before planning a write.
-    if req.dry_run {
+    // The legacy gate reads the image header; an archive member proves it
+    // carries a legacy container before anything is staged or planned.
+    let mut selection = None;
+    if crate::util::is_archive_path(&input) {
+        let probe_input = input.clone();
+        let probe_cancel = cancel.clone();
+        let exts = find_op(&req.operation).map_or(&[][..], OpSpec::input_exts);
+        let probed = tokio::task::spawn_blocking(move || {
+            crate::util::archive::probe_with_head(
+                &probe_input,
+                exts,
+                crate::nintendo::disc::legacy::LEGACY_MAGIC_PROBE_LEN,
+                &probe_cancel,
+            )
+        })
+        .await??;
+        if let Some((picked, head)) = probed {
+            if let Some(head) = head
+                && !crate::nintendo::disc::legacy::head_has_legacy_magic(&head)
+            {
+                anyhow::bail!(
+                    "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs"
+                );
+            }
+            selection = Some(picked);
+        }
+    }
+    // Past the header gate, the console check (`ensure_format_allowed`) and a
+    // RAR member's gate (a RAR cannot be read partially) run inside the lib
+    // after staging. A plain-file dry run never gets there, so it refuses a
+    // non-legacy or wrong-console input up front.
+    if req.dry_run && !crate::util::is_archive_path(&input) {
         match crate::nintendo::disc::legacy::detect_legacy_format(&input)? {
             None => anyhow::bail!(
                 "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs"
@@ -1271,7 +1716,7 @@ pub(crate) async fn migrate_disc(
             Some(format) => crate::nintendo::disc::legacy::ensure_format_allowed(format, allowed)?,
         }
     }
-    convert_op(
+    convert_op_with_selection(
         progress,
         req,
         ConvertTarget {
@@ -1280,6 +1725,7 @@ pub(crate) async fn migrate_disc(
             operation: &req.operation,
             verify: OutputVerify::Rvz,
         },
+        selection,
         cancel,
         |input, output, cancel| async move {
             let migrate = MigrateOptions {
@@ -1317,16 +1763,28 @@ pub(crate) async fn hash(
         .transpose()?
         .unwrap_or_else(|| vec![HashAlgo::Crc32, HashAlgo::Sha1]);
     let cache = req.ctx.hash_cache.as_deref();
-    let digest = match cache.and_then(|c| c.lookup_raw(&input, &algos)) {
+    let resolved = tokio::task::spawn_blocking({
+        let input = input.clone();
+        move || crate::util::resolve_for_hash(&input, &crate::util::HASH_MEMBER_EXTS)
+    })
+    .await??;
+    let source = resolved
+        .as_ref()
+        .map_or(input.as_path(), ResolvedInput::path);
+    // Cache entries are keyed by the raw file, which is what a `None`
+    // resolution hashed; a staged archive member never touches the entry
+    // stored under the archive's own path.
+    let cache = cache.filter(|_| resolved.is_none());
+    let digest = match cache.and_then(|c| c.lookup_raw(source, &algos)) {
         Some(digest) => digest,
         None => {
             let digest = spawn_blocking_with_progress(progress, {
-                let input = input.clone();
-                move |progress| hash_file(&input, &algos, progress, &cancel)
+                let source = source.to_path_buf();
+                move |progress| hash_file(&source, &algos, progress, &cancel)
             })
             .await?;
             if let Some(cache) = cache {
-                cache.store_raw(&input, &digest);
+                cache.store_raw(source, &digest);
             }
             digest
         }
@@ -1476,8 +1934,10 @@ pub(crate) async fn ctr_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let resolved = stage_input(&input, "ctr.verify").await?;
+    let source = staged_path(&resolved, &input);
     let result = crate::nintendo::ctr::verify::verify_ctr(
-        &input,
+        source,
         &crate::nintendo::ctr::verify::CtrVerifyOptions {
             verify_content_hashes: req.options.content_hashes.unwrap_or(false),
         },
@@ -1606,8 +2066,10 @@ pub(crate) async fn dol_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let resolved = stage_input(&input, "dol.verify").await?;
+    let source = staged_path(&resolved, &input);
     let result = crate::nintendo::dol::verify::verify_dol(
-        &input,
+        source,
         &crate::nintendo::dol::verify::DolVerifyOptions {
             full: req.options.full.unwrap_or(false),
         },
@@ -1626,8 +2088,10 @@ pub(crate) async fn rvl_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let resolved = stage_input(&input, "rvl.verify").await?;
+    let source = staged_path(&resolved, &input);
     let result = crate::nintendo::rvl::verify::verify_rvl(
-        &input,
+        source,
         &crate::nintendo::rvl::verify::RvlVerifyOptions {
             full: req.options.full.unwrap_or(false),
         },
@@ -1746,7 +2210,10 @@ pub(crate) async fn nx_verify(
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
     let keys = crate::nintendo::nx::load_keyset(req.options.keys.as_deref())?;
-    let result = crate::nintendo::nx::verify_container_async(input, keys, progress, cancel).await?;
+    let resolved = stage_input(&input, "nx.verify").await?;
+    let source = staged_path(&resolved, &input).to_path_buf();
+    let result =
+        crate::nintendo::nx::verify_container_async(source, keys, progress, cancel).await?;
     Ok(RunResponse::ok(
         "NX verification complete.",
         Some(RunData::NxVerify(result)),
@@ -1825,8 +2292,10 @@ pub(crate) async fn wup_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let resolved = stage_input(&input, "wup.verify").await?;
+    let source = staged_path(&resolved, &input).to_path_buf();
     let result =
-        crate::nintendo::wup::verify_wup_async(input, req.options.key.clone(), progress, cancel)
+        crate::nintendo::wup::verify_wup_async(source, req.options.key.clone(), progress, cancel)
             .await?;
     Ok(RunResponse::ok(
         "WUP verification complete.",
@@ -2077,16 +2546,26 @@ pub(crate) async fn playlist_write(
     })
 }
 
-pub(crate) fn info(req: RunRequest) -> Result<RunResponse> {
+pub(crate) async fn info(req: RunRequest, cancel: CancelToken) -> Result<RunResponse> {
     let input = required_input(&req)?;
     let keys_path = req.options.keys.clone();
-    let info = crate::info::read_info(
-        &input,
-        &crate::info::InfoOptions {
-            keys_path,
-            parent_path: None,
-        },
-    )?;
+    let info = tokio::task::spawn_blocking(move || {
+        // `resolved` owns the staging directory: it must outlive the read.
+        let resolved = crate::util::resolve_input(&input, crate::info::SUPPORTED_INFO_EXTENSIONS)?;
+        // Extracting an archive member can take long; do not read what the
+        // caller already cancelled.
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
+        crate::info::read_info(
+            resolved.path(),
+            &crate::info::InfoOptions {
+                keys_path,
+                parent_path: None,
+            },
+        )
+    })
+    .await??;
     Ok(RunResponse::ok("Info read.", Some(RunData::Info(info))))
 }
 
@@ -2116,6 +2595,23 @@ where
     F: FnOnce(PathBuf, PathBuf, CancelToken) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
+    convert_op_with_selection(progress, req, target, None, cancel, run).await
+}
+
+/// [`convert_op`] reusing an archive probe the caller already made, so the
+/// archive is not listed again.
+pub(crate) async fn convert_op_with_selection<F, Fut>(
+    progress: &dyn ProgressReporter,
+    req: &RunRequest,
+    target: ConvertTarget<'_>,
+    mut selection: Option<crate::util::ArchiveSelection>,
+    cancel: CancelToken,
+    run: F,
+) -> Result<RunResponse>
+where
+    F: FnOnce(PathBuf, PathBuf, CancelToken) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     let ConvertTarget {
         input,
         derive,
@@ -2124,19 +2620,24 @@ where
     } = target;
     let op = find_op(operation)
         .ok_or_else(|| invalid_arg(format!("unknown operation {operation:?}")))?;
+    // A recursive walk already listed the archive.
+    if selection.is_none() {
+        selection = req.ctx.archive_selection.clone();
+    }
     // Output templates and `chd.extract` read the member's header, so an
     // archive is staged up front for them. Otherwise the member listing alone
     // names the output, and extraction waits until the plan says write.
     let mut resolved = if req.options.output_template.is_some() || operation == "chd.extract" {
-        stage_input(input, operation).await?
+        stage_input_with_selection(input, operation, selection.take()).await?
     } else {
         None
     };
-    let mut selection = None;
     let basis = match &resolved {
         Some(staged) => staged.output_basis().to_path_buf(),
         None => {
-            selection = probe_selection(input, op).await?;
+            if selection.is_none() {
+                selection = probe_selection(input, op, &cancel).await?;
+            }
             selection
                 .as_ref()
                 .map(|selected| selected.output_basis(input))
@@ -2280,13 +2781,15 @@ async fn stage_input_with_selection(
 async fn probe_selection(
     input: &Path,
     op: &OpSpec,
+    cancel: &CancelToken,
 ) -> Result<Option<crate::util::ArchiveSelection>> {
     let exts = op.input_exts();
     if exts.is_empty() {
         return Ok(None);
     }
     let input = input.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::util::probe_archive(&input, exts)).await?
+    let cancel = cancel.clone();
+    tokio::task::spawn_blocking(move || crate::util::probe_archive(&input, exts, &cancel)).await?
 }
 
 /// The file a conversion reads: the staged member, else `input` itself.
@@ -3291,13 +3794,36 @@ mod tests {
         (chds.join("dvd.chd"), payload)
     }
 
-    fn write_zip(archive: &Path, member: &str, data: &[u8]) {
+    fn write_zip(archive: &Path, entries: &[(&str, &[u8])]) {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(archive).unwrap());
         let opts: zip::write::FileOptions<'_, ()> =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        zip.start_file(member, opts).unwrap();
-        zip.write_all(data).unwrap();
+        for (member, data) in entries {
+            zip.start_file(*member, opts).unwrap();
+            zip.write_all(data).unwrap();
+        }
         zip.finish().unwrap();
+    }
+
+    fn write_tar(archive: &Path, gz: bool, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(archive).unwrap();
+        let writer: Box<dyn std::io::Write> = if gz {
+            Box::new(flate2::write::GzEncoder::new(
+                file,
+                flate2::Compression::fast(),
+            )) as Box<dyn std::io::Write>
+        } else {
+            Box::new(file)
+        };
+        let mut builder = tar::Builder::new(writer);
+        for (name, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, *name, *data).unwrap();
+        }
+        builder.into_inner().unwrap();
     }
 
     /// Cancels the token when the verify pass starts, after the conversion
@@ -3546,7 +4072,7 @@ mod tests {
     async fn dry_run_on_archive_does_not_extract() {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("game.zip");
-        write_zip(&archive, "member.iso", b"payload-bytes");
+        write_zip(&archive, &[("member.iso", b"payload-bytes")]);
         // Corrupt the stored member so listing still works but extraction
         // fails its CRC check: a passing dry run proves nothing was extracted.
         let mut bytes = std::fs::read(&archive).unwrap();
@@ -3971,7 +4497,7 @@ mod tests {
         let zips = dir.path().join("zips");
         std::fs::create_dir(&zips).unwrap();
         let archive = zips.join("disc.zip");
-        write_zip(&archive, "cd.chd", &std::fs::read(&cd_chd).unwrap());
+        write_zip(&archive, &[("cd.chd", &std::fs::read(&cd_chd).unwrap())]);
         let plan = json!({ "operation": "chd.extract", "input": archive, "dry_run": true });
         let res = run_json(&plan.to_string(), CancelToken::new()).await;
         assert!(res.ok, "{res:?}");
@@ -4101,7 +4627,7 @@ mod tests {
         let misnamed_cd = dir.path().join("game.bin");
         std::fs::copy(&cd_chd, &misnamed_cd).unwrap();
         let archive = dir.path().join("games.zip");
-        write_zip(&archive, "dvd.chd", &dvd_bytes);
+        write_zip(&archive, &[("dvd.chd", &dvd_bytes)]);
         let archive_bytes = std::fs::read(&archive).unwrap();
 
         for (input, output, original) in [
@@ -4328,5 +4854,809 @@ mod tests {
         let rows = data.as_array().unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().all(|r| r["digests"]["crc32"].is_string()));
+    }
+
+    #[tokio::test]
+    async fn recursive_hash_covers_every_file_like_the_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = write_iso(dir.path(), "game.iso");
+        std::fs::write(dir.path().join("notes.bin"), b"sidecar").unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        let iso_bytes = std::fs::read(&iso).unwrap();
+        write_zip(&dir.path().join("sub/x.zip"), &[("y.iso", &iso_bytes)]);
+        let req = json!({
+            "operation": "hash",
+            "input": dir.path(),
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let rows = data.as_array().unwrap();
+        let mut paths: Vec<&str> = rows.iter().map(|r| r["path"].as_str().unwrap()).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                dir.path().join("game.iso").to_str().unwrap(),
+                dir.path().join("notes.bin").to_str().unwrap(),
+                dir.path().join("sub/x.zip").to_str().unwrap(),
+            ]
+        );
+        let crc = |row: &serde_json::Value| row["digests"]["crc32"].clone();
+        let zip_row = rows
+            .iter()
+            .find(|r| r["path"].as_str().unwrap().ends_with("x.zip"))
+            .unwrap();
+        let iso_row = rows
+            .iter()
+            .find(|r| r["path"].as_str().unwrap().ends_with("game.iso"))
+            .unwrap();
+        // The archive row reports the member's digests, not the zip's.
+        assert_eq!(crc(zip_row), crc(iso_row));
+    }
+
+    #[tokio::test]
+    async fn hash_of_an_archive_member_bypasses_the_path_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("game.zip");
+        write_zip(&archive, &[("game.iso", b"x")]);
+        let algos = vec![crate::util::HashAlgo::Crc32];
+        let cache = std::sync::Arc::new(crate::util::HashCache::open_at(
+            Some(dir.path().join("cache.sqlite")),
+            false,
+        ));
+        // A poisoned entry under the archive's own path: the digests of the
+        // zip bytes, which a path-keyed lookup would serve.
+        let archive_digests = crate::util::hash_file(
+            &archive,
+            &algos,
+            &crate::util::NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        cache.store_raw(&archive, &archive_digests);
+
+        let mut req: crate::runner::models::RunRequest =
+            serde_json::from_value(json!({ "operation": "hash", "input": archive })).unwrap();
+        req.ctx.hash_cache = Some(cache);
+        let res = crate::runner::run_request(req, &crate::util::NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Hash(digests)) = res.data else {
+            panic!("expected hash data, got {:?}", res.data);
+        };
+        let member_file = dir.path().join("game.iso");
+        std::fs::write(&member_file, b"x").unwrap();
+        let member_digests = crate::util::hash_file(
+            &member_file,
+            &algos,
+            &crate::util::NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(digests.crc32, member_digests.crc32);
+        assert_ne!(digests.crc32, archive_digests.crc32);
+    }
+
+    #[tokio::test]
+    async fn migrate_archive_member_is_gated_before_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        // A member longer than the header probe whose last byte is corrupt:
+        // reading the header succeeds, but extracting it would fail its CRC
+        // check, so a "not a legacy image" answer proves nothing was staged.
+        let payload = vec![0x41u8; 2048];
+        write_zip(&dir.path().join("set.zip"), &[("game.iso", &payload)]);
+        let input = dir.path().join("set.zip");
+        let mut bytes = std::fs::read(&input).unwrap();
+        let at = bytes
+            .windows(payload.len())
+            .position(|window| window == payload.as_slice())
+            .unwrap();
+        bytes[at + payload.len() - 1] = 0x42;
+        std::fs::write(&input, bytes).unwrap();
+        let req = |dry_run: bool| {
+            json!({
+                "operation": "dol.migrate",
+                "input": input,
+                "dry_run": dry_run
+            })
+        };
+
+        // The dry run reports the non-legacy member as a failure instead of
+        // planning a write, and nothing is extracted to temp.
+        let res = run_json(&req(true).to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(
+            res.message.contains("not a GCZ, WIA, or NKit image"),
+            "{res:?}"
+        );
+
+        let res = run_json(&req(false).to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(
+            res.message.contains("not a GCZ, WIA, or NKit image"),
+            "{res:?}"
+        );
+
+        // A member with a legacy container signature is planned as usual.
+        let mut gcz = 0xB10B_C001u32.to_le_bytes().to_vec();
+        gcz.extend(std::iter::repeat_n(0u8, 64));
+        write_zip(&dir.path().join("legacy.zip"), &[("game.gcz", &gcz)]);
+        let req = json!({
+            "operation": "dol.migrate",
+            "input": dir.path().join("legacy.zip"),
+            "dry_run": true
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(res.data.is_some(), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn chd_migrate_archive_member_gates_non_chd_and_newer_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut chd_head = b"MComprHD".to_vec();
+        chd_head.extend_from_slice(&124u32.to_be_bytes());
+        chd_head.extend_from_slice(&6u32.to_be_bytes());
+        write_zip(&dir.path().join("v6.zip"), &[("game.chd", &chd_head)]);
+        write_zip(&dir.path().join("junk.zip"), &[("game.chd", &[0x41u8; 64])]);
+        let mut v0 = b"MComprHD".to_vec();
+        v0.extend_from_slice(&124u32.to_be_bytes());
+        v0.extend_from_slice(&0u32.to_be_bytes());
+        write_zip(&dir.path().join("v0.zip"), &[("game.chd", &v0)]);
+        // A plain v5 CHD is refused in a dry run like an archived one.
+        let mut v5 = b"MComprHD".to_vec();
+        v5.extend_from_slice(&124u32.to_be_bytes());
+        v5.extend_from_slice(&5u32.to_be_bytes());
+        std::fs::write(dir.path().join("plain.chd"), &v5).unwrap();
+        let run = |name: &str| {
+            let req = json!({
+                "operation": "chd.migrate",
+                "input": dir.path().join(name),
+                "dry_run": true
+            });
+            async move { run_json(&req.to_string(), CancelToken::new()).await }
+        };
+        let res = run("v6.zip").await;
+        assert!(
+            !res.ok && res.message.contains("unsupported CHD version"),
+            "{res:?}"
+        );
+        let res = run("junk.zip").await;
+        assert!(!res.ok && res.message.contains("not a CHD"), "{res:?}");
+        let res = run("v0.zip").await;
+        assert!(
+            !res.ok && res.message.contains("unsupported CHD version"),
+            "{res:?}"
+        );
+        let res = run("plain.chd").await;
+        assert!(
+            !res.ok && res.message.contains("already version 5"),
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chd_migrate_archive_member_is_version_gated_before_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut chd_head = b"MComprHD".to_vec();
+        chd_head.extend_from_slice(&4u32.to_be_bytes());
+        chd_head.extend_from_slice(&5u32.to_be_bytes());
+        write_zip(&dir.path().join("v5.zip"), &[("game.chd", &chd_head)]);
+        let req = json!({
+            "operation": "chd.migrate",
+            "input": dir.path().join("v5.zip"),
+            "dry_run": true
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(res.message.contains("already"), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn verify_handlers_stage_an_archive_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd, _) = write_cd_chd(dir.path()).await;
+        let archive = dir.path().join("disc.zip");
+        write_zip(&archive, &[("disc.chd", &std::fs::read(&chd).unwrap())]);
+        let req = json!({ "operation": "chd.verify", "input": archive });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+
+        // The staged member is what verification reads: a corrupt member
+        // inside an archive fails the verify instead of the archive passing.
+        let mut bytes = std::fs::read(&chd).unwrap();
+        let offset = crate::disc::chd::models::CHD_HEADER_SHA1_OFFSET as usize;
+        bytes[offset] ^= 0xFF;
+        let bad = dir.path().join("bad.zip");
+        write_zip(&bad, &[("bad.chd", &bytes)]);
+        let req = json!({ "operation": "chd.verify", "input": bad });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn chd_verify_dry_run_never_rewrites_the_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd, _) = write_cd_chd(dir.path()).await;
+        // Corrupt the stored overall SHA-1 so a fix run rewrites the header.
+        let mut bytes = std::fs::read(&chd).unwrap();
+        let offset = crate::disc::chd::models::CHD_HEADER_SHA1_OFFSET as usize;
+        bytes[offset] ^= 0xFF;
+        std::fs::write(&chd, &bytes).unwrap();
+        let original = std::fs::read(&chd).unwrap();
+
+        let req = json!({
+            "operation": "chd.verify",
+            "input": chd,
+            "dry_run": true,
+            "options": { "fix": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        // The read-only verify still runs, reports the mismatch, and the
+        // header stays untouched.
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(std::fs::read(&chd).unwrap(), original);
+
+        let req = json!({
+            "operation": "chd.verify",
+            "input": chd,
+            "options": { "fix": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_ne!(std::fs::read(&chd).unwrap(), original);
+    }
+
+    /// A recursive `chd.verify --fix` rewrites files in place, so only plain
+    /// `.chd` files are collected; an archive holding a `.chd` member is not
+    /// an input of its own.
+    #[tokio::test]
+    async fn chd_verify_fix_recursive_walks_plain_files_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd, _) = write_cd_chd(dir.path()).await;
+        write_zip(&dir.path().join("b.zip"), &[("b.chd", b"chd")]);
+
+        let req = json!({
+            "operation": "chd.verify",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "fix": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        // chd.verify has no plan line, so the batch synthesizes one record
+        // per processed input.
+        assert_eq!(res.records.len(), 1, "{res:?}");
+        assert_eq!(res.records[0].input_path, chd.display().to_string());
+        assert_eq!(res.records[0].status, FileStatus::Ok);
+        assert_eq!(res.totals.as_ref().map(|t| t.ok), Some(1));
+    }
+
+    #[tokio::test]
+    async fn batch_dry_run_opens_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        write_iso(dir.path(), "a.iso");
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        write_zip(
+            &dir.path().join("sub/b.zip"),
+            &[("readme.txt", b"notes"), ("b.iso", b"disc")],
+        );
+        write_zip(&dir.path().join("docs.zip"), &[("readme.txt", b"notes")]);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 2, "{plans:?}");
+        assert_eq!(
+            plans[0]["input"].as_str(),
+            dir.path().join("a.iso").to_str()
+        );
+        assert_eq!(
+            plans[1]["input"].as_str(),
+            dir.path().join("sub/b.zip").to_str()
+        );
+        assert_eq!(
+            plans[1]["output"].as_str(),
+            dir.path().join("sub/b.cso").to_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_split_recursive_derives_split_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/game.nsp"), b"nsp").unwrap();
+        let req = |output_dir: Option<&str>| {
+            json!({
+                "operation": "nx.split",
+                "input": dir.path(),
+                "dry_run": true,
+                "options": { "recursive": true, "output_dir": output_dir }
+            })
+        };
+
+        let res = run_json(&req(Some("out")).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(plans[0]["output"].as_str(), Some("out/sub/game_split"));
+
+        let res = run_json(&req(None).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(
+            plans[0]["output"].as_str(),
+            dir.path().join("sub/game_split").to_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn xenon_convert_recursive_derives_god_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/game.iso"), b"iso").unwrap();
+        let req = |output_dir: Option<&str>| {
+            json!({
+                "operation": "xenon.convert",
+                "input": dir.path(),
+                "dry_run": true,
+                "options": { "recursive": true, "output_dir": output_dir }
+            })
+        };
+
+        let res = run_json(&req(None).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{plans:?}");
+        assert_eq!(
+            plans[0]["output"].as_str(),
+            dir.path().join("sub/game_god").to_str()
+        );
+
+        let res = run_json(&req(Some("out")).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans[0]["output"].as_str(), Some("out/sub/game_god"));
+    }
+
+    #[tokio::test]
+    async fn xenon_convert_recursive_rejects_title() {
+        let dir = tempfile::tempdir().unwrap();
+        write_iso(dir.path(), "game.iso");
+        let req = json!({
+            "operation": "xenon.convert",
+            "input": dir.path(),
+            "options": { "recursive": true, "title": "Title" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+    }
+
+    /// A skipped duplicate names the input that claimed the output first.
+    fn assert_duplicate_skip(res: &RunResponse, loser: &std::path::Path, winner: &str) {
+        assert!(res.ok, "{res:?}");
+        let record = res
+            .records
+            .iter()
+            .find(|record| record.input_path == loser.display().to_string())
+            .unwrap_or_else(|| panic!("no record for {loser:?}: {res:?}"));
+        assert_eq!(record.status, FileStatus::Skipped, "{res:?}");
+        let error = record.error.as_deref().unwrap_or_default();
+        assert!(error.contains(winner), "{error}");
+        assert!(error.contains("same output"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn batch_dedupes_two_archives_holding_the_same_member() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(&dir.path().join("a.zip"), &[("game.iso", b"x")]);
+        write_tar(&dir.path().join("b.tar.gz"), true, &[("game.iso", b"x")]);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_duplicate_skip(&res, &dir.path().join("b.tar.gz"), "a.zip");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert_eq!(res.totals.as_ref().map(|t| t.skipped), Some(1));
+    }
+
+    #[tokio::test]
+    async fn batch_dedupes_plain_file_and_archive_member_on_one_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cue"), b"cue").unwrap();
+        write_zip(&dir.path().join("a.zip"), &[("game.iso", b"iso")]);
+        let req = json!({
+            "operation": "chd.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        // game.cue and the zip's game.iso member both derive game.chd; the
+        // plain file wins although the archive is walked first.
+        let zip_record = res
+            .records
+            .iter()
+            .find(|record| record.input_path == dir.path().join("a.zip").display().to_string())
+            .unwrap();
+        assert_eq!(zip_record.status, FileStatus::Skipped);
+        assert!(
+            zip_record
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("game.cue") && e.contains("same output")),
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_dedupes_directory_outputs_of_folder_ops() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.nsp"), b"nsp").unwrap();
+        write_zip(&dir.path().join("game.zip"), &[("other.nsp", b"nsp")]);
+        let req = json!({
+            "operation": "nx.split",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert_duplicate_skip(&res, &dir.path().join("game.zip"), "game.nsp");
+        // The plan exists only for the winner.
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(data["plans"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn batch_dedupes_outputs_that_differ_only_in_case() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(&dir.path().join("a.zip"), &[("Game.ISO", b"x")]);
+        write_zip(&dir.path().join("b.zip"), &[("game.iso", b"x")]);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert_duplicate_skip(&res, &dir.path().join("b.zip"), "a.zip");
+    }
+
+    /// A writing operation that recurses must say which output a child
+    /// claims, or duplicate detection silently skips it. `cue.merge` writes
+    /// to an explicit output only; `ctr.cdn_to_cia` recurses through its own
+    /// directory walk.
+    #[test]
+    fn recursive_writing_rows_declare_their_output() {
+        for op in OPS {
+            let recurses = op.batch_exts.is_some() || op.name == "ctr.cdn_to_cia";
+            if op.writes_output && recurses && op.name != "cue.merge" {
+                assert!(
+                    op.derive_output.is_some() || op.batch_output_dir.is_some(),
+                    "{} declares neither derive_output nor batch_output_dir",
+                    op.name
+                );
+            }
+        }
+    }
+
+    /// A row's `derive_output` must name what its handler writes, or the
+    /// duplicate check compares the wrong paths. Ops whose dry run needs real
+    /// image content (keys, headers) cannot plan a sample file and are not
+    /// compared; enough rows are for the guard to mean something.
+    #[tokio::test]
+    async fn derive_output_matches_what_the_handler_plans() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut compared = 0;
+        for op in OPS {
+            let (Some(derive), Some(ext)) = (
+                op.derive_output,
+                op.batch_exts.and_then(|exts| exts.first()).copied(),
+            ) else {
+                continue;
+            };
+            let sample = dir
+                .path()
+                .join(format!("sample_{}.{ext}", op.name.replace('.', "_")));
+            std::fs::write(&sample, vec![0u8; 4096]).unwrap();
+            let req = json!({
+                "operation": op.name,
+                "input": sample,
+                "dry_run": true,
+                "options": { "on_conflict": "overwrite" }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            let Some(RunData::Plan(line)) = res.data else {
+                continue;
+            };
+            assert_eq!(line.output, derive(&sample), "{}", op.name);
+            compared += 1;
+        }
+        assert!(compared >= 10, "only {compared} rows were comparable");
+    }
+
+    /// A child that fails holds nothing: the later valid input is not
+    /// skipped as a duplicate of it.
+    #[tokio::test]
+    async fn batch_failed_child_releases_its_output_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        // Game.gcz is not a legacy container and fails; Game.iso carries a
+        // GCZ signature (extensions are never trusted) and plans fine. Both
+        // derive Game.rvz and Game.gcz is walked first.
+        std::fs::write(dir.path().join("Game.gcz"), b"plain bytes, no signature").unwrap();
+        let mut legacy = 0xB10B_C001u32.to_le_bytes().to_vec();
+        legacy.extend(std::iter::repeat_n(0u8, 64));
+        std::fs::write(dir.path().join("Game.iso"), &legacy).unwrap();
+        let req = json!({
+            "operation": "dol.migrate",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        let status = |name: &str| {
+            res.records
+                .iter()
+                .find(|record| record.input_path.ends_with(name))
+                .map(|record| record.status)
+        };
+        assert_eq!(status("Game.gcz"), Some(FileStatus::Failed), "{res:?}");
+        assert_eq!(status("Game.iso"), Some(FileStatus::Ok), "{res:?}");
+    }
+
+    /// A plain file that fails does not own the output an archive derives,
+    /// even when the archive is walked first.
+    #[tokio::test]
+    async fn batch_failed_plain_file_leaves_its_output_to_an_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.gcz"), b"plain bytes, no signature").unwrap();
+        let mut legacy = 0xB10B_C001u32.to_le_bytes().to_vec();
+        legacy.extend(std::iter::repeat_n(0u8, 64));
+        write_zip(&dir.path().join("aaa.zip"), &[("game.iso", &legacy)]);
+        let req = json!({
+            "operation": "dol.migrate",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        let status = |name: &str| {
+            res.records
+                .iter()
+                .find(|record| record.input_path.ends_with(name))
+                .map(|record| record.status)
+        };
+        assert_eq!(status("game.gcz"), Some(FileStatus::Failed), "{res:?}");
+        assert_eq!(status("aaa.zip"), Some(FileStatus::Ok), "{res:?}");
+    }
+
+    /// `ctr.convert` maps .3ds to .cia and .cia to .3ds: converting the
+    /// first would overwrite the second, which is still to be read.
+    #[tokio::test]
+    async fn batch_never_overwrites_another_walked_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.3ds"), b"3ds").unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"cia").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|record| record.status == FileStatus::Skipped
+                    && record
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("another input"))),
+            "{res:?}"
+        );
+
+        // With an output directory the outputs land elsewhere, so both convert.
+        let out = tempfile::tempdir().unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": {
+                "recursive": true,
+                "on_conflict": "overwrite",
+                "output_dir": out.path()
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|record| record.status != FileStatus::Skipped),
+            "{res:?}"
+        );
+
+        // Only `overwrite` is guarded: other policies keep or verify the
+        // existing output themselves.
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite-invalid" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(
+            res.records.iter().all(|record| !record
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("another input"))),
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_rename_policy_does_not_dedupe_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zip(&dir.path().join("a.zip"), &[("game.iso", b"x")]);
+        write_zip(&dir.path().join("b.zip"), &[("game.iso", b"x")]);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "rename" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.totals.as_ref().map(|t| (t.ok, t.skipped)), Some((2, 0)));
+    }
+
+    #[tokio::test]
+    async fn batch_unlistable_archive_claims_no_output() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.7z"), b"not an archive").unwrap();
+        write_iso(dir.path(), "game.iso");
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        let iso = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("game.iso"))
+            .unwrap();
+        assert_eq!(iso.status, FileStatus::Ok, "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn batch_twin_skip_covers_case_differences() {
+        let dir = tempfile::tempdir().unwrap();
+        write_iso(dir.path(), "game.iso");
+        write_zip(&dir.path().join("GAME.zip"), &[("GAME.ISO", b"x")]);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 1, "{res:?}");
+        assert_eq!(
+            res.records[0].input_path,
+            dir.path().join("game.iso").display().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn single_file_recursive_still_names_batch_output_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = dir.path().join("game.nsp");
+        std::fs::write(&nsp, b"nsp").unwrap();
+        let req = |output_dir: Option<&str>| {
+            json!({
+                "operation": "nx.split",
+                "input": nsp,
+                "dry_run": true,
+                "options": { "recursive": true, "output_dir": output_dir }
+            })
+        };
+
+        let res = run_json(&req(None).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(
+            data["output"].as_str(),
+            dir.path().join("game_split").to_str()
+        );
+
+        // With an output directory the batch naming keeps the file name.
+        let res = run_json(&req(Some("out")).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(data["output"].as_str(), Some("out/game_split"));
+
+        // A single file with an output template stays rejected, as in a
+        // recursive folder run.
+        let req = json!({
+            "operation": "nx.split",
+            "input": nsp,
+            "options": {
+                "recursive": true,
+                "output_template": "{stem}/split-{num}"
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+
+        // An explicit output wins over the derived name.
+        let req = json!({
+            "operation": "nx.split",
+            "input": nsp,
+            "output": "custom_dir",
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(data["output"].as_str(), Some("custom_dir"));
+
+        // xenon.convert names its GoD directory the batch way for one file,
+        // and refuses a title exactly like a folder run does.
+        let iso = write_iso(dir.path(), "game.iso");
+        let req = |title: Option<&str>| {
+            json!({
+                "operation": "xenon.convert",
+                "input": iso,
+                "dry_run": true,
+                "options": { "recursive": true, "title": title }
+            })
+        };
+        let res = run_json(&req(None).to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(
+            data["output"].as_str(),
+            dir.path().join("game_god").to_str()
+        );
+        let res = run_json(&req(Some("Title")).to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+
+        // A non-directory-output op keeps the single-file fallback exactly
+        // as it was: the input is processed as itself.
+        let iso = write_iso(dir.path(), "disc.iso");
+        let req = json!({
+            "operation": "cso.compress",
+            "input": iso,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(dir.path().join("disc.cso").exists(), "{res:?}");
     }
 }

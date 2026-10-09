@@ -1096,7 +1096,9 @@ pub struct BatchVerifySummary {
     pub failed: usize,
 }
 
-const VERIFY_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"];
+/// Extensions the CTR batch verify opens (`.cia`, `.3ds`, `.cci`, `.cxi`,
+/// and their zstd-compressed twins).
+pub const VERIFY_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi", "zcia", "zcci", "zcxi"];
 
 /// Verify every CTR container under `input_dir` and tally the results.
 pub async fn verify_ctr_batch(
@@ -1112,6 +1114,7 @@ pub async fn verify_ctr_batch(
     run_batch(
         input_dir,
         VERIFY_EXTS,
+        true,
         ("Verifying", "verify"),
         max_depth,
         total_progress,
@@ -1122,8 +1125,22 @@ pub async fn verify_ctr_batch(
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("<unnamed>");
+            let walked = path.to_path_buf();
+            let resolved = match tokio::task::spawn_blocking(move || {
+                crate::util::resolve_input(&walked, VERIFY_EXTS)
+            })
+            .await
+            {
+                Ok(Ok(resolved)) => resolved,
+                Ok(Err(err)) => {
+                    summary.failed += 1;
+                    log::warn!("[FAIL] {display_name} - {err:#}");
+                    return Ok(());
+                }
+                Err(err) => return Err(err.into()),
+            };
 
-            match verify_ctr(path, options, progress, cancel).await {
+            match verify_ctr(resolved.path(), options, progress, cancel).await {
                 Ok(result) => {
                     let tag = if result.ok() { "[OK]" } else { "[FAIL]" };
                     if result.ok() {
