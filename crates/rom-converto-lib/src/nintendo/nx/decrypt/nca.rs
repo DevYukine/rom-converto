@@ -201,18 +201,30 @@ impl NcaPlainPlan {
         Ok(())
     }
 
-    /// The first `len` plaintext bytes of the NCA (clamped to its
-    /// size), for recomputing the HFS0 entry hash of a rewritten NCA.
-    pub fn plain_prefix(&self, file: &File, nca_offset: u64, len: u64) -> NxResult<Vec<u8>> {
-        let len = len.min(self.size) as usize;
-        let head = len.min(NCA_HEADER_SIZE);
-        let mut buf = vec![0u8; len];
-        buf[..head].copy_from_slice(&self.header[..head]);
-        if len > head {
-            file_read_exact_at(file, &mut buf[head..], nca_offset + head as u64)?;
-            self.apply(head as u64, &mut buf[head..])?;
+    /// The SHA-256 of the first `len` plaintext bytes of the NCA
+    /// (clamped to its size), for recomputing the HFS0 entry hash of a
+    /// rewritten NCA. Streams in fixed-size chunks because `len` comes
+    /// from the untrusted HFS0 entry header.
+    pub fn plain_prefix_digest(
+        &self,
+        file: &File,
+        nca_offset: u64,
+        len: u64,
+    ) -> NxResult<[u8; 32]> {
+        let len = len.min(self.size);
+        let head = len.min(NCA_HEADER_SIZE as u64);
+        let mut hasher = Sha256::new();
+        hasher.update(&self.header[..head as usize]);
+        let mut buf = vec![0u8; (CHUNK as u64).min(len - head) as usize];
+        let mut pos = head;
+        while pos < len {
+            let take = (CHUNK as u64).min(len - pos) as usize;
+            file_read_exact_at(file, &mut buf[..take], nca_offset + pos)?;
+            self.apply(pos, &mut buf[..take])?;
+            hasher.update(&buf[..take]);
+            pos += take as u64;
         }
-        Ok(buf)
+        Ok(hasher.finalize().into())
     }
 
     /// Decrypts the encrypted runs overlapping the chunk `buf` that
@@ -486,6 +498,41 @@ mod tests {
         // Everything else in the header is the plaintext original.
         assert_eq!(&out[0x300..0x340], &header[0x300..0x340]);
         assert_eq!(&out[0x204..0x280], &header[0x204..0x280]);
+    }
+
+    /// The streamed prefix digest equals hashing the written plaintext, for
+    /// header-only, header-plus-partial-chunk, multi-chunk and clamped lengths.
+    #[test]
+    fn prefix_digest_matches_the_written_plaintext() {
+        let plain = body(CHUNK + 0x1000, 3);
+        let (header, starts) = plain_header(&[(ENC_AES_CTR, &plain)]);
+        let mut nca = assemble(header, &[&plain]);
+        let end = nca.len() as u64;
+        encrypt_run(&mut nca, starts[0], end, GENERATION);
+        let out = decrypt(&nca);
+
+        let mut tmp = NamedTempFile::new().unwrap();
+        tmp.write_all(&nca).unwrap();
+        let file = Arc::new(File::open(tmp.path()).unwrap());
+        let size = nca.len() as u64;
+        let plan =
+            NcaPlainPlan::open(file.clone(), 0, size, "test.nca", &synthetic_keyset()).unwrap();
+        for len in [
+            0x200,
+            0xC00,
+            0xC01,
+            0x4000 + CHUNK as u64 + 1,
+            size,
+            size + 1,
+        ] {
+            let end = len.min(size) as usize;
+            let expected: [u8; 32] = Sha256::digest(&out[..end]).into();
+            assert_eq!(
+                plan.plain_prefix_digest(&file, 0, len).unwrap(),
+                expected,
+                "len {len:#x}"
+            );
+        }
     }
 
     #[test]

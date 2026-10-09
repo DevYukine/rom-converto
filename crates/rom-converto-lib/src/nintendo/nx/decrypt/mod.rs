@@ -126,8 +126,8 @@ fn plan_decrypt(input: &Path, keys: &KeySet) -> NxResult<DecryptPlan> {
     let total = file.metadata()?.len();
     let mut warnings = Vec::new();
     let segments = match listing.kind {
-        ContainerKind::Nsp => nsp_segments(&file, input, &listing.entries, &keys)?,
-        ContainerKind::Xci => xci_segments(&file, input, &keys, &mut warnings)?,
+        ContainerKind::Nsp => nsp_segments(&file, total, input, &listing.entries, &keys)?,
+        ContainerKind::Xci => xci_segments(&file, total, input, &keys, &mut warnings)?,
         ContainerKind::Nsz | ContainerKind::Xcz => unreachable!("compressed kinds rejected above"),
     };
     Ok(DecryptPlan {
@@ -161,6 +161,7 @@ fn is_ncz(name: &str) -> bool {
 
 fn nsp_segments(
     file: &Arc<File>,
+    total: u64,
     input: &Path,
     entries: &[crate::nintendo::nx::container::ContainerEntry],
     keys: &KeySet,
@@ -172,6 +173,16 @@ fn nsp_segments(
     }
     let mut segments = Vec::new();
     for entry in entries.iter().filter(|e| is_nca(&e.name)) {
+        // An entry running past the end of the file is refused while
+        // planning, before any scratch output exists or a read runs off
+        // the end.
+        if entry
+            .abs_offset
+            .checked_add(entry.size)
+            .is_none_or(|end| end > total)
+        {
+            return Err(NxError::OverlappingEntries);
+        }
         let plan = NcaPlainPlan::open(
             file.clone(),
             entry.abs_offset,
@@ -198,6 +209,7 @@ fn nsp_segments(
 /// failing the conversion. I/O errors stay fatal.
 fn xci_segments(
     file: &Arc<File>,
+    total: u64,
     input: &Path,
     keys: &KeySet,
     warnings: &mut Vec<String>,
@@ -232,6 +244,9 @@ fn xci_segments(
                 .data_section_offset
                 .checked_add(entry.data_offset)
                 .ok_or(NxError::InvalidXci)?;
+            if abs.checked_add(entry.size).is_none_or(|end| end > total) {
+                return Err(NxError::OverlappingEntries);
+            }
             let plan = match NcaPlainPlan::open(file.clone(), abs, entry.size, &entry.name, keys) {
                 Err(err)
                     if partition.name.eq_ignore_ascii_case("update")
@@ -245,8 +260,9 @@ fn xci_segments(
                 }
                 plan => plan?,
             };
-            let prefix = plan.plain_prefix(file, abs, u64::from(entry.hashed_region_size))?;
-            set_entry_hash(&mut sub_header, i, &prefix);
+            let digest =
+                plan.plain_prefix_digest(file, abs, u64::from(entry.hashed_region_size))?;
+            set_entry_hash(&mut sub_header, i, &digest);
             segments.push(Segment {
                 abs,
                 len: entry.size,
@@ -260,7 +276,11 @@ fn xci_segments(
         if hashed > sub_header.len() {
             return Err(NxError::InvalidXci);
         }
-        set_entry_hash(&mut root_header, index, &sub_header[..hashed]);
+        set_entry_hash(
+            &mut root_header,
+            index,
+            &Sha256::digest(&sub_header[..hashed]).into(),
+        );
         segments.push(Segment {
             abs: part_abs,
             len: sub_header.len() as u64,
@@ -298,10 +318,10 @@ fn read_at(file: &File, abs: u64, len: u64) -> NxResult<Vec<u8>> {
     Ok(buf)
 }
 
-/// Stores the SHA-256 of `hashed` in HFS0 entry `index` of `header`.
-fn set_entry_hash(header: &mut [u8], index: usize, hashed: &[u8]) {
+/// Stores a SHA-256 digest in HFS0 entry `index` of `header`.
+fn set_entry_hash(header: &mut [u8], index: usize, digest: &[u8; 32]) {
     let at = HFS0_HEADER_SIZE + index * HFS0_ENTRY_SIZE + HFS0_ENTRY_HASH_OFFSET;
-    header[at..at + 32].copy_from_slice(&Sha256::digest(hashed));
+    header[at..at + 32].copy_from_slice(digest);
 }
 
 /// Streams the input to `out`, copying every byte outside a segment
@@ -431,6 +451,48 @@ mod tests {
             &out[nca_start + 0x4000..nca_start + nca.len()],
             &section[..]
         );
+    }
+
+    #[test]
+    fn nsp_planning_rejects_an_nca_entry_running_past_eof() {
+        let nca = build_meta_nca(
+            0x0100_0000_0000_3000,
+            1,
+            CNMT_CONTENT_TYPE_PROGRAM,
+            &[[0xEE; 16]],
+        );
+        let nsp = build_test_nsp(&[("0000000000000000000000000000000c.cnmt.nca".into(), nca)]);
+        let dir = TempDir::new().unwrap();
+        // The NCA is the only entry, so dropping the last byte leaves its
+        // offset + size one past the end of the file.
+        let input = write_temp(&dir, "cut.nsp", &nsp[..nsp.len() - 1]);
+
+        let err = match plan_decrypt(&input, &synthetic_keyset()) {
+            Err(err) => err,
+            Ok(_) => panic!("planning must reject an NCA entry past the end of the file"),
+        };
+        assert!(matches!(err, NxError::OverlappingEntries));
+    }
+
+    #[test]
+    fn xci_planning_rejects_an_nca_entry_running_past_eof() {
+        let nca = build_meta_nca(
+            0x0100_0000_0000_3000,
+            1,
+            CNMT_CONTENT_TYPE_PROGRAM,
+            &[[0xEE; 16]],
+        );
+        let xci = build_test_xci(&[("0000000000000000000000000000000c.cnmt.nca".into(), nca)]);
+        let dir = TempDir::new().unwrap();
+        // The secure NCA is the last payload, so dropping the last byte
+        // leaves its offset + size one past the end of the file.
+        let input = write_temp(&dir, "cut.xci", &xci[..xci.len() - 1]);
+
+        let err = match plan_decrypt(&input, &synthetic_keyset()) {
+            Err(err) => err,
+            Ok(_) => panic!("planning must reject an NCA entry past the end of the file"),
+        };
+        assert!(matches!(err, NxError::OverlappingEntries));
     }
 
     #[test]
