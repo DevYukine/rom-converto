@@ -117,6 +117,8 @@ onBeforeUnmount(() => {
 }
 
 .rc-modal {
+	/* Teleported to <body>, so the color set on .app does not apply here. */
+	color: var(--t1);
 	background: var(--card);
 	border: 1px solid var(--a16);
 	border-radius: var(--r-lg);
