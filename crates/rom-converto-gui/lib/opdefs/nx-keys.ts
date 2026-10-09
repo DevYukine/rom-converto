@@ -1,7 +1,7 @@
 import { reactive } from "vue";
 import { basename } from "~/composables/useDerivedPath";
 import { invoke } from "../ipc";
-import { NX_KEYS_AUTO, type KvColor, type OpStore } from "./types";
+import type { KvColor, OpStore } from "./types";
 
 // Resolved prod.keys per explicit path ("" = auto), fed by cmd_nx_keys_resolve.
 // Missing results are re-probed on later renders so dropping the file into
@@ -36,10 +36,10 @@ export function nxKeysDisplay(store: OpStore): string {
 	if (keys) {
 		const name = basename(keys);
 		if (!s?.done) return name;
-		return s.resolved ? `${name} ✓` : `${name} · not found`;
+		return s.resolved ? `${name} ✓` : `${name} · Not found`;
 	}
-	if (!s?.done) return NX_KEYS_AUTO;
-	return s.resolved ? `auto (${s.resolved}) ✓` : "not found · click to browse";
+	if (!s?.done) return "";
+	return s.resolved ? `Automatic (${s.resolved}) ✓` : "Not found, click to browse";
 }
 
 export function nxKeysColor(store: OpStore): KvColor | undefined {

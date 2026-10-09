@@ -4,11 +4,13 @@ function normalize(p: string): string {
 
 // Path shown for a scanned file: relative to the scan root, so folders full of
 // identically named files (content/tmd style layouts) stay distinguishable.
-export function relativePath(path: string, root: string): string {
+// The fallback for paths outside the root is the bare file name, or the whole
+// (separator-normalized) path where the location itself matters.
+export function relativePath(path: string, root: string, fallback: "name" | "path" = "name"): string {
 	const p = normalize(path);
 	const r = normalize(root);
 	if (r && p.toLowerCase().startsWith(`${r.toLowerCase()}/`)) return p.slice(r.length + 1);
-	return p.slice(p.lastIndexOf("/") + 1);
+	return fallback === "path" ? p : p.slice(p.lastIndexOf("/") + 1);
 }
 
 export function formatRate(perSecond: number): string {

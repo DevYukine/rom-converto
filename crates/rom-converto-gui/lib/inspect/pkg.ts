@@ -20,17 +20,17 @@ export const pkg: KindModule<"pkg"> = {
 		add(rom, "Title ID", info.title_id);
 		add(
 			rom,
-			"Content Type",
+			"Content type",
 			info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.content_type_label ?? info.category ?? "Game"),
 		);
 		add(rom, "Content ID", info.content_id);
 		add(rom, "Size", formatBytes(info.total_size));
 		add(rom, "Items", info.item_count);
-		add(rom, "Package Revision", info.pkg_revision);
-		add(rom, "Package Type", info.pkg_type);
-		add(rom, "Key Type", info.key_type);
-		if (info.drm_type != null) add(rom, "DRM Type", info.drm_type);
-		if (info.package_flags != null) add(rom, "Package Flags", `0x${hex(info.package_flags, 8)}`);
+		add(rom, "Package revision", info.pkg_revision);
+		add(rom, "Package type", info.pkg_type);
+		add(rom, "Key type", info.key_type);
+		if (info.drm_type != null) add(rom, "DRM type", info.drm_type);
+		if (info.package_flags != null) add(rom, "Package flags", `0x${hex(info.package_flags, 8)}`);
 		add(rom, "Data", `${formatBytes(info.data_size)} @ 0x${hex(info.data_offset, 8)}`);
 		if (info.meta_ids.length) add(rom, "Meta IDs", info.meta_ids.map((id) => `0x${hex(id, 8)}`).join(", "));
 		return { rom };

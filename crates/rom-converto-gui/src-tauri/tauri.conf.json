@@ -24,8 +24,8 @@
 				"title": "rom-converto",
 				"width": 1200,
 				"height": 720,
-				"minWidth": 960,
-				"minHeight": 600,
+				"minWidth": 800,
+				"minHeight": 440,
 				"center": true,
 				"backgroundColor": "#18181b",
 				"decorations": false

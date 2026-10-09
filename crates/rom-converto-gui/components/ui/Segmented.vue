@@ -1,16 +1,18 @@
 <script setup lang="ts">
+defineOptions({ inheritAttrs: false });
 const props = withDefaults(
 	defineProps<{
 		modelValue: string;
-		options: { label: string; value: string }[];
+		options: { label: string; value: string; disabled?: string }[];
 		label?: string;
 		tooltip?: string;
-		size?: "sm" | "md";
+		// Label left, control right; stacks to a full-width block when the
+		// enclosing `field` container is narrower than 520px. Without it the
+		// control sits inline at its natural width.
+		row?: boolean;
 		disabled?: boolean;
-		disabledOptions?: string[];
-		disabledReason?: string;
 	}>(),
-	{ size: "sm" },
+	{ row: false },
 );
 
 const emit = defineEmits<{
@@ -19,73 +21,116 @@ const emit = defineEmits<{
 
 const labelId = useId();
 
-function isDisabled(value: string) {
-	return props.disabled || (props.disabledOptions?.includes(value) ?? false);
-}
-
 function select(value: string) {
-	if (!isDisabled(value) && value !== props.modelValue) emit("update:modelValue", value);
+	if (!props.disabled && value !== props.modelValue) emit("update:modelValue", value);
 }
 </script>
 
 <template>
-	<div class="rc-segmented-wrap">
+	<div v-bind="{ ...$attrs, 'aria-label': undefined, 'aria-labelledby': undefined }" class="rc-segmented-wrap" :class="{ 'rc-segmented-wrap--row': row }">
 		<FieldLabel v-if="label" :id="labelId" :label="label" :tooltip="tooltip" />
-		<div role="group" :aria-labelledby="label ? labelId : undefined" class="rc-segmented" :class="`rc-segmented--${size}`">
-			<template v-for="option in options" :key="option.value">
-				<InfoTooltip v-if="isDisabled(option.value) && disabledReason" :message="disabledReason">
-					<button type="button" disabled class="rc-segmented__option" :aria-pressed="option.value === modelValue">
-						{{ option.label }}
-					</button>
-				</InfoTooltip>
-				<button
-					v-else
-					type="button"
-					:disabled="isDisabled(option.value)"
-					:aria-pressed="option.value === modelValue"
-					class="rc-segmented__option"
-					:class="{ 'rc-segmented__option--active': option.value === modelValue }"
-					@click="select(option.value)"
-				>
-					{{ option.label }}
-				</button>
-			</template>
+		<div
+			role="group"
+			:aria-label="$attrs['aria-label'] as string | undefined"
+			:aria-labelledby="label ? labelId : ($attrs['aria-labelledby'] as string | undefined)"
+			class="rc-segmented"
+		>
+			<button
+				v-for="option in options"
+				:key="option.value"
+				type="button"
+				:disabled="disabled || undefined"
+				:aria-disabled="option.disabled ? 'true' : undefined"
+				:aria-pressed="option.value === modelValue"
+				:title="option.disabled || option.label"
+				class="rc-segmented__option"
+				:class="{ 'rc-segmented__option--active': option.value === modelValue }"
+				@click="!option.disabled && select(option.value)"
+			>
+				{{ option.label }}
+			</button>
 		</div>
 	</div>
 </template>
 
 <style scoped>
 .rc-segmented-wrap {
-	display: flex;
+	display: inline-flex;
 	flex-direction: column;
+	align-items: flex-start;
 	gap: 6px;
+	min-width: 0;
+}
+
+.rc-segmented-wrap--row {
+	display: flex;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px 16px;
+	width: 100%;
+}
+
+.rc-segmented-wrap--row > .rc-segmented {
+	margin-left: auto;
+}
+
+.rc-segmented-wrap--row .rc-segmented__option {
+	min-width: 72px;
+}
+
+@container field (width < 520px) {
+	.rc-segmented-wrap--row {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.rc-segmented-wrap--row > .rc-segmented {
+		margin-left: 0;
+	}
+
+	.rc-segmented-wrap--row > .rc-segmented > .rc-segmented__option {
+		flex: 1 1 0;
+		min-width: 0;
+	}
 }
 
 .rc-segmented {
 	display: inline-flex;
+	min-width: 0;
+	max-width: 100%;
+	min-height: var(--ctl-h);
+	background: var(--bg2);
 	border: 1px solid var(--a14);
-	border-radius: 7px;
-	overflow: hidden;
+	border-radius: calc(var(--r-sm) + 1px);
+	padding: 2px;
 }
 
 .rc-segmented__option {
+	min-width: 0;
+	height: 24px;
+	padding: 0 12px;
 	border: none;
+	border-radius: calc(var(--r-sm) - 1px);
 	background: transparent;
 	color: var(--t4);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 400;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	cursor: pointer;
 }
 
-.rc-segmented--sm .rc-segmented__option {
-	padding: 4px 14px;
-}
-
-.rc-segmented--md .rc-segmented__option {
-	padding: 5px 14px;
-}
-
 .rc-segmented__option:disabled {
+	cursor: not-allowed;
+	opacity: 0.5;
+}
+
+/* aria-disabled (per-option, with the reason in the title) instead of
+   disabled so the hover tooltip still explains why the step is off. */
+.rc-segmented__option[aria-disabled="true"] {
 	cursor: not-allowed;
 	opacity: 0.5;
 }
@@ -94,5 +139,10 @@ function select(value: string) {
 	background: var(--a14);
 	color: var(--t0);
 	font-weight: 600;
+}
+
+:global([data-theme="light"] .rc-segmented__option--active) {
+	background: var(--card);
+	box-shadow: 0 1px 2px var(--a20);
 }
 </style>

@@ -898,9 +898,12 @@ async function organizeRun(taskId: string, progressKey: string, input: string, d
 		unit(`${input}/Panzer Dragoon.cue`, `${out}/Saturn/Panzer Dragoon.chd`, "Saturn", "chd.compress", "ok", null),
 		unit(`${input}/Pokemon Emerald.gba`, `${out}/Game Boy Advance/Pokemon Emerald.zip`, "Game Boy Advance", "zip", "ok", null),
 		unit(`${input}/Sample Game.rvz`, `${out}/GameCube/Sample Game.rvz`, "GameCube", "copy", "ok", null),
+		unit(`${input}/Nintendo - Game Boy Advance/1G1R - No-Intro (2026-10-02)/Pokemon - Emerald Version (USA, Europe) (Rev 1).gba`, `${out}/Game Boy Advance/Pokemon - Emerald Version (USA, Europe) (Rev 1).zip`, "Game Boy Advance", "zip", "ok", null),
 		unit(`${input}/readme.txt`, null, null, "skip", "skipped", "unrecognized"),
 		unit(`${input}/Already In Place.chd`, `${out}/PS1/Already In Place.chd`, "PS1", "copy", "skipped", "already in place"),
 		unit(`${input}/Broken Disc.iso`, null, "PS2", "chd.compress", "failed", "Disc read error"),
+		// The runner reports each playlist as a row keyed by its folder; `playlists` is the summary list.
+		unit(`${out}/Saturn`, `${out}/Saturn/Panzer Dragoon.m3u`, null, "playlist", "ok", null),
 	];
 	await streamRows(taskId, progressKey, rows, (row) => ({ kind: "organize", ...row }));
 	return {

@@ -6,11 +6,12 @@ import { buildCliCommand } from "~/composables/useCliEcho";
 import { basename } from "~/composables/useDerivedPath";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
-import type { DryRunLine } from "~/components/modals/DryRunModal.vue";
+import { outcomeConflicts, outcomeNote, type DryRunLine } from "~/lib/dry-run";
 import { dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
-import type { RunOutcome } from "~/types";
+import type { OrganizeData, RunOutcome } from "~/types";
+import { organizeDryRunLines } from "~/lib/organize-actions";
 
 const props = defineProps<{
 	def: OpDef;
@@ -93,6 +94,13 @@ const dryLines = ref<DryRunLine[]>([]);
 const dryCommand = ref("");
 const dryOpen = ref(false);
 
+function isOrganizeData(data: unknown): data is OrganizeData {
+	return typeof data === "object" && data !== null && Array.isArray((data as OrganizeData).rows);
+}
+
+// An organize dry run plans the whole library; the modal virtualizes the plan
+// rows, so every planned row is listed. The staged item's own summary line
+// above the plan keeps the runner's message and conflict state.
 async function dryRun() {
 	if (!count.value) return;
 	if (blockedByExplicitKey()) return;
@@ -105,10 +113,9 @@ async function dryRun() {
 		let note = "ok";
 		let conflict = false;
 		try {
-			const res = await invoke<{ message?: string }>(command, dryRunArgs(args));
-			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
-			if (msg) note = msg;
-			conflict = /exists|rename/i.test(msg);
+			const res = await invoke<RunOutcome>(command, dryRunArgs(args));
+			note = outcomeNote(res) || "ok";
+			conflict = outcomeConflicts(res);
 		} catch (e) {
 			note = String(e);
 			conflict = true;
@@ -131,13 +138,16 @@ async function dryRun() {
 		let note = "ok";
 		let conflict = false;
 		let output = props.def.deriveOutput?.(item.path, props.store) ?? requestPath(args, "output");
+		let plan: DryRunLine[] = [];
 		try {
 			const res = await invoke<RunOutcome>(command, dryRunArgs(args));
-			const msg = typeof res === "object" && res ? String(res.message ?? "") : String(res);
-			if (msg) note = msg;
-			conflict = /exists|rename/i.test(msg);
+			note = outcomeNote(res) || "ok";
+			conflict = outcomeConflicts(res);
 			const data = res?.data;
-			if (typeof data === "object" && data && "output" in data && typeof data.output === "string") {
+			if (props.def.resultKind === "organize" && isOrganizeData(data) && data.rows.length) {
+				plan = organizeDryRunLines(data.rows, item.path, args.request.options.output_dir ?? "");
+				output = "";
+			} else if (typeof data === "object" && data && "output" in data && typeof data.output === "string") {
 				output = data.output;
 			}
 		} catch (e) {
@@ -148,8 +158,9 @@ async function dryRun() {
 			source: item.name,
 			output,
 			note,
-			conflict,
+			conflict: conflict || plan.some((line) => line.conflict),
 		});
+		for (const line of plan) lines.push(line);
 	}
 	dryLines.value = lines;
 	dryCommand.value = cmd;
@@ -172,12 +183,17 @@ async function dryRun() {
 <style scoped>
 .rc-actions {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	gap: 12px;
+	gap: 10px 12px;
 }
 
 .rc-actions__note {
-	font-size: 11.5px;
+	flex: 1 1 260px;
+	min-width: 0;
+	font-size: var(--fs-sm);
 	color: var(--t4);
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 </style>

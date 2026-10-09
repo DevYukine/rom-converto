@@ -39,6 +39,23 @@ const labels: Record<string, string> = Object.fromEntries(OPTIONS.map((o) => [o.
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
 const triggerEl = ref<HTMLElement | null>(null);
+const popEl = ref<HTMLElement | null>(null);
+const position = ref({ left: "16px", top: "16px", maxHeight: "calc(100vh - 32px)" });
+const popoverId = useId();
+
+function place() {
+	if (!triggerEl.value || !popEl.value) return;
+	const rect = triggerEl.value.getBoundingClientRect();
+	const width = popEl.value.getBoundingClientRect().width;
+	const below = Math.max(0, window.innerHeight - rect.bottom - 22);
+	const above = Math.max(0, rect.top - 22);
+	const useAbove = below < popEl.value.scrollHeight && above > below;
+	const available = Math.max(0, useAbove ? above : below);
+	const height = Math.min(popEl.value.scrollHeight + 2, available);
+	const left = Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16));
+	const top = useAbove ? rect.top - height - 6 : rect.bottom + 6;
+	position.value = { left: `${left}px`, top: `${Math.max(16, Math.min(top, window.innerHeight - height - 16))}px`, maxHeight: `${available}px` };
+}
 
 function isDisabled(value: string) {
 	return props.renameDisabled && value === "rename";
@@ -58,19 +75,57 @@ function select(value: string) {
 	close();
 }
 
-function close() {
+function close(restoreFocus = true) {
 	open.value = false;
-	triggerEl.value?.focus();
+	if (restoreFocus) triggerEl.value?.focus();
 }
 
 function onDocClick(e: MouseEvent) {
-	if (root.value && !root.value.contains(e.target as Node)) close();
+	if (!root.value?.contains(e.target as Node) && !popEl.value?.contains(e.target as Node)) close();
 }
 
 function onKeydown(e: KeyboardEvent) {
 	if (e.key === "Escape") {
 		e.stopPropagation();
 		close();
+		return;
+	}
+	if (e.key !== "Tab") return;
+	const options = popEl.value?.querySelectorAll<HTMLElement>("button:not([disabled])");
+	const first = options?.[0];
+	const last = options?.[options.length - 1];
+	const active = document.activeElement;
+	if (last && active === last && !e.shiftKey) {
+		// Tab would leave the teleported popover for the document edge: close
+		// and let the browser continue from the trigger.
+		close();
+	} else if ((first && active === first && e.shiftKey) || (e.shiftKey && active === popEl.value)) {
+		// Tab would leave backwards: close and stay on the trigger.
+		e.preventDefault();
+		close();
+	}
+}
+
+// Buttons in the popover and the trigger use `mousedown.prevent` because WebKit
+// does not focus a clicked button: the blur would otherwise land here with no
+// relatedTarget and unmount the popover before the click arrives.
+function onFocusout(e: FocusEvent) {
+	const next = e.relatedTarget as Node | null;
+	if (!popEl.value?.contains(next) && !triggerEl.value?.contains(next)) close(false);
+}
+
+function onResize() {
+	close(false);
+}
+
+function onScroll() {
+	const rect = triggerEl.value?.getBoundingClientRect();
+	if (!rect) return;
+	const container = triggerEl.value?.closest("main")?.getBoundingClientRect();
+	if (rect.bottom <= Math.max(0, container?.top ?? 0) || rect.top >= Math.min(window.innerHeight, container?.bottom ?? window.innerHeight)) {
+		close(false);
+	} else {
+		place();
 	}
 }
 
@@ -79,17 +134,26 @@ watch(open, async (isOpen) => {
 		document.addEventListener("mousedown", onDocClick);
 		document.addEventListener("keydown", onKeydown);
 		await nextTick();
-		const first = root.value?.querySelector<HTMLElement>("[role='menuitemradio']:not([disabled])");
-		first?.focus();
+		place();
+		if (!open.value) return;
+		window.addEventListener("resize", onResize);
+		window.addEventListener("scroll", onScroll, true);
+		const checked = popEl.value?.querySelector<HTMLElement>("button[aria-pressed='true']:not([disabled])");
+		const first = popEl.value?.querySelector<HTMLElement>("button:not([disabled])");
+		(checked ?? first)?.focus();
 	} else {
 		document.removeEventListener("mousedown", onDocClick);
 		document.removeEventListener("keydown", onKeydown);
+		window.removeEventListener("resize", onResize);
+		window.removeEventListener("scroll", onScroll, true);
 	}
 });
 
 onBeforeUnmount(() => {
 	document.removeEventListener("mousedown", onDocClick);
 	document.removeEventListener("keydown", onKeydown);
+	window.removeEventListener("resize", onResize);
+	window.removeEventListener("scroll", onScroll, true);
 });
 </script>
 
@@ -98,60 +162,54 @@ onBeforeUnmount(() => {
 		<button
 			ref="triggerEl"
 			type="button"
-			class="rc-trigger"
-			aria-haspopup="true"
+			class="rc-picker"
+			:title="optionLabel(modelValue)"
 			:aria-expanded="open"
+			aria-haspopup="dialog"
+			:aria-controls="open ? popoverId : undefined"
+			@mousedown.prevent
 			@click="toggle"
 		>
-			{{ optionLabel(modelValue) }} <span class="rc-caret">▾</span>
+			<span class="rc-picker__value">{{ optionLabel(modelValue) }}</span>
+			<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
 		</button>
-		<div v-if="open" class="rc-pop" role="menu">
+		<Teleport to="body">
+		<div v-if="open" :id="popoverId" ref="popEl" class="rc-pop" role="dialog" aria-label="On conflict" tabindex="-1" :style="position" @focusout="onFocusout">
 			<button
 				v-for="opt in OPTIONS"
 				:key="opt.value"
 				type="button"
-				role="menuitemradio"
-				:aria-checked="opt.value === modelValue"
+				:aria-pressed="opt.value === modelValue"
 				class="rc-opt"
 				:class="{ active: opt.value === modelValue }"
 				:disabled="isDisabled(opt.value)"
+				@mousedown.prevent
 				@click="select(opt.value)"
 			>
 				<span class="rc-opt-label">{{ optionLabel(opt.value) }}</span>
 				<span class="rc-opt-desc">{{ opt.description }}</span>
 			</button>
 		</div>
+		</Teleport>
 	</div>
 </template>
 
 <style scoped>
 .rc-conflict {
-	position: relative;
-	display: inline-block;
-}
-
-.rc-trigger {
-	background: none;
-	border: none;
-	color: var(--t2);
-	font-family: ui-monospace, monospace;
-	font-size: 11px;
-	cursor: pointer;
-	padding: 0;
-}
-
-.rc-caret {
-	color: var(--t5);
+	display: inline-flex;
+	flex: none;
+	min-width: 0;
+	max-width: 60%;
 }
 
 .rc-pop {
-	position: absolute;
-	right: 0;
-	top: 26px;
-	width: 260px;
+	position: fixed;
+	box-sizing: border-box;
+	width: min(260px, calc(100vw - 32px));
+	overflow-y: auto;
 	background: var(--pop);
 	border: 1px solid var(--a16);
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	box-shadow: 0 12px 36px var(--shC);
 	padding: 4px;
 	display: flex;
@@ -167,15 +225,21 @@ onBeforeUnmount(() => {
 	border: none;
 	text-align: left;
 	padding: 6px 8px;
-	border-radius: 6px;
+	border-radius: var(--r-sm);
 	color: var(--t3);
-	font-size: 12px;
+	font-size: var(--fs-md);
 	cursor: pointer;
 }
 
+.rc-opt-label {
+	white-space: nowrap;
+}
+
 .rc-opt-desc {
-	font-size: 10.5px;
+	font-size: var(--fs-sm);
 	color: var(--t5);
+	line-height: var(--lh-body);
+	text-wrap: pretty;
 }
 
 .rc-opt:hover:not(:disabled) {
@@ -183,7 +247,7 @@ onBeforeUnmount(() => {
 }
 
 .rc-opt.active {
-	background: rgba(69, 147, 248, .14);
+	background: var(--tint-blue);
 	color: var(--t0);
 }
 

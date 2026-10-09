@@ -4,6 +4,7 @@ import { useUiStore } from "~/stores/ui";
 export const useCtrCdnToCiaStore = makeOpStore("ctr-cdn-to-cia", () => ({
   cdnDir: "",
   output: "",
+  outputDir: "",
   decrypt: true,
   compress: false,
   cleanup: false,

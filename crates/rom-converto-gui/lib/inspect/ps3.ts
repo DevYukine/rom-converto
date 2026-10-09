@@ -7,22 +7,22 @@ export const ps3: KindModule<"ps3"> = {
 		const rom: InspectField[] = [];
 		add(rom, "Title", info.title);
 		add(rom, "Title ID", info.title_id);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : "Game");
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : "Game");
 		add(rom, "Version", info.version);
 		add(rom, "Region", info.region);
 		add(rom, "Size", formatBytes(info.size_bytes));
-		add(rom, "App Version", info.app_ver);
+		add(rom, "App version", info.app_ver);
 		add(rom, "Resolution", info.resolution);
-		add(rom, "Sound Format", info.sound_format);
+		add(rom, "Sound format", info.sound_format);
 		add(rom, "Firmware", info.firmware);
-		add(rom, "Parental Level", info.parental_level);
+		add(rom, "Parental level", info.parental_level);
 		add(rom, "Regions", info.region_count);
-		add(rom, "Total Sectors", info.total_sectors);
+		add(rom, "Total sectors", info.total_sectors);
 		if (info.encrypted !== null) add(rom, "Encryption", info.encrypted ? "encrypted" : "decrypted");
-		add(rom, "Encrypted Sectors", info.encrypted_sectors);
+		add(rom, "Encrypted sectors", info.encrypted_sectors);
 		return {
 			rom,
-			innerTitle: "Disc Files",
+			innerTitle: "Disc files",
 			innerFiles: info.root_files.map((e) => ({ name: e.name, detail: e.is_dir ? "dir" : formatBytes(e.size) })),
 		};
 	},

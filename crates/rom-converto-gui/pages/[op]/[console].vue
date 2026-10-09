@@ -23,13 +23,19 @@ const isBundle = computed(() => op.value === "compress" && consoleId.value === "
 
 <style scoped>
 .rc-missing {
-	padding: 40px;
+	padding: 24px 28px 32px;
+	font-size: var(--fs-md);
+	line-height: var(--lh-body);
+	overflow-wrap: anywhere;
 	color: var(--t4);
 }
 
 .rc-missing h1 {
 	margin: 0 0 6px;
-	font-size: 18px;
+	font-size: var(--fs-xl);
+	font-weight: 700;
+	line-height: 1.25;
+	text-wrap: balance;
 	color: var(--t0);
 }
 </style>

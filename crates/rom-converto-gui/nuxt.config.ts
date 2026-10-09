@@ -14,7 +14,7 @@ export default defineNuxtConfig({
 	experimental: {
 		payloadExtraction: false,
 	},
-	css: ["~/assets/css/tokens.css", "~/assets/css/main.css"],
+	css: ["~/assets/css/tokens.css", "~/assets/css/main.css", "~/assets/css/results.css"],
 	devServer: {
 		host: "localhost",
 		port: 3001,

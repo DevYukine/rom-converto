@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import ModalShell from "~/components/modals/ModalShell.vue";
+import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import { boundedNumber } from "~/lib/fields";
+import ToggleSwitch from "~/components/ui/ToggleSwitch.vue";
 import { useConfigStore } from "~/stores/config";
 import type { Preset, PresetFormat } from "~/types";
 
@@ -12,6 +14,7 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>();
 
 const store = useConfigStore();
+const idBase = useId();
 
 type FieldKind = "number" | "text" | "conflict" | "list" | "lines" | "select" | "bool";
 interface FieldSpec {
@@ -62,7 +65,7 @@ const DISC_FIELDS: FieldSpec[] = [
 	{ key: "level", label: "Level", kind: "number" },
 	{ key: "chunk_size", label: "Chunk size", kind: "number" },
 	{ key: "on_conflict", label: "On conflict", kind: "conflict" },
-	{ key: "output_dir", label: "Output dir", kind: "text" },
+	{ key: "output_dir", label: "Output directory", kind: "text" },
 	{ key: "report", label: "Report", kind: "text" },
 ];
 
@@ -74,7 +77,7 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "mode", label: "Mode", kind: "text" },
 		{ key: "block_size_exp", label: "Block size exp", kind: "number" },
 		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
-		{ key: "output_dir", label: "Output dir", kind: "text" },
+		{ key: "output_dir", label: "Output directory", kind: "text" },
 		{ key: "report", label: "Report", kind: "text" },
 	],
 	chd: [
@@ -82,13 +85,13 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "codecs", label: "Codecs", kind: "list" },
 		{ key: "level", label: "Level", kind: "number" },
 		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
-		{ key: "output_dir", label: "Output dir", kind: "text" },
+		{ key: "output_dir", label: "Output directory", kind: "text" },
 		{ key: "report", label: "Report", kind: "text" },
 	],
 	cso: [
 		{ key: "block_size", label: "Block size", kind: "number" },
 		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
-		{ key: "output_dir", label: "Output dir", kind: "text" },
+		{ key: "output_dir", label: "Output directory", kind: "text" },
 		{ key: "report", label: "Report", kind: "text" },
 	],
 	wup: [
@@ -102,16 +105,16 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "input_checksum_max", label: "Checksum ceiling", kind: "text" },
 	],
 	organize: [
-		{ key: "output_dir", label: "Output dir", kind: "text" },
+		{ key: "output_dir", label: "Output directory", kind: "text" },
 		{ key: "output_template", label: "Layout", kind: "text" },
 		{ key: "on_conflict", label: "On conflict", kind: "conflict" },
 		{ key: "report", label: "Report", kind: "text" },
-		{ key: "dat", label: "Rename with DAT", kind: "bool" },
-		{ key: "move_source", label: "Move sources", kind: "bool" },
-		{ key: "playlists", label: "Write playlists", kind: "bool" },
-		{ key: "multi_disc_dirs", label: "Multi-disc folders", kind: "bool" },
-		{ key: "filter_regex", label: "Name includes", kind: "lines" },
-		{ key: "filter_regex_exclude", label: "Name excludes", kind: "lines" },
+		{ key: "dat", label: "Rename with DAT (online)", kind: "bool" },
+		{ key: "move_source", label: "Move files", kind: "bool" },
+		{ key: "playlists", label: "Write .m3u playlists", kind: "bool" },
+		{ key: "multi_disc_dirs", label: "Folder per multi-disc game", kind: "bool" },
+		{ key: "filter_regex", label: "Name matches (regex)", kind: "lines" },
+		{ key: "filter_regex_exclude", label: "Name excludes (regex)", kind: "lines" },
 		{ key: "filter_language", label: "Languages", kind: "list" },
 		{ key: "filter_region", label: "Regions", kind: "list" },
 		{ key: "no_type", label: "Exclude types", kind: "list" },
@@ -125,20 +128,20 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "prefer_parent", label: "Prefer parent", kind: "bool" },
 		{ key: "prefer_verified", label: "Prefer verified", kind: "bool" },
 		{ key: "prefer_good", label: "Prefer good", kind: "bool" },
-		{ key: "prefer_game_regex", label: "Prefer name regex", kind: "lines" },
-		{ key: "prefer_filename_regex", label: "Prefer filename regex", kind: "lines" },
-		{ key: "dir_letter", label: "Letter folders", kind: "bool" },
-		{ key: "dir_letter_count", label: "Chars per folder", kind: "number" },
+		{ key: "prefer_game_regex", label: "Prefer DAT names matching", kind: "lines" },
+		{ key: "prefer_filename_regex", label: "Prefer file names matching", kind: "lines" },
+		{ key: "dir_letter", label: "First-letter folders", kind: "bool" },
+		{ key: "dir_letter_count", label: "Characters per folder", kind: "number" },
 		{ key: "dir_letter_limit", label: "Folder limit", kind: "number" },
 		{ key: "dir_letter_group", label: "Range grouping", kind: "bool" },
 		{ key: "zip_format", label: "Zip format", kind: "select" },
-		{ key: "zip_exclude", label: "Skip zipping", kind: "text" },
+		{ key: "zip_exclude", label: "Don't zip matching", kind: "text" },
 		{ key: "link_mode", label: "Link mode", kind: "select" },
 		{ key: "symlink_relative", label: "Relative symlinks", kind: "bool" },
 		{ key: "remove_headers", label: "Strip headers", kind: "list" },
 		{ key: "trim_add_padding", label: "Re-pad trimmed dumps", kind: "bool" },
-		{ key: "clean", label: "Clean stale files", kind: "bool" },
-		{ key: "clean_exclude", label: "Clean keep globs", kind: "lines" },
+		{ key: "clean", label: "Remove stale files", kind: "bool" },
+		{ key: "clean_exclude", label: "Keep files matching", kind: "lines" },
 		{ key: "clean_backup", label: "Clean backup folder", kind: "text" },
 		{ key: "move_delete_dirs", label: "Empty folders", kind: "select" },
 	],
@@ -164,12 +167,13 @@ const sections = computed(() =>
 );
 
 function cell(format: PresetFormat, key: string) {
-	return (draft[format] as Record<string, unknown> | null | undefined)?.[key] ?? null;
+	const value = (draft[format] as Record<string, unknown> | null | undefined)?.[key] ?? null;
+	return key === "report" && value === false ? null : value;
 }
 
 function setCell(format: PresetFormat, key: string, value: unknown) {
 	const section = draft[format] as Record<string, unknown> | null | undefined;
-	if (section) section[key] = value;
+	if (section) section[key] = value === "" ? null : value;
 }
 
 function onTextInput(format: PresetFormat, key: string, raw: string) {
@@ -231,33 +235,43 @@ async function save() {
 		<div class="rc-sections">
 			<div v-for="format in sections" :key="format" class="rc-section">
 				<span class="rc-section__title">{{ FORMAT_LABELS[format] }}</span>
-				<div v-for="field in FORMAT_SCHEMA[format]" :key="field.key" class="rc-field">
-					<span class="rc-field__label">{{ field.label }}</span>
-					<select
-						v-if="field.kind === 'conflict'"
-						class="rc-input"
-						:value="cell(format, field.key) ?? 'overwrite'"
-						@change="setCell(format, field.key, ($event.target as HTMLSelectElement).value)"
-					>
-						<option v-for="opt in CONFLICT_OPTIONS" :key="opt.value" :value="opt.value">
-							{{ opt.label }}
-						</option>
-					</select>
-					<select
-						v-else-if="field.kind === 'select'"
-						class="rc-input"
-						:value="cell(format, field.key) ?? ''"
-						@change="setCell(format, field.key, ($event.target as HTMLSelectElement).value || null)"
-					>
-						<option value="">Default</option>
-						<option v-for="opt in SELECT_OPTIONS[field.key]" :key="opt.value" :value="opt.value">
-							{{ opt.label }}
-						</option>
-					</select>
+				<div v-for="field in FORMAT_SCHEMA[format]" :key="field.key" class="rc-field" :class="{ 'rc-field--stacked': ['text', 'list', 'lines'].includes(field.kind), 'rc-field--bool': field.kind === 'bool' }">
+					<label v-if="field.kind !== 'bool'" class="rc-field__label" :for="`${idBase}-${format}-${field.key}`">{{ field.label }}</label>
+					<div v-if="field.kind === 'conflict' || field.kind === 'select'" class="rc-select">
+						<select
+							v-if="field.kind === 'conflict'"
+							:id="`${idBase}-${format}-${field.key}`"
+							class="rc-input"
+							:value="cell(format, field.key) ?? ''"
+							@change="setCell(format, field.key, ($event.target as HTMLSelectElement).value)"
+						>
+							<option value="">Default</option>
+							<option v-for="opt in CONFLICT_OPTIONS" :key="opt.value" :value="opt.value">
+								{{ opt.label }}
+							</option>
+						</select>
+						<select
+							v-else
+							:id="`${idBase}-${format}-${field.key}`"
+							class="rc-input"
+							:value="cell(format, field.key) ?? ''"
+							@change="setCell(format, field.key, ($event.target as HTMLSelectElement).value || null)"
+						>
+							<option value="">Default</option>
+							<option v-for="opt in SELECT_OPTIONS[field.key]" :key="opt.value" :value="opt.value">
+								{{ opt.label }}
+							</option>
+						</select>
+						<svg class="rc-select__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+							<path d="m6 9 6 6 6-6" />
+						</svg>
+					</div>
 					<input
 						v-else-if="field.kind === 'number'"
+						:id="`${idBase}-${format}-${field.key}`"
 						type="number"
-						class="rc-input"
+						placeholder="Default"
+						class="rc-input rc-input--mono"
 						:min="NUMBER_BOUNDS[field.key]?.min"
 						:max="NUMBER_BOUNDS[field.key]?.max"
 						:value="cell(format, field.key) ?? ''"
@@ -265,29 +279,32 @@ async function save() {
 					/>
 					<textarea
 						v-else-if="field.kind === 'lines'"
-						class="rc-input"
-						placeholder="one per line"
+						:id="`${idBase}-${format}-${field.key}`"
+						class="rc-input rc-input--mono"
+						placeholder="One per line"
 						:value="linesText(format, field.key)"
 						@input="onLinesInput(format, field.key, ($event.target as HTMLTextAreaElement).value)"
 					/>
 					<input
 						v-else-if="field.kind === 'list'"
+						:id="`${idBase}-${format}-${field.key}`"
 						type="text"
-						class="rc-input"
-						:placeholder="field.key === 'remove_headers' ? 'comma-separated, or all' : 'comma-separated'"
+						class="rc-input rc-input--mono"
+						:placeholder="field.key === 'remove_headers' ? 'Comma-separated, or all' : 'Comma-separated'"
 						:value="listText(format, field.key)"
 						@input="onListInput(format, field.key, ($event.target as HTMLInputElement).value)"
 					/>
-					<input
+					<ToggleSwitch
 						v-else-if="field.kind === 'bool'"
-						type="checkbox"
-						:checked="cell(format, field.key) === true"
-						@change="setCell(format, field.key, ($event.target as HTMLInputElement).checked)"
+						:label="field.label"
+						:model-value="cell(format, field.key) === true"
+						@update:model-value="setCell(format, field.key, $event)"
 					/>
 					<input
 						v-else
+						:id="`${idBase}-${format}-${field.key}`"
 						type="text"
-						class="rc-input"
+						class="rc-input rc-input--mono"
 						:value="cell(format, field.key) ?? ''"
 						@input="onTextInput(format, field.key, ($event.target as HTMLInputElement).value)"
 					/>
@@ -298,9 +315,10 @@ async function save() {
 		</div>
 
 		<template #footer>
-			<div class="rc-spacer" />
-			<button type="button" class="rc-outlined" @click="emit('close')">Cancel</button>
-			<PrimaryButton :disabled="saving" @click="save">{{ saving ? "Saving…" : "Save" }}</PrimaryButton>
+			<div class="rc-footer-actions">
+				<PrimaryButton variant="outlined" @click="emit('close')">Cancel</PrimaryButton>
+				<PrimaryButton :disabled="saving" @click="save">{{ saving ? "Saving…" : "Save" }}</PrimaryButton>
+			</div>
 		</template>
 	</ModalShell>
 </template>
@@ -309,71 +327,110 @@ async function save() {
 .rc-sections {
 	display: flex;
 	flex-direction: column;
-	gap: 14px;
+	gap: 16px;
 }
 
 .rc-section {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
 }
 
 .rc-section__title {
-	font-size: 10.5px;
-	font-weight: 700;
-	text-transform: uppercase;
-	letter-spacing: 0.8px;
-	color: var(--t4);
+	margin-bottom: 8px;
+	font-size: var(--fs-lg);
+	font-weight: 600;
+	color: var(--t1);
 }
 
 .rc-field {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
+	gap: 6px 16px;
+	min-height: 32px;
+	padding: 6px 0;
+}
+
+.rc-field + .rc-field {
+	border-top: 1px solid var(--a06);
 }
 
 .rc-field__label {
-	font-size: 12px;
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--fs-md);
 	color: var(--t2);
 }
 
-.rc-input {
-	width: 200px;
-	font-family: ui-monospace, monospace;
-	font-size: 11.5px;
-	color: var(--t1);
-	background: var(--bg2);
-	border: 1px solid var(--a14);
-	border-radius: 6px;
-	padding: 4px 8px;
+.rc-field--stacked {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.rc-field--stacked .rc-input {
+	width: 100%;
+}
+
+.rc-field input[type="number"] {
+	width: 112px;
+	flex: none;
+	text-align: right;
+}
+
+.rc-field textarea {
+	min-height: 64px;
+	resize: vertical;
+}
+
+.rc-field--bool {
+	padding: 0;
+}
+
+.rc-field--bool :deep(.rc-toggle-row) {
+	width: 100%;
+}
+
+.rc-select {
+	position: relative;
+	flex: 0 1 200px;
+	min-width: 0;
+	max-width: 60%;
+}
+
+.rc-select select {
+	appearance: none;
+	width: 100%;
+	padding-right: 28px;
+}
+
+.rc-select__icon {
+	position: absolute;
+	right: 9px;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 12px;
+	height: 12px;
+	color: var(--t5);
+	pointer-events: none;
 }
 
 .rc-empty {
-	font-size: 12px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--t4);
+	text-wrap: pretty;
 }
 
 .rc-error {
-	font-size: 12px;
+	font-size: var(--fs-sm);
+	line-height: var(--lh-body);
 	color: var(--red);
+	overflow-wrap: anywhere;
 }
 
-.rc-spacer {
-	flex: 1;
-}
-
-.rc-outlined {
-	background: none;
-	border: 1px solid var(--a18);
-	color: var(--t3);
-	border-radius: 8px;
-	padding: 6px 16px;
-	font-size: 12.5px;
-	cursor: pointer;
-}
-
-.rc-outlined:hover {
-	border-color: var(--a40);
+.rc-footer-actions {
+	margin-left: auto;
+	display: flex;
+	gap: 10px;
 }
 </style>

@@ -52,7 +52,6 @@ export const datOps: OpDef[] = [
 					{ label: "SHA-1", value: "sha1" },
 					{ label: "SHA-256", value: "sha256" },
 				],
-				hint: "Quick scan trusts zip CRC32 where possible and falls back automatically.",
 				tooltip:
 					"CRC32 plus size identifies almost everything. Raise this to MD5, SHA-1, or SHA-256 only when a match needs a stronger digest.",
 			},
@@ -60,6 +59,7 @@ export const datOps: OpDef[] = [
 				kind: "toggle",
 				key: "quick",
 				label: "Quick scan",
+				description: "Quick scan trusts zip CRC32 where possible and falls back automatically.",
 				tooltip: QUICK_TOOLTIP,
 			},
 			MAX_DEPTH,

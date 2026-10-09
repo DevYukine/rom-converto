@@ -4,6 +4,7 @@ import { useUiStore } from "~/stores/ui";
 export const useCueMergeStore = makeOpStore("cue-merge", () => ({
   input: "",
   output: "",
+  outputDir: "",
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,
 }));

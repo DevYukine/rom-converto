@@ -2,14 +2,47 @@
 import { useQueueStore } from "~/stores/queue";
 
 const queue = useQueueStore();
+const countsId = useId();
+
+// Announce only state a user would act on: the queue settling and jobs
+// failing. Per-job churn stays silent. A repeat of the same message clears
+// the region first so it is spoken again; the pending re-set is cancelled if
+// another announcement comes first.
+const announcement = ref("");
+let announceTimer: ReturnType<typeof setTimeout> | undefined;
+
+function announce(message: string) {
+	clearTimeout(announceTimer);
+	if (announcement.value === message) {
+		announcement.value = "";
+		announceTimer = setTimeout(() => (announcement.value = message), 30);
+		return;
+	}
+	announcement.value = message;
+}
+
+watch(
+	() => queue.counts,
+	(counts, prev) => {
+		const wasRunning = (prev?.running ?? 0) > 0;
+		if (counts.running === 0 && wasRunning) {
+			announce(counts.queued === 0 ? `Queue idle. ${counts.done} done, ${counts.failed} failed.` : "Queue paused.");
+		} else if (counts.failed > (prev?.failed ?? 0)) {
+			announce(`A job failed. ${counts.running} still running.`);
+		}
+	},
+);
 </script>
 
 <template>
+	<span class="announce" role="status" aria-live="polite">{{ announcement }}</span>
 	<div
 		class="qbar"
 		tabindex="0"
 		role="button"
-		aria-label="Toggle queue drawer"
+		aria-label="Global queue"
+		:aria-describedby="countsId"
+		:aria-expanded="queue.drawerOpen"
 		@click="queue.drawerOpen = !queue.drawerOpen"
 		@keydown.enter="queue.drawerOpen = !queue.drawerOpen"
 		@keydown.space.prevent="queue.drawerOpen = !queue.drawerOpen"
@@ -20,11 +53,11 @@ const queue = useQueueStore();
 			</svg>
 		</span>
 		<span class="label">Global queue</span>
-		<span class="counts" aria-live="polite">
-			<b class="c-run">{{ queue.counts.running }} running</b> ·
-			{{ queue.counts.queued }} queued ·
-			<b class="c-done">{{ queue.counts.done }} done</b> ·
-			<b class="c-fail">{{ queue.counts.failed }} failed</b>
+		<span :id="countsId" class="counts">
+			<b class="c-run" :class="{ zero: !queue.counts.running }">{{ queue.counts.running }} running</b> ·
+			<span :class="{ zero: !queue.counts.queued }">{{ queue.counts.queued }} queued</span> ·
+			<b class="c-done" :class="{ zero: !queue.counts.done }">{{ queue.counts.done }} done</b> ·
+			<b class="c-fail" :class="{ zero: !queue.counts.failed }">{{ queue.counts.failed }} failed</b>
 		</span>
 		<span class="bar"><span class="fill" :style="{ width: queue.avgRunningPct + '%' }" /></span>
 		<span class="speed">{{ queue.statusText }}</span>
@@ -33,38 +66,49 @@ const queue = useQueueStore();
 </template>
 
 <style scoped>
+.announce {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
 .qbar {
 	display: flex;
 	align-items: center;
 	gap: 16px;
-	height: 46px;
+	height: var(--queuebar-h);
+	flex: none;
 	padding: 0 18px;
 	background: var(--bg2);
 	border-top: 1px solid var(--a10);
 	cursor: pointer;
-	font-size: 11.5px;
+	font-size: var(--fs-sm);
 }
 .qbar:hover {
 	background: var(--bg2h);
 }
 .chev {
 	display: flex;
+	flex: none;
 	align-items: center;
 	justify-content: center;
-	width: 26px;
-	height: 26px;
+	width: var(--ctl-h);
+	height: var(--ctl-h);
 	border: 1px solid var(--a20);
-	border-radius: 7px;
+	border-radius: var(--r-sm);
 	background: var(--a07);
 	color: var(--t3);
 }
 .label {
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	font-weight: 700;
 	color: var(--t0);
 }
 .counts {
 	color: var(--t4);
+	white-space: nowrap;
 }
 .c-run {
 	color: var(--blue);
@@ -75,25 +119,39 @@ const queue = useQueueStore();
 .c-fail {
 	color: var(--red);
 }
+.counts .zero {
+	color: var(--t4);
+}
 .bar {
 	flex: 1;
+	min-width: 24px;
 	height: 6px;
-	border-radius: 3px;
+	border-radius: var(--r-sm);
 	background: var(--a10);
 	overflow: hidden;
 }
 .fill {
 	display: block;
 	height: 100%;
-	background: #3b82f6;
+	background: var(--fill);
 	transition: width 0.4s;
 }
 .speed {
-	font-family: ui-monospace, monospace;
+	font-family: var(--font-mono);
 	color: var(--t3);
+	white-space: nowrap;
 }
 .saved {
-	font-family: ui-monospace, monospace;
+	font-family: var(--font-mono);
 	color: var(--green);
+	white-space: nowrap;
+}
+@media (max-width: 899px) {
+	.label {
+		display: none;
+	}
+	.qbar {
+		gap: 12px;
+	}
 }
 </style>

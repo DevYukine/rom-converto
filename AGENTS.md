@@ -177,7 +177,7 @@ The desktop app is the CLI with a window. Users must be able to learn one and pr
 ### Visual rules
 
 - `:root` tokens are the dark theme; light overrides live under `[data-theme="light"]`. Define both for every new surface. Take colours, text levels, and alpha fills from the variables in `assets/css/tokens.css`. No hard-coded colours in components.
-- Style with scoped component CSS. Tailwind is loaded for its base reset only; do not use utility classes.
+- Style with scoped component CSS. Tailwind is loaded for its base reset only; do not use utility classes. Exception: styles for the shared page frame and primitives reused across components (`.rc-page`, `.rc-input`, `.rc-picker`, `.rc-warning`, the results and progress classes) live in `assets/css/main.css` and `assets/css/results.css`; everything else is scoped.
 - Use the shared tokens for sizes, radii, and font sizes where `tokens.css` defines one; do not add ad hoc values next to an existing token. Keep text at 4.5:1 contrast or better against its background in both themes.
 - Give every interactive element a visible `:focus-visible` outline and make it keyboard operable. `prefers-reduced-motion` is respected globally; do not add animation that bypasses it.
 - The layout works from the window minimum in `src-tauri/tauri.conf.json` up to very wide windows (pages cap their width) and at every Interface scale offered in Settings. Check a narrow window before submitting.

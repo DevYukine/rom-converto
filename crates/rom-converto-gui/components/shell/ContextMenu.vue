@@ -80,6 +80,7 @@ onBeforeUnmount(removeListeners);
 			role="menuitem"
 			class="rc-ctx-menu__item"
 			@click="select(item.value)"
+			:title="item.label"
 		>
 			{{ item.label }}
 		</button>
@@ -90,9 +91,12 @@ onBeforeUnmount(removeListeners);
 .rc-ctx-menu {
 	position: fixed;
 	min-width: 160px;
+	max-width: calc(100vw - 32px);
+	max-height: calc(100vh - 32px);
+	overflow-y: auto;
 	background: var(--pop);
 	border: 1px solid var(--a16);
-	border-radius: 8px;
+	border-radius: var(--r-md);
 	box-shadow: 0 12px 36px var(--shC);
 	padding: 4px;
 	display: flex;
@@ -105,10 +109,13 @@ onBeforeUnmount(removeListeners);
 	border: none;
 	text-align: left;
 	padding: 6px 8px;
-	border-radius: 6px;
+	border-radius: var(--r-sm);
 	color: var(--t3);
-	font-size: 12px;
+	font-size: var(--fs-sm);
 	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .rc-ctx-menu__item:hover {

@@ -14,36 +14,36 @@ export const ps5Pkg: KindModule<"ps5_pkg"> = {
 		const rom: InspectField[] = [];
 		add(rom, "Title", info.title);
 		add(rom, "Title ID", info.title_id);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.content_type_label ?? "Game"));
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : (info.content_type_label ?? "Game"));
 		add(rom, "Content ID", info.content_id);
 		add(
 			rom,
 			"Image",
 			PS5_IMAGE_LABEL[info.image] + (info.signed === true ? " (retail)" : info.signed === false ? " (debug)" : ""),
 		);
-		add(rom, "Content Version", info.content_version);
-		add(rom, "Target Content Version", info.target_content_version);
-		add(rom, "Master Version", info.master_version);
-		add(rom, "Required Firmware", info.required_system_version);
-		add(rom, "SDK Version", info.sdk_version);
+		add(rom, "Content version", info.content_version);
+		add(rom, "Target content version", info.target_content_version);
+		add(rom, "Master version", info.master_version);
+		add(rom, "Required firmware", info.required_system_version);
+		add(rom, "SDK version", info.sdk_version);
 		add(
 			rom,
-			"Application Category",
+			"Application category",
 			info.application_category_label && info.application_category_type != null
 				? `${info.application_category_label} (${info.application_category_type})`
 				: (info.application_category_label ?? info.application_category_type),
 		);
 		add(rom, "DRM", info.application_drm_type);
-		add(rom, "Default Language", info.default_language);
+		add(rom, "Default language", info.default_language);
 		add(rom, "Created", info.creation_date);
 		add(rom, "Size", formatBytes(info.file_size));
-		if (info.package_size !== info.file_size) add(rom, "Package Size", formatBytes(info.package_size));
+		if (info.package_size !== info.file_size) add(rom, "Package size", formatBytes(info.package_size));
 		add(rom, "Entries", info.entry_count);
-		add(rom, "DRM Type", info.drm_type);
-		add(rom, "Content Flags", contentFlagsLabel(info.content_flags, info.content_flag_labels));
+		add(rom, "DRM type", info.drm_type);
+		add(rom, "Content flags", contentFlagsLabel(info.content_flags, info.content_flag_labels));
 		add(rom, "Finalized", info.finalized ? "yes" : "no");
-		add(rom, "PFS Image", `${formatBytes(info.pfs_image_size)} @ 0x${hex(info.pfs_image_offset, 8)}`);
-		add(rom, "Version Date", versionDateLabel(info.version_date));
+		add(rom, "PFS image", `${formatBytes(info.pfs_image_size)} @ 0x${hex(info.pfs_image_offset, 8)}`);
+		add(rom, "Version date", versionDateLabel(info.version_date));
 		return {
 			rom,
 			innerTitle: "Package entries",

@@ -11,13 +11,13 @@ export const ctr: KindModule<"ctr"> = {
 		if (info.compressed) {
 			add(container, "Container", "Z3DS");
 			add(container, "Compression", "zstd");
-			add(container, "Compressed Size", formatBytes(info.physical_bytes));
+			add(container, "Compressed size", formatBytes(info.physical_bytes));
 		}
 		const smdh = info.smdh;
 		const title = englishFirst(smdh?.titles, (t) => t.language);
 		add(rom, "Title", title?.long_description || info.product_code || info.title_id);
 		add(rom, "Title ID", info.title_id);
-		add(rom, "Content Type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.format.toUpperCase());
+		add(rom, "Content type", info.content_kind ? contentTypeDisplayName(info.content_kind) : info.format.toUpperCase());
 		if (smdh) {
 			add(rom, "Region", smdh.region_names.join(", "));
 			add(rom, "Languages", smdh.titles.map((t) => languageDisplayName(t.language)).join(", "));
@@ -26,7 +26,7 @@ export const ctr: KindModule<"ctr"> = {
 		if (smdh) {
 			add(
 				rom,
-				"Age Ratings",
+				"Age ratings",
 				smdh.age_ratings
 					.map(
 						(r) =>
@@ -37,7 +37,7 @@ export const ctr: KindModule<"ctr"> = {
 		}
 		add(rom, "Size", formatBytes(info.physical_bytes));
 		add(rom, "Program ID", info.program_id);
-		add(rom, "Product Code", info.product_code);
+		add(rom, "Product code", info.product_code);
 		add(rom, "Maker", formatMaker(info.maker_code, info.maker_name));
 		if (info.cartridge_size) add(rom, "Cartridge", formatBytes(info.cartridge_size));
 		add(rom, "Encryption", info.ncch_encrypted ? "encrypted" : "decrypted");
