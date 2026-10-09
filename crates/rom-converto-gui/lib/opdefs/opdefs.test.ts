@@ -33,6 +33,17 @@ describe("op registry", () => {
 		expect(request.options.output_dir).toBe("/roms");
 	});
 
+	it("never sends rename for pages whose output is a directory", () => {
+		for (const id of ["ctr-unbundle", "nx-split", "wup-decrypt"]) {
+			const def = defs.find((def) => def.storeId === id);
+			if (!def) continue;
+			const store = def.useStore();
+			store.onConflict = "rename";
+			const { request } = def.buildArgs(store, ITEM, "task-1");
+			expect(request.options.on_conflict).not.toBe("rename");
+		}
+	});
+
 	// The runner rejects unknown option keys outright, so a typo here would only
 	// surface as a failed run.
 	it("sends only keys the runner's RunOptions defines", () => {

@@ -1,4 +1,4 @@
-//! Cue, NTR and NX merge/split handlers.
+//! Cue, NTR, NX and CTR merge, split and bundle handlers.
 
 use super::invalid_arg;
 use super::models::{RunData, RunRequest, RunResponse, WupTitleInputOption};
@@ -134,6 +134,25 @@ fn ntr_already_done(
     Ok(skipped_already_done(input, operation, reason, &err))
 }
 
+/// Reads `options.inputs` as a path list, rejecting an absent or empty one.
+fn option_inputs(req: &RunRequest) -> Result<Vec<PathBuf>> {
+    req.options
+        .inputs
+        .as_ref()
+        .map(|inputs| {
+            inputs
+                .iter()
+                .map(|input| match input {
+                    WupTitleInputOption::Path(path) | WupTitleInputOption::Object { path, .. } => {
+                        path.clone()
+                    }
+                })
+                .collect::<Vec<PathBuf>>()
+        })
+        .filter(|inputs| !inputs.is_empty())
+        .ok_or_else(|| invalid_arg("options.inputs must not be empty"))
+}
+
 /// Stages every merge input, stopping before the next extraction once
 /// `cancel` fires so Ctrl-C does not wait for each remaining archive.
 fn stage_merge_inputs(
@@ -156,21 +175,7 @@ pub(crate) async fn nx_merge(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
-    let inputs =
-        req.options
-            .inputs
-            .as_ref()
-            .map(|inputs| {
-                inputs
-                    .iter()
-                    .map(|input| match input {
-                        WupTitleInputOption::Path(path)
-                        | WupTitleInputOption::Object { path, .. } => path.clone(),
-                    })
-                    .collect::<Vec<PathBuf>>()
-            })
-            .filter(|inputs| !inputs.is_empty())
-            .ok_or_else(|| invalid_arg("options.inputs must not be empty"))?;
+    let inputs = option_inputs(&req)?;
     let format = match req.options.format.as_deref().unwrap_or("nsp") {
         "nsp" => NxMergeFormat::Nsp,
         "xci" => NxMergeFormat::Xci,
@@ -308,6 +313,77 @@ pub(crate) async fn nx_split(
         line.missing_keys = missing_keys;
     }
     Ok(response)
+}
+
+pub(crate) async fn ctr_bundle(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let inputs = option_inputs(&req)?;
+    let plan = crate::nintendo::ctr::bundle::plan_bundle(&inputs)
+        .map_err(|e| invalid_arg(e.to_string()))?;
+    // Check the extension before planning so a dry run and the conflict
+    // handling see the rejection too, not only the real write.
+    if let Some(output) = &req.output {
+        plan.check_output_extension(output)
+            .map_err(|e| invalid_arg(e.to_string()))?;
+    }
+    // The bundle has many inputs but one record; the first one names it.
+    let mut req = req;
+    let first = req.input.clone().unwrap_or_else(|| inputs[0].clone());
+    req.input = Some(first.clone());
+    let (basis, kind) = (plan.members[0].clone(), plan.kind);
+    let mut response = convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            input: &first,
+            derive: &|_, _| crate::nintendo::ctr::bundle::derive_bundle_path(&basis, kind),
+            operation: "ctr.bundle",
+            verify: OutputVerify::None,
+        },
+        cancel,
+        |_, output, cancel| async move {
+            crate::nintendo::ctr::bundle::bundle_async(plan, output, progress, cancel)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+    )
+    .await?;
+    if let Some(RunData::Plan(line)) = &mut response.data {
+        line.media = Some(kind.ext().to_uppercase());
+    }
+    Ok(response)
+}
+
+pub(crate) async fn ctr_unbundle(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    let desired = req
+        .output
+        .clone()
+        .or_else(|| req.options.output_dir.clone())
+        .unwrap_or_else(|| crate::nintendo::ctr::bundle::derive_unbundle_dir(&input));
+    let user_input = input.clone();
+    dir_op(
+        &req,
+        &input,
+        &desired,
+        "ctr.unbundle",
+        file_len,
+        |source, output_dir| async move {
+            let files = crate::nintendo::ctr::bundle::unbundle_async(
+                source, user_input, output_dir, progress, cancel,
+            )
+            .await?;
+            Ok((files.iter().map(|p| file_len(p)).sum(), None))
+        },
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -504,7 +580,10 @@ mod tests {
         let cue = dir.path().join("game.cue");
         let nds = dir.path().join("game.nds");
         let nsp = dir.path().join("game.nsp");
-        for path in [&cue, &nds, &nsp] {
+        let cci = dir.path().join("game.cci");
+        let cia = dir.path().join("update.cia");
+        let bcci = dir.path().join("pack.bcci");
+        for path in [&cue, &nds, &nsp, &cci, &cia, &bcci] {
             std::fs::write(path, b"x").unwrap();
         }
         let missing_keys = dir.path().join("missing.keys");
@@ -546,6 +625,18 @@ mod tests {
                 json!({ "keys": missing_keys }),
                 dir.path().join("game.dnsp"),
             ),
+            (
+                "ctr.bundle",
+                &cci,
+                json!({ "inputs": [cci, cia] }),
+                dir.path().join("game.bcci"),
+            ),
+            (
+                "ctr.unbundle",
+                &bcci,
+                json!({}),
+                dir.path().join("pack_unbundled"),
+            ),
         ];
         for (operation, input, options, output) in cases {
             let req = json!({
@@ -563,7 +654,83 @@ mod tests {
             if operation.starts_with("nx.") {
                 assert!(data["missing_keys"].is_string(), "{operation}: {data}");
             }
+            if operation == "ctr.bundle" {
+                assert_eq!(data["media"], "BCCI", "{operation}: {data}");
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn ctr_bundle_then_unbundle_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cci = dir.path().join("game.cci");
+        let cia = dir.path().join("update.cia");
+        std::fs::write(&cci, b"cci-bytes").unwrap();
+        std::fs::write(&cia, b"cia-bytes").unwrap();
+
+        let bundle_req = json!({
+            "operation": "ctr.bundle",
+            "input": cci,
+            "options": { "inputs": [cci, cia] }
+        });
+        let res = run_json(&bundle_req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let bundle = dir.path().join("game.bcci");
+        assert!(bundle.exists());
+
+        let unbundle_req = json!({ "operation": "ctr.unbundle", "input": bundle });
+        let res = run_json(&unbundle_req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let members = dir.path().join("game_unbundled");
+        assert_eq!(
+            std::fs::read(members.join("game.cci")).unwrap(),
+            b"cci-bytes"
+        );
+        assert_eq!(
+            std::fs::read(members.join("update.cia")).unwrap(),
+            b"cia-bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn ctr_bundle_rejects_a_mismatched_output_extension_even_on_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let cci = dir.path().join("game.cci");
+        std::fs::write(&cci, b"cci-bytes").unwrap();
+        let out = dir.path().join("out.zip");
+        let req = json!({
+            "operation": "ctr.bundle",
+            "input": cci,
+            "output": out,
+            "dry_run": true,
+            "options": { "inputs": [cci] }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(!out.exists());
+    }
+
+    #[tokio::test]
+    async fn ctr_bundle_without_input_names_the_record_after_the_first_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let cia = dir.path().join("update.cia");
+        let cci = dir.path().join("game.cci");
+        std::fs::write(&cia, b"cia-bytes").unwrap();
+        std::fs::write(&cci, b"cci-bytes").unwrap();
+        // The CIA is listed first; the bundle itself is named after the main.
+        let req = json!({
+            "operation": "ctr.bundle",
+            "dry_run": true,
+            "options": { "inputs": [cia, cci] }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        assert_eq!(data["input"].as_str(), cia.to_str());
+        assert_eq!(
+            data["output"].as_str(),
+            dir.path().join("game.bcci").to_str()
+        );
     }
 
     #[tokio::test]

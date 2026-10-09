@@ -16,6 +16,7 @@ mod reader;
 mod seekable;
 
 pub use compress::{DEFAULT_ZSTD_LEVEL, MAX_ZSTD_LEVEL, MIN_ZSTD_LEVEL, compress_rom};
+pub(crate) use compress::{ENCRYPTION_PROBE_SIZE, check_not_encrypted};
 pub use decompress::{decompress_rom, digest_z3ds_inner};
 #[cfg(test)]
 pub(crate) use decompress_worker::plan_decompress_work;

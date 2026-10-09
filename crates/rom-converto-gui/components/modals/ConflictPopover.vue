@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { directoryConflict } from "~/lib/opdefs/types";
 
 const props = withDefaults(
 	defineProps<{
@@ -35,6 +36,12 @@ const OPTIONS = [
 ];
 
 const labels: Record<string, string> = Object.fromEntries(OPTIONS.map((o) => [o.value, o.label]));
+
+// A page that cannot rename runs an inherited rename as its fallback policy,
+// so the trigger shows the policy the job will use.
+const effective = computed(() =>
+	props.renameDisabled ? directoryConflict(props.modelValue) : props.modelValue,
+);
 
 const open = ref(false);
 const root = ref<HTMLElement | null>(null);
@@ -163,14 +170,14 @@ onBeforeUnmount(() => {
 			ref="triggerEl"
 			type="button"
 			class="rc-picker"
-			:title="optionLabel(modelValue)"
+			:title="optionLabel(effective)"
 			:aria-expanded="open"
 			aria-haspopup="dialog"
 			:aria-controls="open ? popoverId : undefined"
 			@mousedown.prevent
 			@click="toggle"
 		>
-			<span class="rc-picker__value">{{ optionLabel(modelValue) }}</span>
+			<span class="rc-picker__value">{{ optionLabel(effective) }}</span>
 			<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
 		</button>
 		<Teleport to="body">
@@ -179,9 +186,9 @@ onBeforeUnmount(() => {
 				v-for="opt in OPTIONS"
 				:key="opt.value"
 				type="button"
-				:aria-pressed="opt.value === modelValue"
+				:aria-pressed="opt.value === effective"
 				class="rc-opt"
-				:class="{ active: opt.value === modelValue }"
+				:class="{ active: opt.value === effective }"
 				:disabled="isDisabled(opt.value)"
 				@mousedown.prevent
 				@click="select(opt.value)"

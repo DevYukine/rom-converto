@@ -81,6 +81,30 @@ pub(super) fn make_z3ds_decompress_workers(
         .collect()
 }
 
+/// Rejects a footer whose frame count or table size cannot describe the
+/// payload before the table is allocated. The table is 8-byte entries plus
+/// a footer, so past `MAX_SEEK_TABLE_BYTES` it is not real metadata, and
+/// every zstd frame is at least `MIN_FRAME_BYTES`, so the count must fit
+/// the payload.
+fn check_seek_table_plausible(
+    num_frames: u32,
+    table_size: usize,
+    compressed_size: u64,
+) -> Z3dsResult<()> {
+    const MAX_SEEK_TABLE_BYTES: usize = 64 * 1024 * 1024;
+    const MIN_FRAME_BYTES: u64 = 9;
+    if table_size > MAX_SEEK_TABLE_BYTES
+        || u64::from(num_frames) * MIN_FRAME_BYTES > compressed_size
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "seek table is implausibly large for its payload",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// Plans one decompress invocation from the seek table at the end of the
 /// payload, returning one work item per compressed frame in submission order.
 pub(crate) fn plan_decompress_work<R: Read + Seek>(
@@ -104,7 +128,7 @@ pub(crate) fn plan_decompress_work<R: Read + Seek>(
     let mut footer = [0u8; 9];
     reader.seek(SeekFrom::Start(footer_offset))?;
     reader.read_exact(&mut footer)?;
-    let (_num_frames, skippable_total) = read_seek_table_footer(&footer)?;
+    let (num_frames, skippable_total) = read_seek_table_footer(&footer)?;
 
     if skippable_total > compressed_size {
         return Err(std::io::Error::new(
@@ -132,6 +156,7 @@ pub(crate) fn plan_decompress_work<R: Read + Seek>(
             "seek table does not fit in memory address space",
         )
     })?;
+    check_seek_table_plausible(num_frames, table_size, compressed_size)?;
     let mut frame_bytes = vec![0u8; table_size];
     reader.seek(SeekFrom::Start(frame_start))?;
     reader.read_exact(&mut frame_bytes)?;
@@ -568,6 +593,26 @@ mod tests {
         payload[5..].copy_from_slice(&0x8F92EAB1u32.to_le_bytes());
         let result = plan_decompress_work(std::io::Cursor::new(payload), 0, 9);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn seek_table_plausibility_rejects_by_size_cap_alone() {
+        // 9M frames: the table is over the cap, yet the frame count fits
+        // the payload, so only the size cap can reject it.
+        let table = 9_000_000usize * 8 + 17;
+        assert!(check_seek_table_plausible(9_000_000, table, 100_000_000).is_err());
+    }
+
+    #[test]
+    fn seek_table_plausibility_rejects_a_frame_count_the_payload_cannot_hold() {
+        // A small table, but 1000 frames cannot fit 100 payload bytes.
+        assert!(check_seek_table_plausible(1000, 8017, 100).is_err());
+    }
+
+    #[test]
+    fn seek_table_plausibility_accepts_a_real_layout() {
+        // 16 Ki frames of 256 KiB each, about 4 GiB of payload.
+        assert!(check_seek_table_plausible(16_384, 16_384 * 8 + 17, 4 << 30).is_ok());
     }
 
     #[test]

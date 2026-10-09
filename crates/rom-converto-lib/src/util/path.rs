@@ -39,6 +39,16 @@ pub fn with_tag(input: &Path, tag: &str) -> PathBuf {
     input.with_file_name(name)
 }
 
+/// True when `a` and `b` are the same file. Canonicalization fails for an
+/// output that does not exist yet, which is the common case, so that falls
+/// back to a literal comparison.
+pub(crate) fn is_same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
 /// Shortens a path under the home directory to a `~`-prefixed display
 /// string. The inverse of `expand_tilde`, for showing paths compactly.
 pub fn contract_tilde(path: &Path) -> String {

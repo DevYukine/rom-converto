@@ -11,7 +11,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | Command | Purpose |
 |---|---|
 | `ntr` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
-| `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs |
+| `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs; bundle members for Azahar |
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA); convert WUD and WUX disc images |
@@ -302,6 +302,8 @@ rom-converto ctr <SUBCOMMAND> <INPUT> [OUTPUT]
 | `compress <INPUT> [OUTPUT]` | Compress a decrypted ROM to Z3DS |
 | `decompress <INPUT> [OUTPUT]` | Decompress a Z3DS file back to the original ROM |
 | `convert <INPUT> [OUTPUT]` | Convert between `.cia` and `.cci`/`.3ds`, direction auto-detected |
+| `bundle <INPUT>... [-o OUTPUT]` | Pack ROM members into one Azahar `.bcia`/`.bcci`/`.bcxi` bundle |
+| `unbundle <INPUT> [--output-dir DIR]` | Extract every member of a bundle into a directory |
 | `verify <INPUT>` | Verify `.cia` legitimacy or `.3ds`/`.cci` NCCH integrity |
 | `info <INPUT>` | Inspect 3DS metadata. See [info](#info) |
 
@@ -311,6 +313,8 @@ in [Shared behaviors](#shared-behaviors)):
 | Flag | Applies to | Description |
 |---|---|---|
 | `--output-dir <DIR>` | `cdn-to-cia`, `decrypt`, `encrypt`, `compress`, `decompress`, `convert` | Write outputs under this directory instead of beside each input |
+| `-o, --output <FILE>` | `bundle` | Output bundle file path. Defaults to `<main ROM name>.bcci`, `.bcxi`, or `.bcia` next to the main ROM |
+| `--output-dir <DIR>` | `unbundle` | Directory to extract members into. Defaults to `<input name>_unbundled` next to the input |
 | `-C, --cleanup` | `cdn-to-cia` | Remove original CDN files after conversion |
 | `-T, --ensure-ticket-exists` | `cdn-to-cia` | Generate a ticket file if one is not found. The generated key is checked against the content, and the conversion fails with a clear error when it cannot decrypt instead of writing a broken CIA |
 | `-D, --decrypt` | `cdn-to-cia` | Also decrypt the CIA after creation |
@@ -333,6 +337,46 @@ refuses an input that still looks encrypted, pointing you to `ctr decrypt`, unle
 `--allow-encrypted`.
 `convert` produces an unsigned CIA with a zero title key, compatible with CFW and emulators
 but not installable on stock hardware.
+
+### Bundles
+
+`ctr bundle` packs ROM members into a single uncompressed tar archive for
+[Azahar](https://github.com/azahar-emu/azahar/pull/2369): `.bcci` for a CCI/3DS main,
+`.bcxi` for a CXI main, `.bcia` when there is no main. The spec is still a draft PR, so
+the layout may change before it ships; the draft boots only CCI/3DS mains, so `.bcxi`
+follows the PR text and may not load yet. A bundle holds at most 50 members: one
+CCI/3DS or CXI ROM (or the Z3DS variants `.zcci`/`.zcxi`) as the bootable main, plus
+CIA/ZCIA files such as updates, DLC, or system titles (49 CIAs plus a main, or 50 in a
+`.bcia`).
+
+Azahar boots the main ROM and simulates the bundled CIAs as installed, so a game and its
+update and DLC load from one file. Every member must be decrypted; an encrypted member is
+refused, so run `ctr decrypt` first.
+
+Default outputs:
+
+- Bundle: `<main ROM name>.bcci` (or `.bcxi`/`.bcia`) beside the main ROM.
+- Unbundle: a `<input name>_unbundled` directory beside the input.
+- An explicit `-o` (bundle) or `--output-dir` (unbundle) overrides both. A bundle `-o`
+  must end in the bundle extension the member set produces (`.bcci`, `.bcxi`, or
+  `.bcia`); any other output is rejected.
+
+`ctr unbundle` writes every member under its own name into the output directory. Neither
+command supports recursion, reports, output templates, or a positional output. Unbundle
+rejects `rename` when its output directory already holds files, because the members
+have no numbered names to move to. An existing file at the output path needs
+`overwrite`. Unbundle refuses a bundle with more than 50 members. `overwrite-invalid`
+acts as `skip` because these commands do not verify existing outputs. With `overwrite`, unbundle writes
+into a non-empty directory, replacing members under their own names and leaving
+unrelated files in place. `ctr info` reports the bundle kind, the primary member, and
+the bundled titles, listed up to the 50-member cap.
+
+```sh
+rom-converto ctr bundle game.cci update.cia dlc.cia
+rom-converto ctr bundle game.zcci update.zcia -o game.bcci
+rom-converto ctr bundle update.cia dlc.cia
+rom-converto ctr unbundle game.bcci --output-dir ./members
+```
 
 ## dol (GameCube)
 
@@ -523,7 +567,7 @@ Merge has no `--output-dir` flag; use `-o`. Split takes `-R`, `--max-depth`, and
 used: set `--on-conflict` or `-f` on the command.
 
 `overwrite-invalid` acts as `skip` because these commands do not verify existing
-outputs. Split rejects `rename` in the CLI. Its overwrite mode reuses the directory,
+outputs. Split rejects `rename` when its output directory already holds files. Its overwrite mode reuses the directory,
 replacing planned NSP files while leaving unrelated files in place.
 
 ```sh

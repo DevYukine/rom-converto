@@ -6,8 +6,12 @@ import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useNxMergeStore } from "~/stores/nx-merge";
 import { useNxSplitStore } from "~/stores/nx-split";
+import { useCtrBundleStore } from "~/stores/ctr-bundle";
+import { useCtrUnbundleStore } from "~/stores/ctr-unbundle";
 import {
 	basename,
+	deriveCtrBundlePath,
+	deriveCtrUnbundleDir,
 	deriveMergedCuePath,
 	deriveNxMergedPath,
 	deriveNxSplitDir,
@@ -15,7 +19,7 @@ import {
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, directoryConflict, directoryOutputRows, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -593,6 +597,7 @@ const nxSplit: OpDef = {
 		},
 	],
 
+	renameDisabled: true,
 	showConflict: true,
 	showDryRun: true,
 	actionNote: "Runs in the global queue like everything else.",
@@ -605,7 +610,7 @@ const nxSplit: OpDef = {
 			store.outputDir || deriveNxSplitDir(item.path),
 			{
 				keys: store.keys || null,
-				on_conflict: store.onConflict,
+				on_conflict: directoryConflict(store.onConflict),
 				skip_space_check: store.skipSpaceCheck,
 			},
 			false,
@@ -614,4 +619,134 @@ const nxSplit: OpDef = {
 	chips: () => "",
 };
 
-export const toolOps: OpDef[] = [hash, playlist, merge, cdn2cia, ticket, nxMerge, nxSplit];
+// The extension follows the main member, so the name is derived from the
+// staged members and joined with the chosen folder (default: beside the main).
+function bundleOutput(store: OpStore, inputs: string[]): string {
+	const derived = deriveCtrBundlePath(inputs);
+	if (!derived) return store.output;
+	return withOutputDir(store.output || derived, store.outputDir || dirName(derived));
+}
+
+// All staged files bundle into one container, so the first input names the
+// job and the rest travel in `options.inputs`.
+function bundleArgs(store: OpStore, inputs: string[], taskId: string): RunPayload {
+	return runArgs(
+		"ctr.bundle",
+		inputs[0] ?? null,
+		bundleOutput(store, inputs),
+		{
+			inputs,
+			on_conflict: store.onConflict,
+			skip_space_check: store.skipSpaceCheck,
+		},
+		false,
+		taskId,
+	);
+}
+
+const ctrBundle: OpDef = {
+	op: "tools",
+	console: "ctr-bundle",
+	opLabel: "Tools",
+	storeId: "ctr-bundle",
+	useStore: () => useCtrBundleStore(),
+	command: "cmd_run",
+	resultKind: "convert",
+
+	title: "Bundle 3DS ROM (Azahar)",
+	subtitle: "Packs a CCI/CXI with its CIA updates, DLC and system titles into one Azahar bundle.",
+	dropText: "Drop a 3DS ROM and its CIA files",
+	acceptedExts: ["cia", "zcia", "3ds", "cci", "zcci", "cxi", "zcxi"],
+	browseFilters: [{ name: "3DS ROM or CIA", extensions: ["cia", "zcia", "3ds", "cci", "zcci", "cxi", "zcxi"] }],
+	progressKey: "ctr-bundle",
+
+	fields: [],
+	warning:
+		"Bundle ROMs are for Azahar. Members must be decrypted; Azahar simulates the bundled CIAs as installed and boots the CCI/CXI.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (store) => store.outputDir || "",
+			placeholder: "Same as source",
+			value: (store) => store.outputDir,
+			set: (store, value) => {
+				store.outputDir = value;
+			},
+			tooltip: "Directory the bundle is written into.",
+		},
+		{
+			kind: "save",
+			label: "File",
+			display: (store) => store.output,
+			placeholder: "Automatic",
+			set: setSavedFile,
+			filters: [{ name: "3DS bundle", extensions: ["bcci", "bcxi", "bcia"] }],
+			tooltip: "Filename for the bundle. It must end in the extension the members produce.",
+		},
+	],
+
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "All staged files merge into one queue job producing a single output.",
+
+	deriveOutput: (input, store) => bundleOutput(store, [input]),
+	buildArgs: (store, item, taskId) => bundleArgs(store, [item.path], taskId),
+	buildArgsAll: (store, items, taskId) => bundleArgs(store, items.map((i) => i.path), taskId),
+	chips: () => "",
+};
+
+const ctrUnbundle: OpDef = {
+	op: "tools",
+	console: "ctr-unbundle",
+	opLabel: "Tools",
+	storeId: "ctr-unbundle",
+	useStore: () => useCtrUnbundleStore(),
+	command: "cmd_run",
+	resultKind: "text",
+
+	title: "Unbundle 3DS ROM",
+	subtitle: "Extracts the members of an Azahar .bcia/.bcci/.bcxi bundle.",
+	dropText: "Drop a 3DS bundle",
+	acceptedExts: ["bcia", "bcci", "bcxi", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "3DS bundle", extensions: ["bcia", "bcci", "bcxi", ...ARCHIVE_EXTS] }],
+	singleInput: true,
+	progressKey: "ctr-unbundle",
+
+	fields: [],
+	outputRows: directoryOutputRows(
+		"Where the bundle members are written. Leave empty to use a <name>_unbundled folder next to the input file.",
+	),
+
+	renameDisabled: true,
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "Runs in the global queue like everything else.",
+
+	deriveOutput: (input, store) => store.outputDir || deriveCtrUnbundleDir(input),
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"ctr.unbundle",
+			item.path,
+			store.outputDir || deriveCtrUnbundleDir(item.path),
+			{
+				on_conflict: directoryConflict(store.onConflict),
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+		),
+	chips: () => "",
+};
+
+export const toolOps: OpDef[] = [
+	hash,
+	playlist,
+	merge,
+	cdn2cia,
+	ticket,
+	nxMerge,
+	nxSplit,
+	ctrBundle,
+	ctrUnbundle,
+];

@@ -93,8 +93,8 @@ set through the C ABI.
 ### Operations
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
-`nx.decrypt`, `nx.merge`, `nx.split`, `ps3.decrypt`, `psp.to_iso`, `psp.extract`,
-`vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
+`nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `ps3.decrypt`, `psp.to_iso`,
+`psp.extract`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
 `nx.merge` takes its containers in `options.inputs` (the first names the
@@ -109,7 +109,12 @@ output loads only in NxEmu.
 warnings are logged first, so a key problem shows up instead of hiding behind
 the skip. An archive holding one is staged before the title count is read,
 and its dry run plans a write. A single-title XCI converts to one NSP.
-Directory-output operations (`nx.split`, `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
+`ctr.bundle` takes its member ROM paths in `options.inputs` (the first names
+the record); an explicit `output` must end in the bundle extension the member
+set produces (`.bcci`, `.bcxi`, or `.bcia`). `ctr.unbundle` writes into
+`output` or `options.output_dir`, defaulting to a `<name>_unbundled` directory
+next to the input. Directory-output operations (`nx.split`, `ctr.unbundle`,
+`psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
 `xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`,
 and `skip` but not `rename`; `overwrite` replaces an existing file at the path
 and writes into a non-empty directory as it is.

@@ -1,4 +1,4 @@
-import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
@@ -119,7 +119,7 @@ const wup: OpDef = {
 			"wup.decrypt",
 			item.path,
 			store.output || deriveDecryptedWupPath(item.path),
-			{ on_conflict: store.onConflict, skip_space_check: store.skipSpaceCheck },
+			{ on_conflict: directoryConflict(store.onConflict), skip_space_check: store.skipSpaceCheck },
 			false,
 			taskId,
 		),

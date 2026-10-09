@@ -217,6 +217,13 @@ export type RunPayload = {
 	request: Omit<RunRequest, "options"> & { options: Partial<RunOptions> };
 };
 
+// Rename writes a numbered sibling name, which the runner refuses for
+// directory outputs. A rename inherited from the app default becomes error,
+// which is what a queued rename would have ended in anyway.
+export function directoryConflict(onConflict: string): string {
+	return onConflict === "rename" ? "error" : onConflict;
+}
+
 // Option keys are the runner's own snake_case names; unknown keys are rejected
 // by the backend.
 export function runArgs(

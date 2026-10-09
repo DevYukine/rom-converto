@@ -733,7 +733,9 @@ pub(super) fn classify(
                     format: None,
                 })
             }
-            "zcia" | "zcci" | "zcxi" | "z3dsx" | "ncch" => Ok(Action::Copy),
+            "zcia" | "zcci" | "zcxi" | "z3dsx" | "ncch" | "bcia" | "bcci" | "bcxi" => {
+                Ok(Action::Copy)
+            }
             _ => Err("unrecognized"),
         },
         DetectedConsole::Nx => match ext.as_str() {
@@ -970,6 +972,8 @@ mod tests {
             ("ctr.compress", "zcia".to_string(), None)
         );
         assert!(copy(classify(DetectedConsole::Ctr, None, &path("zcci"))));
+        assert!(copy(classify(DetectedConsole::Ctr, None, &path("bcci"))));
+        assert!(copy(classify(DetectedConsole::Ctr, None, &path("bcia"))));
         assert_eq!(
             convert(classify(DetectedConsole::Nx, None, &path("xci"))),
             ("nx.compress", "xcz".to_string(), None)

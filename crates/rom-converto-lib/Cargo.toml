@@ -40,6 +40,8 @@ hex = "^0.4"
 md5 = "^0.8"
 sha256 = "^1.6"
 hex-literal = "^1.1"
+# Canonical-equivalence-insensitive member-name dedupe for bundle extraction
+unicode-normalization = "^0.1"
 serde.workspace = true
 serde_json.workspace = true
 crc = "^3.4"

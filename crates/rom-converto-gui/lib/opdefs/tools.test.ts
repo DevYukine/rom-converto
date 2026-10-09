@@ -165,3 +165,55 @@ describe("tool output rows", () => {
 		expect(fileRow.display!(store)).toBe("picked.cia");
 	});
 });
+
+describe("ctr bundle pages", () => {
+	const items = [item("/roms/update.cia"), { ...item("/roms/game.cci"), id: "t2" }];
+
+	function bundleArgsAll(mutate: (store: OpStore) => void) {
+		const def = defByStoreId["ctr-bundle"]!;
+		const store = def.useStore();
+		mutate(store);
+		return def.buildArgsAll!(store, items, "t1");
+	}
+
+	it("derives the name from the main member beside it by default", () => {
+		const payload = bundleArgsAll(() => {});
+		expect(payload.request.output).toBe("/roms/game.bcci");
+		expect(payload.request.options.inputs).toEqual(["/roms/update.cia", "/roms/game.cci"]);
+	});
+
+	it("keeps the derived name when only a directory is picked", () => {
+		expect(bundleArgsAll((s) => { s.outputDir = "/out"; }).request.output).toBe("/out/game.bcci");
+	});
+
+	it("roots a saved file in its dialog folder and re-roots it for a later directory", () => {
+		const row = defByStoreId["ctr-bundle"]!.outputRows.find((r) => r.kind === "save")!;
+		const store = defByStoreId["ctr-bundle"]!.useStore();
+		row.set!(store, "/other/pack.bcci");
+		expect(store.output).toBe("pack.bcci");
+		expect(store.outputDir).toBe("/other");
+		expect(defByStoreId["ctr-bundle"]!.buildArgsAll!(store, items, "t1").request.output).toBe("/other/pack.bcci");
+		store.outputDir = "/out";
+		expect(defByStoreId["ctr-bundle"]!.buildArgsAll!(store, items, "t1").request.output).toBe("/out/pack.bcci");
+	});
+
+	it("shows placeholders instead of fixed text so a chosen folder can be cleared", () => {
+		for (const id of ["ctr-bundle", "ctr-unbundle"]) {
+			const def = defByStoreId[id]!;
+			const store = def.useStore();
+			for (const row of def.outputRows) {
+				expect(row.display(store), `${id}/${row.label}`).toBe("");
+				expect(row.placeholder, `${id}/${row.label}`).toBeTruthy();
+			}
+		}
+	});
+
+	it("derives the unbundle folder beside an archived bundle and honours a chosen one", () => {
+		const def = defByStoreId["ctr-unbundle"]!;
+		expect(def.buildArgs(def.useStore(), item("/roms/game.bcci.zip"), "t1").request.output).toBe("/roms/game_unbundled");
+		const store = def.useStore();
+		store.outputDir = "/out";
+		expect(def.buildArgs(store, item("/roms/game.bcci"), "t1").request.output).toBe("/out");
+	});
+});
+

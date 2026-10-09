@@ -66,12 +66,30 @@ generated XCI gamecard headers are unsigned.
 to `<stem>_split`. A single-title NSP is skipped; a single-title XCI converts to one
 NSP. Both pages take plain NSP/XCI files or archives holding one, and need `prod.keys`;
 decompress NSZ/XCZ first.
-Merge defaults to `<first stem> (Merged).nsp` or `.xci`.
+Merge defaults to `<first stem> (Merged).nsp` or `.xci`. Split does not offer Rename
+because its output is a directory.
 
 **Decrypt Switch NSP/XCI** converts an encrypted NSP or XCI into the DNSP or DXCI that
 [NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and uncompressed inputs;
 decompress NSZ/XCZ first. The output is `<name>.dnsp` or `<name>.dxci` and loads only
 in NxEmu.
+
+### Bundle and unbundle 3DS ROMs
+
+**Bundle 3DS ROM (Azahar)** stages every selected file into one job and packs them
+into an Azahar bundle: one CCI/3DS or CXI main (or the Z3DS variants `.zcci`/`.zcxi`)
+plus CIA/ZCIA titles such as updates and DLC, 50 members in total (49 CIAs plus a
+main, or 50 in a `.bcia`). Members must be decrypted; encrypted members are refused. The bundle is written to the chosen directory, or next
+to the main ROM as `<main ROM name>.bcci` (`.bcxi` with a CXI main, `.bcia` with
+none) when no directory is set. A filename chosen in the File row must end in the
+bundle extension the members produce.
+
+**Unbundle 3DS ROM** extracts every member of a `.bcia`/`.bcci`/`.bcxi` file into a
+directory, defaulting to `<stem>_unbundled` beside the input. It also reads a bundle
+inside an archive. Both pages support
+output directory, conflicts, and dry run. Unbundle does not offer Rename because
+its output is a directory. It refuses a bundle with more than 50 members, and an
+existing file at the output path needs Overwrite.
 
 ### Xbox 360 GoD conversion
 

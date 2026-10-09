@@ -20,8 +20,8 @@ use std::time::Instant;
 // to pick the first inspectable member when one is handed an archive.
 pub(crate) const ALL_IMAGE_EXTS: &[&str] = &[
     "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "gdi",
-    "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca",
-    "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
+    "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "bcia", "bcci", "bcxi",
+    "nsp", "xci", "nca", "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
 ];
 
 pub(crate) fn hash_single(

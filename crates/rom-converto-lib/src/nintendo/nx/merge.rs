@@ -22,6 +22,7 @@ use crate::nintendo::nx::models::hfs0::{
 };
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
 use crate::nintendo::nx::util::{Pfs0Source, copy_range, write_pfs0_from_sources};
+use crate::util::path::is_same_file;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
@@ -89,15 +90,6 @@ fn validate_merge_paths(inputs: &[PathBuf], output: &Path) -> NxResult<()> {
         return Err(NxError::OutputIsInput(output.to_path_buf()));
     }
     Ok(())
-}
-
-/// Canonicalization fails for an output that does not exist yet, which is
-/// the common case, so that falls back to a literal comparison.
-fn is_same_file(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
 }
 
 /// Merges `inputs` into `output` off the async runtime, reporting progress

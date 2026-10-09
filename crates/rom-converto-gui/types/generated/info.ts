@@ -18,6 +18,11 @@ export type AgbInfo = { title: string, game_code: string, region: string | null,
 export type AgeRatingEntry = { organization: string, age: number, };
 
 /**
+ * Which bundle container a member set produces.
+ */
+export type BundleKind = "cia" | "cci" | "cxi";
+
+/**
  * One title bundled alongside the primary title in a multi-title
  * `.wua` archive or disc (base game, update, or DLC).
  */
@@ -179,6 +184,23 @@ export type CsoInfo = { format: string, version: number, block_size: number, ind
 content: DiscContent | null, };
 
 /**
+ * One member title bundled inside a `.bcia`/`.bcci`/`.bcxi` archive, in
+ * archive order. A member the parser cannot read (unknown extension or
+ * garbage bytes) still gets a row, as an `Unknown` format.
+ */
+export type CtrBundledTitle = { name: string, size: number, 
+/**
+ * True for the bootable main: the CCI/3DS or CXI member of a `.bcci` or
+ * `.bcxi` bundle. A `.bcia`, or a bundle with no CCI/3DS/CXI member,
+ * has no main.
+ */
+main: boolean, format: CtrFormat, compressed: boolean, encrypted: boolean, title_id: string, content_kind: ContentKind | null, 
+/**
+ * English SMDH long description when the member carries one.
+ */
+title: string | null, };
+
+/**
  * A single content entry from a CIA's TMD content chunk records.
  */
 export type CtrContentEntry = { index: number, content_id: string, size: number, encrypted: boolean, };
@@ -204,7 +226,23 @@ ncsd_partitions: Array<CtrPartitionEntry>,
 /**
  * TMD content chunk entries. Empty for non-CIA inputs.
  */
-cia_contents: Array<CtrContentEntry>, };
+cia_contents: Array<CtrContentEntry>, 
+/**
+ * Set when the input is an Azahar bundle archive (`.bcia`/`.bcci`/`.bcxi`);
+ * every other field describes the bootable member, not the container.
+ */
+bundle_kind: BundleKind | null, 
+/**
+ * Every member title in archive order, up to the 50-member listing
+ * cap (`bundled_titles_truncated` reports more). Empty for non-bundle
+ * inputs.
+ */
+bundled_titles: Array<CtrBundledTitle>, 
+/**
+ * True when the bundle holds more members than the listing cap, so
+ * `bundled_titles` is truncated.
+ */
+bundled_titles_truncated: boolean, };
 
 /**
  * A single partition entry from an NCSD partition table.

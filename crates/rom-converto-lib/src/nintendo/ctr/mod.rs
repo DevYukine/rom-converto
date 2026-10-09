@@ -33,6 +33,8 @@ use tokio::fs;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufWriter};
 
+/// Azahar bundle ROMs (`.bcia`/`.bcci`/`.bcxi`): plain tar files of CTR members.
+pub mod bundle;
 mod cia;
 mod constants;
 pub mod convert;

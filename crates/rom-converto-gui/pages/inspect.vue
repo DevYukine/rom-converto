@@ -91,8 +91,10 @@ function sizeOf(i: InfoResult): number {
 	return i.physical_bytes;
 }
 
-const compressDef = computed(() => (info.value ? opDef("compress", info.value.kind) : undefined));
-const verifyDef = computed(() => (info.value ? opDef("verify", info.value.kind) : undefined));
+// A bundle is not an input for the 3DS compress/verify ops, only for unbundle.
+const isBundle = computed(() => info.value?.kind === "ctr" && !!info.value.bundle_kind);
+const compressDef = computed(() => (info.value && !isBundle.value ? opDef("compress", info.value.kind) : undefined));
+const verifyDef = computed(() => (info.value && !isBundle.value ? opDef("verify", info.value.kind) : undefined));
 
 function runQuick(kind: "compress" | "verify") {
 	const def = kind === "compress" ? compressDef.value : verifyDef.value;

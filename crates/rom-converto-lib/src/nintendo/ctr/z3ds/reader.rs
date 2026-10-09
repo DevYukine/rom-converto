@@ -108,8 +108,11 @@ impl<R: Read + Seek> Read for Z3dsReader<R> {
             // to the decoded size, so reserve exactly the declared size.
             self.cache.clear();
             self.cache.reserve(uncompressed_size as usize);
+            // zstd reports decode failures as ErrorKind::Other; corrupt input
+            // is InvalidData so callers can tell it from device I/O errors.
             self.decoder
-                .decompress_to_buffer(&self.scratch, &mut self.cache)?;
+                .decompress_to_buffer(&self.scratch, &mut self.cache)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
             if self.cache.len() != uncompressed_size as usize {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -247,6 +250,18 @@ mod tests {
         let mut z = reader(p);
         z.seek(SeekFrom::Start(3 * FRAME as u64)).unwrap();
         let err = z.read_exact(&mut [0u8; 57]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn read_reports_a_corrupt_frame_as_invalid_data() {
+        let mut p = payload(&original());
+        // Overwrite the middle of the first compressed frame with junk.
+        for byte in &mut p[4..16] {
+            *byte = 0xFF;
+        }
+        let mut z = reader(p);
+        let err = z.read_exact(&mut [0u8; 16]).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
