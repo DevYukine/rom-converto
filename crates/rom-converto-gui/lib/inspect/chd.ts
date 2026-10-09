@@ -58,6 +58,7 @@ export const chd: KindModule<"chd"> = {
 					detail += ` · pregap ${t.pregap}`;
 					if (t.pgtype) detail += ` (${t.pgtype}${t.pgsub ? `/${t.pgsub}` : ""})`;
 				}
+				if (t.pad_frames > 0) detail += ` · pad ${t.pad_frames}`;
 				if (t.postgap) detail += ` · postgap ${t.postgap}`;
 				if (t.subtype) detail += ` · sub ${t.subtype}`;
 				return { name: `Track ${t.number}`, detail };
@@ -83,6 +84,7 @@ export const chd: KindModule<"chd"> = {
 		if (info.ld) return "LaserDisc";
 		if (info.dvd) return "DVD";
 		if (info.hard_disk) return "Hard Disk";
+		if (info.metadata_tags.some((t) => t.tag === "CHGD" || t.tag === "CHGT")) return "GD-ROM";
 		return info.tracks.length ? "CD" : null;
 	},
 	meta: (info) =>

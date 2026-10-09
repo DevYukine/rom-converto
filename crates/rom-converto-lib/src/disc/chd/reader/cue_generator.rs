@@ -1,16 +1,24 @@
 use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::cue::models::Msf;
 
-/// Upper bound on a CHT2 `FRAMES:` value: far above any real disc
-/// (~360k frames) while keeping the padding math clear of u32
-/// overflow on hostile metadata.
-const MAX_TRACK_FRAMES: u32 = 0x00FF_FFFF;
+/// Upper bound on a CD track's `FRAMES:` value: above any real track
+/// (the largest, a CD-mode CHD of a dual-layer DVD ISO, declares about
+/// 4.2M frames) while keeping the padding math clear of u32 overflow
+/// on hostile metadata.
+pub(crate) const MAX_TRACK_FRAMES: u32 = 0x00FF_FFFF;
+
+/// Track count a CD can carry: the subchannel only encodes two BCD
+/// digits, so more entries mean corrupt or hostile metadata.
+pub(crate) const MAX_CD_TRACKS: usize = 99;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {
     pub track_number: u8,
     pub track_type: String,
     pub frames: u32,
+    /// Zero frames counted inside `FRAMES:` (the GD-ROM `PAD:` field);
+    /// they sit at the end of the track and carry no data payload.
+    pub pad_frames: u32,
     pub pregap: u32,
     pub subtype: Option<String>,
     pub pgtype: Option<String>,
@@ -27,6 +35,7 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
             match key {
                 "TRACK" => {
                     if let Some(track) = current.take() {
+                        validate_track(&track)?;
                         tracks.push(track);
                     }
                     let number = value
@@ -38,12 +47,12 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                     });
                 }
                 "TYPE" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.track_type = value.to_string();
                     }
                 }
                 "FRAMES" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         let frames: u32 = value
                             .parse()
                             .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
@@ -53,30 +62,37 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
                         track.frames = frames;
                     }
                 }
+                "PAD" => {
+                    if let Some(track) = &mut current {
+                        track.pad_frames = value
+                            .parse()
+                            .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
+                    }
+                }
                 "PREGAP" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.pregap = value
                             .parse()
                             .map_err(|_| ChdError::InvalidTrackMetadata(token.to_string()))?;
                     }
                 }
                 "SUBTYPE" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.subtype = Some(value.to_string());
                     }
                 }
                 "PGTYPE" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.pgtype = Some(value.to_string());
                     }
                 }
                 "PGSUB" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.pgsub = Some(value.to_string());
                     }
                 }
                 "POSTGAP" => {
-                    if let Some(ref mut track) = current {
+                    if let Some(track) = &mut current {
                         track.postgap = Some(
                             value
                                 .parse()
@@ -90,6 +106,7 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
     }
 
     if let Some(track) = current {
+        validate_track(&track)?;
         tracks.push(track);
     }
 
@@ -99,7 +116,27 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
         ));
     }
 
+    if tracks.len() > MAX_CD_TRACKS {
+        return Err(ChdError::InvalidTrackMetadata(format!(
+            "CD has {} tracks, maximum is {MAX_CD_TRACKS}",
+            tracks.len()
+        )));
+    }
+
     Ok(tracks)
+}
+
+/// `PAD:` zero frames are counted inside `FRAMES:`, so a track claiming
+/// more pad than frames has contradictory metadata. Key order within an
+/// entry is not fixed, so this runs once the entry is complete.
+fn validate_track(track: &ChdTrackInfo) -> ChdResult<()> {
+    if track.pad_frames > track.frames {
+        return Err(ChdError::InvalidTrackMetadata(format!(
+            "TRACK:{} PAD:{} > FRAMES:{}",
+            track.track_number, track.pad_frames, track.frames
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn generate_cue_sheet(bin_names: &[String], tracks: &[ChdTrackInfo]) -> String {
@@ -244,16 +281,54 @@ mod tests {
     }
 
     #[test]
-    fn parse_chgd_track_ignores_pad() {
-        // CHGD shape adds an unknown "PAD:%d" key ahead of the gap fields.
+    fn parse_chgd_track_parses_pad() {
+        // CHGD shape adds a "PAD:%d" key ahead of the gap fields.
         let meta = "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:300 PAD:12 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0";
         let tracks = parse_chd_track_metadata(meta).unwrap();
         assert_eq!(tracks.len(), 1);
         assert_eq!(tracks[0].frames, 300);
+        assert_eq!(tracks[0].pad_frames, 12);
         assert_eq!(tracks[0].pregap, 0);
         assert_eq!(tracks[0].pgtype.as_deref(), Some("MODE1"));
         assert_eq!(tracks[0].pgsub.as_deref(), Some("NONE"));
         assert_eq!(tracks[0].postgap, Some(0));
+    }
+
+    #[test]
+    fn parse_chd_track_without_pad_defaults_to_zero() {
+        let tracks =
+            parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:300").unwrap();
+        assert_eq!(tracks[0].pad_frames, 0);
+    }
+
+    #[test]
+    fn parse_pad_exceeding_frames_fails() {
+        // Key order is not fixed: PAD seen before FRAMES must still be
+        // rejected once the entry is complete.
+        let result =
+            parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW PAD:12 FRAMES:10 SUBTYPE:NONE");
+        assert!(result.is_err());
+    }
+
+    /// The entry is only validated once it is complete, so a `PAD:` key
+    /// seen before `FRAMES:` parses like any other key.
+    #[test]
+    fn parse_pad_before_frames_is_accepted() {
+        let tracks =
+            parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW PAD:6 FRAMES:10 SUBTYPE:NONE")
+                .unwrap();
+        assert_eq!(tracks[0].frames, 10);
+        assert_eq!(tracks[0].pad_frames, 6);
+    }
+
+    /// `PAD:` frames are counted inside `FRAMES:`, so `PAD == FRAMES`
+    /// is the boundary case of a track with no data frames at all.
+    #[test]
+    fn parse_pad_equal_to_frames_is_accepted() {
+        let tracks =
+            parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:6 PAD:6 SUBTYPE:NONE").unwrap();
+        assert_eq!(tracks[0].frames, 6);
+        assert_eq!(tracks[0].pad_frames, 6);
     }
 
     #[test]
@@ -266,6 +341,21 @@ mod tests {
     fn parse_oversized_frames_fails() {
         let result = parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:4294967295");
         assert!(result.is_err());
+    }
+
+    /// A CD cannot carry more than [`MAX_CD_TRACKS`] tracks; every
+    /// reader that parses the metadata shares the cap.
+    #[test]
+    fn parse_rejects_more_than_the_cd_track_cap() {
+        let ok: String = (1..=MAX_CD_TRACKS)
+            .map(|t| format!("TRACK:{t} TYPE:MODE1_RAW FRAMES:10 "))
+            .collect();
+        assert_eq!(parse_chd_track_metadata(&ok).unwrap().len(), MAX_CD_TRACKS);
+
+        let hostile: String = (1..=MAX_CD_TRACKS + 1)
+            .map(|t| format!("TRACK:{t} TYPE:MODE1_RAW FRAMES:10 "))
+            .collect();
+        assert!(parse_chd_track_metadata(&hostile).is_err());
     }
 
     #[test]

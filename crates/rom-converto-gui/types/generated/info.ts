@@ -100,9 +100,18 @@ export type ChdLdVbiInfo = { disc_type: LdDiscType, white_flag_count: number, ca
 export type ChdMetadataTagSummary = { tag: string, length: number, };
 
 /**
- * One CD track parsed from the CHD's CHT2 metadata.
+ * One CD track parsed from the CHD's track metadata (CHT2/CHTR/CHGD/CHGT).
  */
-export type ChdTrack = { number: number, track_type: string, frames: number, pregap: number, subtype: string | null, pgtype: string | null, pgsub: string | null, postgap: number | null, };
+export type ChdTrack = { number: number, track_type: string, 
+/**
+ * Frames the track occupies, including `pad_frames`.
+ */
+frames: number, 
+/**
+ * Zero frames a GD-ROM track ends with (`PAD:`), absent from the
+ * track data; always 0 for CD tracks.
+ */
+pad_frames: number, pregap: number, subtype: string | null, pgtype: string | null, pgsub: string | null, postgap: number | null, };
 
 /**
  * One content entry from a CNMT's content table: the content ID as hex,

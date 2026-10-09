@@ -4,7 +4,7 @@
 use crate::disc::cd::{FRAME_SIZE, IO_BUFFER_SIZE};
 use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::chd::reader::cue_generator::{
-    ChdTrackInfo, generate_cue_sheet, parse_chd_track_metadata,
+    ChdTrackInfo, MAX_CD_TRACKS, generate_cue_sheet, parse_chd_track_metadata,
 };
 use crate::disc::chd::reader::{ChdFlavor, SyncChdHandle};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
@@ -14,6 +14,15 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use super::*;
+
+/// What the peek pass hands to the extract body: the open handle, the
+/// parsed track metadata with its chosen tag family for CD images, and
+/// the resolved output path.
+struct ChdExtractPeek {
+    handle: SyncChdHandle,
+    tracks: Option<(Vec<ChdTrackInfo>, [u8; 4])>,
+    output_path: PathBuf,
+}
 
 /// Extract the CHD at `input_path` back to its disc image at `output_path`.
 /// CD accepts `.cue` or no extension (adds `.cue`) and writes one `.bin` per
@@ -39,31 +48,43 @@ pub async fn extract_from_chd(
     // not from `header.logical_bytes`: logical_bytes counts the padded
     // physical frames, which the extracted bin drops.
     let input_for_peek = input_path.clone();
-    let (handle, tracks, output_path) = tokio::task::spawn_blocking(
-        move || -> ChdResult<(SyncChdHandle, Option<Vec<ChdTrackInfo>>, PathBuf)> {
-            let handle = crate::disc::chd::reader::open_chd_sync(&input_for_peek)?;
-            let output_path = extract_target(handle.flavor(), output_path)?;
-            match handle.flavor() {
-                ChdFlavor::Cd => {
-                    let meta_str = cd_track_metadata_text(&handle.metadata).ok_or_else(|| {
-                        ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string())
+    let peek = tokio::task::spawn_blocking(move || -> ChdResult<ChdExtractPeek> {
+        let handle = crate::disc::chd::reader::open_chd_sync(&input_for_peek)?;
+        let output_path = extract_target(handle.flavor(), output_path)?;
+        match handle.flavor() {
+            ChdFlavor::Cd => {
+                let (track_tag, meta_str) =
+                    cd_track_metadata(&handle.metadata).ok_or_else(|| {
+                        ChdError::InvalidTrackMetadata("no CD track metadata found".to_string())
                     })?;
-                    let tracks = parse_chd_track_metadata(&meta_str)?;
-                    if tracks.len() > MAX_CD_TRACKS {
-                        return Err(ChdError::InvalidTrackMetadata(format!(
-                            "CD has {} tracks, maximum is {MAX_CD_TRACKS}",
-                            tracks.len()
-                        )));
-                    }
-                    Ok((handle, Some(tracks), output_path))
-                }
-                _ => Ok((handle, None, output_path)),
+                let tracks = parse_chd_track_metadata(&meta_str)?;
+                chd_validate_cd_hunks(handle.header.hunk_bytes)?;
+                // Reject hostile frame totals before any scratch
+                // output exists or progress starts.
+                let physical_frames = handle.header.logical_bytes / FRAME_SIZE as u64;
+                let padded = chd_layout_is_padded(&tracks, physical_frames);
+                chd_validate_frame_total(&tracks, padded, physical_frames)?;
+                Ok(ChdExtractPeek {
+                    handle,
+                    tracks: Some((tracks, track_tag)),
+                    output_path,
+                })
             }
-        },
-    )
+            _ => Ok(ChdExtractPeek {
+                handle,
+                tracks: None,
+                output_path,
+            }),
+        }
+    })
     .await??;
+    let ChdExtractPeek {
+        handle,
+        tracks,
+        output_path,
+    } = peek;
 
-    let Some(tracks) = tracks else {
+    let Some((tracks, track_tag)) = tracks else {
         return extract_dvd_iso(progress, input_path, output_path, handle, cancel).await;
     };
 
@@ -111,13 +132,14 @@ pub async fn extract_from_chd(
             use crate::util::worker_pool::{Pool, parallelism};
 
             let hunk_bytes = handle.header.hunk_bytes as usize;
-            // Frame maps come from the CHT2 `FRAMES:` counts; padding
-            // frames carry width 0 so they drop out of the bin. Legacy
-            // rom-converto CHDs stored the stream unpadded.
-            let padded =
-                chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
-            let (frame_sizes, _) = chd_frame_spans(&tracks, padded);
-            let frame_audio = chd_frame_audio(&tracks, padded);
+            let physical_frames = handle.header.logical_bytes / FRAME_SIZE as u64;
+            // The span table comes from the track metadata `FRAMES:`
+            // counts; a GD-ROM `PAD:` gap frame and the per-track
+            // boundary padding frames carry width 0 so they drop out of
+            // the bin. Legacy rom-converto CHDs stored the stream
+            // unpadded.
+            let padded = chd_layout_is_padded(&tracks, physical_frames);
+            let spans = chd_track_spans(&tracks, padded, track_tag, physical_frames)?;
 
             let mut bin_writer = TrackBinWriter::new(
                 bin_files
@@ -149,8 +171,7 @@ pub async fn extract_from_chd(
                 HunkExtractArgs {
                     map: &handle.map,
                     hunk_bytes,
-                    frame_sizes: &frame_sizes,
-                    frame_audio: &frame_audio,
+                    spans: &spans,
                     bytes_done: &bytes_done,
                     cancel: &cancel,
                     admission,
@@ -188,8 +209,6 @@ pub async fn extract_from_chd(
     debug!("Extraction complete");
     Ok(())
 }
-
-pub(crate) const MAX_CD_TRACKS: usize = 99;
 
 fn track_bin_path(cue: &Path, track: Option<usize>, zero_pad: bool) -> PathBuf {
     let Some(track) = track else {
@@ -532,5 +551,159 @@ mod tests {
         let mut bytes = Vec::new();
         original.read_to_end(&mut bytes).unwrap();
         assert_eq!(bytes, b"abc");
+    }
+
+    /// A CD-mode CHD whose hunk size is not a whole number of frames
+    /// cannot line frames up with the stream; reject it before any
+    /// output exists.
+    #[tokio::test]
+    async fn extract_rejects_cd_hunks_that_are_not_whole_frames() {
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        let chd_path = dir.path().join("misaligned.chd");
+        crate::disc::chd::test_fixtures::write_raw_cd_chd(
+            &chd_path,
+            CHD_METADATA_TAG_GD_TRACK,
+            "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:1",
+            &[0u8; 4096],
+            4096,
+            2048,
+        );
+
+        let out_cue = dir.path().join("out.cue");
+        let err = extract_from_chd(
+            &NoProgress,
+            chd_path,
+            out_cue.clone(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::InvalidTrackMetadata(_)));
+        assert!(!out_cue.exists());
+    }
+
+    /// A raw CD CHD extracts its audio per the metadata family: legacy
+    /// `CHGT` stores little-endian samples and the bin keeps the stored
+    /// bytes, `CHGD` stores big-endian and the bin gets the byte swap,
+    /// and metadata claiming frames past the physical stream is
+    /// rejected before anything is written.
+    #[tokio::test]
+    async fn extract_raw_cd_chd_applies_the_metadata_familys_audio_order() {
+        use crate::disc::chd::models::{
+            CHD_METADATA_FLAG_HASHED, CHD_METADATA_RESERVED_BYTES, ChdMetadataHeader,
+        };
+        use crate::disc::chd::writer::ChdWriter;
+        use crate::util::NoProgress;
+
+        const AUDIO_FRAMES: usize = 10;
+        const DATA_BYTES: usize = 2352;
+        let physical_frames = padded_track_frames(AUDIO_FRAMES as u32) as usize;
+        let audio: Vec<u8> = (0..AUDIO_FRAMES)
+            .flat_map(|frame| (0..DATA_BYTES).map(move |i| (frame * 31 + i) as u8))
+            .collect();
+        let mut raw = Vec::with_capacity(physical_frames * FRAME_SIZE);
+        for frame in 0..physical_frames {
+            let mut sector = vec![0u8; FRAME_SIZE];
+            if frame < AUDIO_FRAMES {
+                sector[..DATA_BYTES]
+                    .copy_from_slice(&audio[frame * DATA_BYTES..(frame + 1) * DATA_BYTES]);
+            }
+            raw.extend_from_slice(&sector);
+        }
+
+        async fn extract_raw(
+            dir: &tempfile::TempDir,
+            tag: [u8; 4],
+            metadata_text: &str,
+            raw: &[u8],
+            out_name: &str,
+        ) -> ChdResult<std::path::PathBuf> {
+            let mut data = metadata_text.as_bytes().to_vec();
+            data.push(0);
+            let metadata = vec![ChdMetadataHeader {
+                tag,
+                flags: CHD_METADATA_FLAG_HASHED,
+                reserved: [0; CHD_METADATA_RESERVED_BYTES],
+                data,
+            }];
+            let chd_path = dir.path().join("raw.chd");
+            let mut writer = ChdWriter::create_raw(
+                std::fs::File::create(&chd_path).unwrap(),
+                raw.len() as u64,
+                19584,
+                FRAME_SIZE as u32,
+                metadata,
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+            writer
+                .compress_all_hunks_raw(
+                    &mut std::io::Cursor::new(raw),
+                    &std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    &CancelToken::new(),
+                )
+                .unwrap();
+            writer.finalize().unwrap();
+
+            let out_cue = dir.path().join(out_name);
+            extract_from_chd(
+                &NoProgress,
+                chd_path,
+                out_cue.clone(),
+                None,
+                CancelToken::new(),
+            )
+            .await
+            .map(|()| out_cue)
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+
+        let out_cue = extract_raw(
+            &dir,
+            CHD_METADATA_TAG_GD_TRACK_LEGACY,
+            "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:10",
+            &raw,
+            "chgt.cue",
+        )
+        .await
+        .unwrap();
+        let bin = std::fs::read(out_cue.with_extension("bin")).unwrap();
+        assert_eq!(bin.len(), AUDIO_FRAMES * DATA_BYTES);
+        assert_eq!(bin, audio, "legacy metadata keeps the stored bytes");
+
+        let out_cue = extract_raw(
+            &dir,
+            CHD_METADATA_TAG_GD_TRACK,
+            "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:10 PREGAP:0 PGTYPE:AUDIO PGSUB:NONE POSTGAP:0",
+            &raw,
+            "chgd.cue",
+        )
+        .await
+        .unwrap();
+        let bin = std::fs::read(out_cue.with_extension("bin")).unwrap();
+        let mut swapped = audio.clone();
+        swap_audio_sector(&mut swapped);
+        assert_eq!(bin, swapped, "current metadata gets the byte swap");
+
+        // Frames past the physical stream are rejected before anything
+        // is written: no cue, no bin.
+        let out_cue = dir.path().join("rejected.cue");
+        let err = extract_raw(
+            &dir,
+            CHD_METADATA_TAG_GD_TRACK,
+            "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:100",
+            &raw,
+            "rejected.cue",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::InvalidTrackMetadata(_)));
+        assert!(!out_cue.exists());
+        assert!(!dir.path().join("rejected.bin").exists());
     }
 }

@@ -1,5 +1,6 @@
-//! Streaming digests over a CHD's decoded content, per CHT2 track for
-//! CD-mode images and over the flat sector stream for DVD-mode ones.
+//! Streaming digests over a CHD's decoded content, per track from the
+//! CD track metadata (CHT2/CHTR/CHGD/CHGT) for CD-mode images and over
+//! the flat sector stream for DVD-mode ones.
 
 use crate::disc::cd::FRAME_SIZE;
 use crate::disc::chd::error::{ChdError, ChdResult};
@@ -12,7 +13,7 @@ use std::sync::atomic::AtomicU64;
 
 use super::*;
 
-/// One track's decoded digest set plus its CHT2 identity. `dat`
+/// One track's decoded digest set plus its CD metadata identity. `dat`
 /// maps this into its own `TrackDigests` at the digest boundary so
 /// this module never depends on the `dat` types.
 #[derive(Debug, Clone)]
@@ -23,15 +24,15 @@ pub struct ChdTrackDigest {
 }
 
 /// Digest a CHD's decoded content in a single streaming pass, no temp
-/// files. CD-mode CHDs return one [`ChdTrackDigest`] per CHT2 track
-/// plus the whole concatenated-bin digest. DVD-mode CHDs (no CHT2
-/// metadata) return an empty track list and the flat decoded ISO
+/// files. CD-mode CHDs return one [`ChdTrackDigest`] per CD metadata
+/// track plus the whole concatenated-bin digest. DVD-mode CHDs (no CD
+/// track metadata) return an empty track list and the flat decoded ISO
 /// digest as `whole`; the caller treats that as a single stream.
 ///
-/// The per-track shaping matches [`extract_from_chd`] exactly (CHT2
-/// `FRAMES:` counts, per-frame datasize slicing), so each track's
-/// digest equals that track's extracted bin digest and `whole` equals
-/// the digest of all extracted bins concatenated in track order.
+/// The per-track shaping matches [`extract_from_chd`] exactly (the
+/// metadata `FRAMES:` counts, per-frame datasize slicing), so each
+/// track's digest equals that track's extracted bin digest and `whole`
+/// equals the digest of all extracted bins concatenated in track order.
 ///
 /// Synchronous: intended to run inside the caller's `spawn_blocking`.
 /// Progress is relayed through the shared `bytes_done` counter, same
@@ -81,13 +82,14 @@ pub fn digest_chd_tracks(
         return Ok((Vec::new(), whole.finalize(logical_bytes)));
     }
 
-    let meta_str = cd_track_metadata_text(&handle.metadata)
-        .ok_or_else(|| ChdError::InvalidTrackMetadata("no CHT2 metadata found".to_string()))?;
+    chd_validate_cd_hunks(handle.header.hunk_bytes)?;
+    let (track_tag, meta_str) = cd_track_metadata(&handle.metadata)
+        .ok_or_else(|| ChdError::InvalidTrackMetadata("no CD track metadata found".to_string()))?;
     let tracks = parse_chd_track_metadata(&meta_str)?;
 
-    let padded = chd_layout_is_padded(&tracks, handle.header.logical_bytes / FRAME_SIZE as u64);
-    let (frame_sizes, frame_track) = chd_frame_spans(&tracks, padded);
-    let frame_audio = chd_frame_audio(&tracks, padded);
+    let physical_frames = handle.header.logical_bytes / FRAME_SIZE as u64;
+    let padded = chd_layout_is_padded(&tracks, physical_frames);
+    let spans = chd_track_spans(&tracks, padded, track_tag, physical_frames)?;
     let mut hashers: Vec<MultiHasher> =
         (0..tracks.len()).map(|_| MultiHasher::new(algos)).collect();
     let mut whole = MultiHasher::new(algos);
@@ -105,9 +107,7 @@ pub fn digest_chd_tracks(
         TrackDigestArgs {
             map: &handle.map,
             hunk_bytes,
-            frame_sizes: &frame_sizes,
-            frame_track: &frame_track,
-            frame_audio: &frame_audio,
+            spans: &spans,
             hashers: &mut hashers,
             whole: &mut whole,
             bytes_done,
@@ -118,7 +118,10 @@ pub fn digest_chd_tracks(
     pool.shutdown();
     result?;
 
-    let whole_size: u64 = frame_sizes.iter().map(|&s| s as u64).sum();
+    let whole_size: u64 = spans
+        .iter()
+        .map(|s| s.data_frames * s.datasize as u64)
+        .sum();
     let track_digests = tracks
         .iter()
         .zip(hashers)
@@ -239,5 +242,31 @@ mod tests {
         assert!(tracks.is_empty(), "DVD CHD yields no per-track digests");
         let iso_hash = hash_file(&out_iso, &algos, &NoProgress, &CancelToken::new()).unwrap();
         assert_eq!(whole, iso_hash, "whole digest must equal extracted iso");
+    }
+
+    /// A CD-mode CHD whose hunk size is not a whole number of frames is
+    /// rejected before hashing instead of silently digesting misaligned
+    /// frames.
+    #[test]
+    fn digest_rejects_cd_hunks_that_are_not_whole_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let chd_path = dir.path().join("misaligned.chd");
+        crate::disc::chd::test_fixtures::write_raw_cd_chd(
+            &chd_path,
+            CHD_METADATA_TAG_GD_TRACK,
+            "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:1",
+            &[0u8; 4096],
+            4096,
+            2048,
+        );
+
+        let err = digest_chd_tracks(
+            &chd_path,
+            &[HashAlgo::Sha1],
+            &Arc::new(AtomicU64::new(0)),
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ChdError::InvalidTrackMetadata(_)));
     }
 }

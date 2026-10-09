@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildInspectView, pkgPlatformBadge, wupEncryption } from "./inspect-view";
+import { chd } from "./inspect/chd";
+import type { InfoOf } from "./inspect/types";
 import type { InfoResult } from "~/types";
 
 function view(info: Partial<InfoResult> & { kind: InfoResult["kind"] }) {
@@ -709,6 +711,7 @@ describe("buildInspectView chd", () => {
 					number: 1,
 					track_type: "MODE1_RAW",
 					frames: 150,
+					pad_frames: 0,
 					pregap: 150,
 					subtype: "RW",
 					pgtype: "MODE1",
@@ -727,5 +730,44 @@ describe("buildInspectView chd", () => {
 				detail: "MODE1_RAW · 150 frames · pregap 150 (MODE1/RW_RAW) · postgap 75 · sub RW",
 			},
 		]);
+	});
+
+	it("labels a GD-ROM CHD and shows the track pad", () => {
+		const info = {
+			kind: "chd" as const,
+			version: 5,
+			compressors: ["cdlz"],
+			hunk_bytes: 19584,
+			unit_bytes: 2448,
+			hunk_count: 1,
+			logical_bytes: 19584,
+			physical_bytes: 512,
+			compression_ratio: 50,
+			raw_sha1: "",
+			sha1: "",
+			parent_sha1: null,
+			tracks: [
+				{
+					number: 2,
+					track_type: "AUDIO",
+					frames: 44550,
+					pad_frames: 44350,
+					pregap: 0,
+					subtype: null,
+					pgtype: null,
+					pgsub: null,
+					postgap: null,
+				},
+			],
+			metadata_tags: [{ tag: "CHGD", length: 98 }],
+			version_string: null,
+			dvd: null,
+			content: null,
+		} as InfoOf<"chd">;
+		const v = view(info);
+		expect(v.innerFiles).toEqual([{ name: "Track 2", detail: "AUDIO · 44550 frames · pad 44350" }]);
+		expect(chd.media?.(info)).toBe("GD-ROM");
+		const legacy = { ...info, metadata_tags: [{ tag: "CHGT", length: 98 }] } as InfoOf<"chd">;
+		expect(chd.media?.(legacy)).toBe("GD-ROM");
 	});
 });

@@ -581,6 +581,9 @@ A single track uses `<name>.bin`. Multiple tracks use `<name> (Track 1).bin`,
 discs with 10 or more tracks. This is Redump naming. The cue lists one FILE per track.
 CHD track metadata does not retain original filenames, so extraction derives them from OUTPUT.
 Run `cue merge` on the result to get a single `.bin`.
+A GD-ROM CHD stores the gaps between its tracks as `PAD:` frames at the end of the
+preceding track. Extraction drops them, so the cue and bins do not keep the
+high-density-area layout, and compressing the extracted cue again does not restore it.
 A CD output with another extension or a DVD output with `.cue` or `.chd` is rejected as an invalid
 argument before anything is written, including dry runs. An explicit OUTPUT with no extension
 gets `.cue` (CD) or `.iso` (DVD); text after its last dot counts as the extension, so dotted

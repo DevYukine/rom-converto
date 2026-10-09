@@ -180,4 +180,49 @@ pub(crate) mod test_fixtures {
         }
         iso
     }
+
+    /// Write a v5 CD-mode CHD from a raw byte stream with verbatim
+    /// track metadata and the given hunk/unit geometry, the way a
+    /// hostile file might carry it.
+    pub(crate) fn write_raw_cd_chd(
+        path: &std::path::Path,
+        tag: [u8; 4],
+        metadata_text: &str,
+        raw: &[u8],
+        hunk_bytes: u32,
+        unit_bytes: u32,
+    ) {
+        use crate::disc::chd::models::{
+            CHD_METADATA_FLAG_HASHED, CHD_METADATA_RESERVED_BYTES, ChdMetadataHeader,
+        };
+        use crate::disc::chd::writer::ChdWriter;
+        use crate::util::CancelToken;
+
+        let mut data = metadata_text.as_bytes().to_vec();
+        data.push(0);
+        let metadata = vec![ChdMetadataHeader {
+            tag,
+            flags: CHD_METADATA_FLAG_HASHED,
+            reserved: [0; CHD_METADATA_RESERVED_BYTES],
+            data,
+        }];
+        let mut writer = ChdWriter::create_raw(
+            std::fs::File::create(path).unwrap(),
+            raw.len() as u64,
+            hunk_bytes,
+            unit_bytes,
+            metadata,
+            Vec::new(),
+            None,
+        )
+        .unwrap();
+        writer
+            .compress_all_hunks_raw(
+                &mut std::io::Cursor::new(raw),
+                &std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                &CancelToken::new(),
+            )
+            .unwrap();
+        writer.finalize().unwrap();
+    }
 }

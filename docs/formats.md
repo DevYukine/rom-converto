@@ -148,6 +148,10 @@ are unsupported, and legacy audio/video images may grow substantially. See the
 Stored legacy hashes are shown by `info`, but migration does not validate them.
 `extract`, `verify`, and `to-cso` require v5, so migrate older files first.
 
+A GD-ROM CHD stores the gaps between its tracks as `PAD:` frames at the end of the
+preceding track. Extracting drops them, so the extracted cue/bin does not keep the
+high-density-area layout, and compressing it again does not restore it.
+
 ### CSO and ZSO
 
 CSO is a CISO v1 container. ZSO uses LZ4 blocks. Choose the output with

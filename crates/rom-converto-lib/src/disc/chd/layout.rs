@@ -1,8 +1,10 @@
-//! Pure CHD layout helpers: the track-metadata text, the padded
-//! frame maps the CD paths slice hunks with, and the header hash
+//! Pure CHD layout helpers: the track-metadata text, the per-track
+//! span table the CD paths slice hunks with, and the header hash
 //! chaining. No I/O, so the convert / extract / digest paths all
 //! share one description of the on-disk layout.
 
+use crate::disc::cd::FRAME_SIZE;
+use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::chd::models::{CHD_METADATA_TAG_CD, ChdMetadataHeader, SHA1_BYTES};
 use crate::disc::chd::reader::cue_generator::{ChdTrackInfo, chd_type_datasize};
 use crate::disc::chd::writer::metadata::MetadataHash;
@@ -28,13 +30,14 @@ pub(crate) const CHD_METADATA_TAG_CD_TRACK: [u8; 4] = *b"CHTR";
 pub(crate) const CHD_METADATA_TAG_GD_TRACK: [u8; 4] = *b"CHGD";
 pub(crate) const CHD_METADATA_TAG_GD_TRACK_LEGACY: [u8; 4] = *b"CHGT";
 
-/// Concatenated text of every metadata entry for the first present
-/// track-tag family, in priority order: `CHT2`, `CHTR`, `CHGD`, `CHGT`.
-/// The reference implementation writes one entry per track. Older
-/// rom-converto builds packed every track into one entry, so joining
-/// with a space parses both layouts identically. Families are never
-/// mixed within one file.
-pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<String> {
+/// Text of every metadata entry for the first present track-tag family,
+/// in priority order: `CHT2`, `CHTR`, `CHGD`, `CHGT`, returned with the
+/// tag that was chosen so callers can derive tag-specific behavior (the
+/// legacy `CHGT` audio byte order). The reference implementation writes
+/// one entry per track. Older rom-converto builds packed every track
+/// into one entry, so joining with a space parses both layouts
+/// identically. Entries of lower-priority families are ignored.
+pub(crate) fn cd_track_metadata(metadata: &[ChdMetadataHeader]) -> Option<([u8; 4], String)> {
     const TAG_PRIORITY: [[u8; 4]; 4] = [
         CHD_METADATA_TAG_CD,
         CHD_METADATA_TAG_CD_TRACK,
@@ -54,7 +57,12 @@ pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<S
                 .to_string()
         })
         .collect();
-    Some(parts.join(" "))
+    Some((*tag, parts.join(" ")))
+}
+
+/// Text of the chosen track-tag family, without its tag.
+pub(crate) fn cd_track_metadata_text(metadata: &[ChdMetadataHeader]) -> Option<String> {
+    cd_track_metadata(metadata).map(|(_, text)| text)
 }
 
 /// Whether a CHD's physical stream uses the reference implementation's
@@ -72,64 +80,155 @@ pub(crate) fn chd_layout_is_padded(tracks: &[ChdTrackInfo], physical_frames: u64
     physical_frames != unpadded || unpadded == padded
 }
 
-/// Per-frame span map for the physical CHD CD stream. `frame_sizes[i]`
-/// is the payload width of frame `i`; `frame_track[i]` is the index into
-/// `tracks` of the track that owns frame `i`. The reference
-/// implementation pads each track to a 4-frame boundary. Each track's
-/// `FRAMES:` payload is followed by zero-width padding frames that add
-/// nothing to the output. `padded` is false only for legacy unpadded
-/// layouts (see [`chd_layout_is_padded`]). Both vectors are laid out
-/// exactly as `extract_hunks` shapes the stream, so hashing them frame by
-/// frame reproduces the bin written by the reference extractor. Pure so
-/// it is unit-testable against synthetic CHT2 metadata.
-pub(crate) fn chd_frame_spans(tracks: &[ChdTrackInfo], padded: bool) -> (Vec<usize>, Vec<usize>) {
-    let mut frame_sizes = Vec::new();
-    let mut frame_track = Vec::new();
-    for (i, t) in tracks.iter().enumerate() {
-        let physical = if padded {
-            padded_track_frames(t.frames)
+/// Reject track metadata before anything reads or allocates: the last
+/// data-carrying frame (padded start of the last track plus its data
+/// frames) must exist in the physical stream (`header.logical_bytes`
+/// divided by the frame size). This guards reads, not allocation: the
+/// span table of [`chd_track_spans`] scales with the track count, so a
+/// forged frame count is never materialized.
+pub(crate) fn chd_validate_frame_total(
+    tracks: &[ChdTrackInfo],
+    padded: bool,
+    physical_frames: u64,
+) -> ChdResult<()> {
+    let spanned = |t: &ChdTrackInfo| {
+        if padded {
+            padded_track_frames(t.frames) as u64
         } else {
-            t.frames
-        } as usize;
-        let datasize = chd_type_datasize(&t.track_type);
-        frame_sizes.extend(std::iter::repeat_n(datasize, t.frames as usize));
-        frame_sizes.extend(std::iter::repeat_n(0, physical - t.frames as usize));
-        frame_track.extend(std::iter::repeat_n(i, physical));
+            t.frames as u64
+        }
+    };
+    let Some((last, earlier)) = tracks.split_last() else {
+        return Ok(());
+    };
+    let last_data_end: u64 =
+        earlier.iter().map(spanned).sum::<u64>() + (last.frames - last.pad_frames) as u64;
+    if last_data_end > physical_frames {
+        return Err(ChdError::InvalidTrackMetadata(format!(
+            "track metadata claims {last_data_end} frames, the CHD holds {physical_frames}"
+        )));
     }
-    (frame_sizes, frame_track)
+    Ok(())
 }
 
-/// Decoded payload byte count of one track: `frames * datasize`. This
-/// is the value stored as each track's `FileDigests.size_bytes`.
+/// Reject a CD-mode CHD whose hunk size is not a whole number of
+/// frames: the frame loops assume hunks tile the stream at frame
+/// granularity, and a misaligned hunk would slice frames across hunk
+/// boundaries.
+pub(crate) fn chd_validate_cd_hunks(hunk_bytes: u32) -> ChdResult<()> {
+    if hunk_bytes.is_multiple_of(FRAME_SIZE as u32) {
+        Ok(())
+    } else {
+        Err(ChdError::InvalidTrackMetadata(format!(
+            "CD hunk size {hunk_bytes} is not a multiple of the {}-byte frame",
+            FRAME_SIZE
+        )))
+    }
+}
+
+/// Per-track span of the physical CD stream. Frames resolve to their
+/// track through [`chd_span_frame`] instead of per-frame vectors, so
+/// memory scales with the track count even when a CD-mode CHD of a DVD
+/// ISO declares millions of frames.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ChdTrackSpan {
+    /// First physical frame of the track.
+    pub start_frame: u64,
+    /// Data frames the track carries (`FRAMES:` minus `PAD:`).
+    pub data_frames: u64,
+    /// One past the track's last physical frame, boundary padding
+    /// included.
+    pub end_frame: u64,
+    /// Payload bytes of one data frame.
+    pub datasize: usize,
+    /// Track's index in the metadata order.
+    pub track: usize,
+    /// Whether decoded audio frames of this track are byte-swapped on
+    /// the way out: the chosen metadata family swaps and the track is
+    /// AUDIO.
+    pub swap_audio: bool,
+}
+
+/// Span table for the physical CD stream, one entry per track. Runs the
+/// [`chd_validate_frame_total`] bound first. `padded` is false only for
+/// legacy unpadded layouts (see [`chd_layout_is_padded`]).
+pub(crate) fn chd_track_spans(
+    tracks: &[ChdTrackInfo],
+    padded: bool,
+    tag: [u8; 4],
+    physical_frames: u64,
+) -> ChdResult<Vec<ChdTrackSpan>> {
+    chd_validate_frame_total(tracks, padded, physical_frames)?;
+    let swap_audio = chd_audio_needs_swap(tag);
+    let mut start_frame = 0u64;
+    Ok(tracks
+        .iter()
+        .enumerate()
+        .map(|(track, t)| {
+            let end_frame = start_frame
+                + if padded {
+                    padded_track_frames(t.frames) as u64
+                } else {
+                    t.frames as u64
+                };
+            let span = ChdTrackSpan {
+                start_frame,
+                data_frames: (t.frames - t.pad_frames) as u64,
+                end_frame,
+                datasize: chd_type_datasize(&t.track_type),
+                track,
+                swap_audio: swap_audio && t.track_type == "AUDIO",
+            };
+            start_frame = end_frame;
+            span
+        })
+        .collect())
+}
+
+/// Resolve one physical frame to `(payload width, track index,
+/// swap-audio flag)`. A track's `PAD:` gap frames and boundary padding
+/// frames carry width 0 and never swap.
+pub(crate) fn chd_span_frame(spans: &[ChdTrackSpan], frame: u64) -> Option<(usize, usize, bool)> {
+    let span = spans.get(
+        spans
+            .partition_point(|s| s.start_frame <= frame)
+            .checked_sub(1)?,
+    )?;
+    if frame - span.start_frame < span.data_frames {
+        Some((span.datasize, span.track, span.swap_audio))
+    } else {
+        Some((0, span.track, false))
+    }
+}
+
+/// Decoded payload byte count of one track: `(frames - pad_frames) *
+/// datasize`, since `PAD:` zero frames are counted inside `FRAMES:` but
+/// carry no data. This is the value stored as each track's
+/// `FileDigests.size_bytes`.
 pub(crate) fn chd_track_decoded_size(track: &ChdTrackInfo) -> u64 {
-    track.frames as u64 * chd_type_datasize(&track.track_type) as u64
+    (track.frames - track.pad_frames) as u64 * chd_type_datasize(&track.track_type) as u64
 }
 
 /// Byte-swap the 16-bit samples of one audio sector in place. The
 /// reference implementation stores CD audio big-endian and swaps back
 /// on extract. The writer and reader apply this only to audio-track
-/// frames.
+/// frames; legacy `CHGT` GD-ROM metadata stores audio little-endian
+/// and those files skip the swap (see [`chd_audio_needs_swap`]).
 pub(crate) fn swap_audio_sector(sector: &mut [u8]) {
     for pair in sector.as_chunks_mut::<2>().0 {
         pair.swap(0, 1);
     }
 }
 
-/// Per-frame audio flags for the physical CD stream, laid out like
-/// [`chd_frame_spans`] (per-track padding frames included when
-/// `padded`): `true` where the frame's track is AUDIO.
-pub(crate) fn chd_frame_audio(tracks: &[ChdTrackInfo], padded: bool) -> Vec<bool> {
-    tracks
-        .iter()
-        .flat_map(|t| {
-            let physical = if padded {
-                padded_track_frames(t.frames)
-            } else {
-                t.frames
-            } as usize;
-            std::iter::repeat_n(t.track_type == "AUDIO", physical)
-        })
-        .collect()
+/// Whether CD audio frames must be byte-swapped on the way out. The
+/// reference implementation stores CD audio big-endian and swaps back
+/// on extract, except when the track metadata family is the legacy
+/// `CHGT` GD-ROM tag: those files store audio little-endian, so
+/// extract and hash pass the stored bytes through unchanged. `tag` is
+/// the family [`cd_track_metadata`] chose, not a mere membership test,
+/// so a file carrying both `CHGD` and `CHGT` entries follows `CHGD`.
+pub(crate) fn chd_audio_needs_swap(tag: [u8; 4]) -> bool {
+    tag != CHD_METADATA_TAG_GD_TRACK_LEGACY
 }
 
 pub(crate) fn compute_overall_sha1(
@@ -164,83 +263,121 @@ mod tests {
     }
 
     #[test]
-    fn frame_spans_single_data_track() {
+    fn track_spans_single_data_track() {
         let tracks = parse_chd_track_metadata("TRACK:1 TYPE:MODE1 FRAMES:20 PREGAP:0").unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks, true);
-        assert_eq!(sizes.len(), 20);
-        assert_eq!(track.len(), 20);
-        assert!(sizes.iter().all(|&s| s == 2048));
-        assert!(track.iter().all(|&t| t == 0));
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 20).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].start_frame, 0);
+        assert_eq!(spans[0].data_frames, 20);
+        assert_eq!(spans[0].end_frame, 20);
+        assert_eq!(spans[0].datasize, 2048);
+        assert!(!spans[0].swap_audio);
+        assert_eq!(chd_span_frame(&spans, 19), Some((2048, 0, false)));
         assert_eq!(chd_track_decoded_size(&tracks[0]), 20 * 2048);
     }
 
     /// A two-track disc with a nonzero pregap on the audio track: the
     /// `FRAMES:` counts are used as-is (pregap frames stored in the CHD
     /// are inside `FRAMES`), and per-frame routing keys on the frame
-    /// index so the differing datasizes (2352 data, 2352 audio) and the
-    /// track boundary line up.
+    /// index so the track boundary lines up.
     #[test]
-    fn frame_spans_multi_track_with_pregap() {
+    fn track_spans_multi_track_with_pregap() {
         let meta =
             "TRACK:1 TYPE:MODE1_RAW FRAMES:300 PREGAP:0 TRACK:2 TYPE:AUDIO FRAMES:500 PREGAP:150";
         let tracks = parse_chd_track_metadata(meta).unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks, true);
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 800).unwrap();
 
-        assert_eq!(sizes.len(), 800);
-        assert_eq!(track.len(), 800);
-        assert!(sizes[..300].iter().all(|&s| s == 2352));
-        assert!(track[..300].iter().all(|&t| t == 0));
-        assert!(sizes[300..].iter().all(|&s| s == 2352));
-        assert!(track[300..].iter().all(|&t| t == 1));
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].start_frame, 0);
+        assert_eq!(spans[0].end_frame, 300);
+        assert_eq!(spans[1].start_frame, 300);
+        assert_eq!(spans[1].end_frame, 800);
+        assert_eq!(spans[1].track, 1);
+        assert_eq!(
+            chd_span_frame(&spans, 299),
+            Some((2352, 0, false)),
+            "data frames of a non-audio track never swap"
+        );
+        assert_eq!(chd_span_frame(&spans, 300), Some((2352, 1, true)));
 
         assert_eq!(chd_track_decoded_size(&tracks[0]), 300 * 2352);
         assert_eq!(chd_track_decoded_size(&tracks[1]), 500 * 2352);
-        let whole: u64 = sizes.iter().map(|&s| s as u64).sum();
-        assert_eq!(whole, 800 * 2352);
     }
 
     /// Track frame counts that are not 4-frame multiples: each track's
     /// payload frames are followed by width-0 padding frames (10 -> 12,
     /// 5 -> 8, 7 -> 8 physical frames), matching the reference layout.
     #[test]
-    fn frame_spans_mixed_datasizes() {
+    fn track_spans_mixed_datasizes() {
         let meta = "TRACK:1 TYPE:MODE1 FRAMES:10 TRACK:2 TYPE:MODE2_FORM1 FRAMES:5 TRACK:3 TYPE:AUDIO FRAMES:7";
         let tracks = parse_chd_track_metadata(meta).unwrap();
-        let (sizes, track) = chd_frame_spans(&tracks, true);
-        assert_eq!(sizes.len(), 28);
-        assert_eq!(&sizes[0..10], &[2048; 10]);
-        assert_eq!(&sizes[10..12], &[0; 2]);
-        assert_eq!(&sizes[12..17], &[2048; 5]);
-        assert_eq!(&sizes[17..20], &[0; 3]);
-        assert_eq!(&sizes[20..27], &[2352; 7]);
-        assert_eq!(sizes[27], 0);
-        assert_eq!(&track[9..13], &[0, 0, 0, 1]);
-        assert_eq!(&track[19..21], &[1, 2]);
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 28).unwrap();
 
-        let audio = chd_frame_audio(&tracks, true);
-        assert_eq!(audio.len(), 28);
-        assert!(!audio[19]);
-        assert!(audio[20..28].iter().all(|&a| a));
+        let ends: Vec<u64> = spans.iter().map(|s| s.end_frame).collect();
+        assert_eq!(ends, [12, 20, 28]);
+        assert_eq!(chd_span_frame(&spans, 9), Some((2048, 0, false)));
+        assert_eq!(chd_span_frame(&spans, 11), Some((0, 0, false)));
+        assert_eq!(chd_span_frame(&spans, 12), Some((2048, 1, false)));
+        assert_eq!(chd_span_frame(&spans, 19), Some((0, 1, false)));
+        assert_eq!(chd_span_frame(&spans, 20), Some((2352, 2, true)));
+        assert_eq!(chd_span_frame(&spans, 27), Some((0, 2, false)));
+    }
+
+    /// CHGD-style track: `PAD:` zero frames sit inside `FRAMES:`, so the
+    /// datasize covers only `frames - pad_frames` frames while the
+    /// physical stream still spans the padded count (18 -> 20).
+    #[test]
+    fn track_spans_gd_track_with_pad() {
+        let meta = "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:18 PAD:6 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 20).unwrap();
+
+        assert_eq!(spans[0].data_frames, 12);
+        assert_eq!(spans[0].end_frame, padded_track_frames(18) as u64);
+        assert_eq!(chd_span_frame(&spans, 11), Some((2352, 0, false)));
+        assert_eq!(chd_span_frame(&spans, 12), Some((0, 0, false)));
+
+        assert_eq!(chd_track_decoded_size(&tracks[0]), 12 * 2352);
+        assert!(chd_layout_is_padded(&tracks, 20));
+        assert!(!chd_layout_is_padded(&tracks, 18));
+    }
+
+    /// A padded track followed by a second track: track 2's frames and
+    /// sizes start at the padded frame count of track 1 (18 -> 20), not
+    /// at its data frame count (12).
+    #[test]
+    fn track_spans_second_track_starts_after_the_padded_frames() {
+        let meta = "TRACK:1 TYPE:MODE1_RAW FRAMES:18 PAD:6 PREGAP:0 TRACK:2 TYPE:AUDIO FRAMES:8";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 28).unwrap();
+
+        assert_eq!(spans[1].start_frame, 20);
+        assert_eq!(spans[1].end_frame, 28);
+        assert_eq!(chd_span_frame(&spans, 19), Some((0, 0, false)));
+        assert_eq!(chd_span_frame(&spans, 20), Some((2352, 1, true)));
+
+        assert_eq!(chd_track_decoded_size(&tracks[1]), 8 * 2352);
     }
 
     /// Pre-padding rom-converto builds wrote multi-track streams
     /// unpadded; when the physical frame count matches the raw
     /// `FRAMES:` sum the reader must not inject padding.
     #[test]
-    fn frame_spans_legacy_unpadded_layout() {
+    fn track_spans_legacy_unpadded_layout() {
         let meta = "TRACK:1 TYPE:MODE1_RAW FRAMES:10 TRACK:2 TYPE:AUDIO FRAMES:7";
         let tracks = parse_chd_track_metadata(meta).unwrap();
         assert!(!chd_layout_is_padded(&tracks, 17));
         assert!(chd_layout_is_padded(&tracks, 20));
 
-        let (sizes, track) = chd_frame_spans(&tracks, false);
-        assert_eq!(sizes.len(), 17);
-        assert!(sizes.iter().all(|&s| s == 2352));
-        assert_eq!(&track[9..11], &[0, 1]);
-        let audio = chd_frame_audio(&tracks, false);
-        assert_eq!(audio.len(), 17);
-        assert!(!audio[9]);
-        assert!(audio[10]);
+        let spans = chd_track_spans(&tracks, false, CHD_METADATA_TAG_CD, 17).unwrap();
+        assert_eq!(spans[0].end_frame, 10);
+        assert_eq!(spans[1].end_frame, 17);
+        assert_eq!(chd_span_frame(&spans, 9), Some((2352, 0, false)));
+        assert_eq!(
+            chd_span_frame(&spans, 10),
+            Some((2352, 1, true)),
+            "the audio track swaps under CD metadata"
+        );
     }
 
     fn metadata_header(tag: [u8; 4], text: &str) -> ChdMetadataHeader {
@@ -252,6 +389,105 @@ mod tests {
             reserved: [0; crate::disc::chd::models::CHD_METADATA_RESERVED_BYTES],
             data,
         }
+    }
+
+    /// A hostile `FRAMES:` value must be rejected against the CHD's
+    /// physical frame count before any span is built.
+    #[test]
+    fn track_spans_reject_metadata_past_the_physical_frames() {
+        let hostile = parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:16777215").unwrap();
+        assert!(chd_track_spans(&hostile, true, CHD_METADATA_TAG_CD, 12).is_err());
+        assert!(chd_track_spans(&hostile, false, CHD_METADATA_TAG_CD, 12).is_err());
+
+        let small = parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:10").unwrap();
+        assert!(chd_track_spans(&small, true, CHD_METADATA_TAG_CD, 12).is_ok());
+        assert!(chd_track_spans(&small, true, CHD_METADATA_TAG_CD, 8).is_err());
+    }
+
+    /// A forged header (`logical_bytes` far past the file) cannot
+    /// inflate memory: the span table scales with the track count, and
+    /// the physical bound rejects the forged total before anything is
+    /// built.
+    #[test]
+    fn track_spans_reject_forged_frame_totals_cheaply() {
+        let mut meta = String::new();
+        for track in 1..=99 {
+            meta.push_str(&format!("TRACK:{track} TYPE:MODE1_RAW FRAMES:16777215 "));
+        }
+        let tracks = parse_chd_track_metadata(&meta).unwrap();
+        assert!(chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 2448).is_err());
+    }
+
+    /// A CD-mode CHD of a single-layer DVD ISO declares about 2.3M
+    /// frames; the span table accepts it without per-frame storage.
+    #[test]
+    fn track_spans_accept_dvd_sized_cd_metadata() {
+        let tracks = parse_chd_track_metadata("TRACK:1 TYPE:MODE1 FRAMES:2295104").unwrap();
+        let spans = chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 2_295_104).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].data_frames, 2_295_104);
+        assert_eq!(spans[0].end_frame, 2_295_104);
+        assert_eq!(chd_span_frame(&spans, 2_295_103), Some((2048, 0, false)));
+    }
+
+    /// The physical bound covers the last data frame, not the padded
+    /// total, so a file whose last track lacks the 4-frame tail padding
+    /// still extracts.
+    #[test]
+    fn track_spans_allow_a_last_track_without_tail_padding() {
+        let tracks = parse_chd_track_metadata("TRACK:1 TYPE:MODE1_RAW FRAMES:10").unwrap();
+        assert!(chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 10).is_ok());
+        assert!(chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 9).is_err());
+
+        let meta = "TRACK:1 TYPE:MODE1_RAW FRAMES:18 PAD:6 TRACK:2 TYPE:AUDIO FRAMES:8";
+        let tracks = parse_chd_track_metadata(meta).unwrap();
+        assert!(chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 28).is_ok());
+        assert!(chd_track_spans(&tracks, true, CHD_METADATA_TAG_CD, 27).is_err());
+    }
+
+    /// Legacy `CHGT` GD-ROM metadata stores audio little-endian, so its
+    /// AUDIO frames must pass through unswapped. Every other family
+    /// swaps them. The decision follows the family the metadata
+    /// selector picked: a file carrying both `CHGD` and `CHGT` entries
+    /// follows `CHGD`.
+    #[test]
+    fn track_spans_swap_audio_by_the_chosen_metadata_family() {
+        fn family(metadata: &[ChdMetadataHeader]) -> [u8; 4] {
+            cd_track_metadata(metadata).unwrap().0
+        }
+
+        let tracks = parse_chd_track_metadata("TRACK:1 TYPE:AUDIO FRAMES:10").unwrap();
+        let chgt = vec![metadata_header(
+            CHD_METADATA_TAG_GD_TRACK_LEGACY,
+            "TRACK:1 TYPE:AUDIO FRAMES:10",
+        )];
+        let spans = chd_track_spans(&tracks, true, family(&chgt), 12).unwrap();
+        assert!(!spans[0].swap_audio);
+        assert_eq!(chd_span_frame(&spans, 0), Some((2352, 0, false)));
+
+        let chgd = vec![metadata_header(
+            CHD_METADATA_TAG_GD_TRACK,
+            "TRACK:1 TYPE:AUDIO FRAMES:10",
+        )];
+        let spans = chd_track_spans(&tracks, true, family(&chgd), 12).unwrap();
+        assert!(spans[0].swap_audio);
+        assert_eq!(chd_span_frame(&spans, 0), Some((2352, 0, true)));
+        assert_eq!(
+            chd_span_frame(&spans, 11),
+            Some((0, 0, false)),
+            "padding frames carry no payload and never swap"
+        );
+
+        let mixed = vec![
+            metadata_header(CHD_METADATA_TAG_GD_TRACK, "TRACK:1 TYPE:AUDIO FRAMES:10"),
+            metadata_header(
+                CHD_METADATA_TAG_GD_TRACK_LEGACY,
+                "TRACK:1 TYPE:AUDIO FRAMES:10",
+            ),
+        ];
+        assert_eq!(family(&mixed), CHD_METADATA_TAG_GD_TRACK);
+        let spans = chd_track_spans(&tracks, true, family(&mixed), 12).unwrap();
+        assert!(spans[0].swap_audio);
     }
 
     #[test]

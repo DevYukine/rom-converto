@@ -19,7 +19,7 @@ use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::chd::map::{
     COMPRESSION_NONE, COMPRESSION_PARENT, COMPRESSION_SELF, MapEntry, crc16_ccitt,
 };
-use crate::disc::chd::swap_audio_sector;
+use crate::disc::chd::{ChdTrackSpan, chd_span_frame, swap_audio_sector};
 use crate::util::CancelToken;
 use crate::util::Cancelled;
 use crate::util::extent_end;
@@ -247,13 +247,12 @@ pub(crate) fn resolve_entry(map: &[MapEntry], hunk_index: u32) -> ChdResult<MapE
     }
 }
 
-/// Inputs for [`extract_hunks`]: the map to walk plus the per-frame
-/// geometry that shapes each decoded hunk into output bytes.
+/// Inputs for [`extract_hunks`]: the map to walk plus the per-track
+/// span table that shapes each decoded hunk into output bytes.
 pub(crate) struct HunkExtractArgs<'a> {
     pub map: &'a [MapEntry],
     pub hunk_bytes: usize,
-    pub frame_sizes: &'a [usize],
-    pub frame_audio: &'a [bool],
+    pub spans: &'a [ChdTrackSpan],
     pub bytes_done: &'a Arc<AtomicU64>,
     pub cancel: &'a CancelToken,
     pub admission: crate::util::worker_pool::Admission,
@@ -270,14 +269,13 @@ pub(crate) fn extract_hunks<W: Write + Send>(
     let HunkExtractArgs {
         map,
         hunk_bytes,
-        frame_sizes,
-        frame_audio,
+        spans,
         bytes_done,
         cancel,
         admission,
     } = args;
-    let frames_per_hunk = hunk_bytes / FRAME_SIZE;
-    let total_frames = frame_sizes.len();
+    let frames_per_hunk = (hunk_bytes / FRAME_SIZE) as u64;
+    let total_frames = spans.last().map(|s| s.end_frame).unwrap_or(0);
 
     run_extract_pipeline(
         pool,
@@ -289,17 +287,22 @@ pub(crate) fn extract_hunks<W: Write + Send>(
         |seq, mut out| {
             // Gather payload bytes from the interleaved hunk, dropping
             // the subcode and any tail past each track's datasize.
-            // The reference CD extractor writes datasize-wide bins; track
-            // padding frames past the CHT2 frame counts are dropped entirely.
-            let first_frame = seq as usize * frames_per_hunk;
+            // The reference CD extractor writes datasize-wide bins; a
+            // GD-ROM track's `PAD:` gap frames and the per-track
+            // boundary padding frames are dropped entirely.
+            let first_frame = seq * frames_per_hunk;
             let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
-            let mut sectors = Vec::with_capacity(frames_in_hunk * SECTOR_SIZE);
+            let mut sectors = Vec::with_capacity(frames_in_hunk as usize * SECTOR_SIZE);
             for frame in 0..frames_in_hunk {
-                let off = frame * FRAME_SIZE;
-                let size = frame_sizes[first_frame + frame];
-                // Audio frames are stored big-endian; swap back to the
+                let Some((size, _, swap)) = chd_span_frame(spans, first_frame + frame) else {
+                    continue;
+                };
+                let off = (frame * FRAME_SIZE as u64) as usize;
+                // Audio frames are stored big-endian unless the CHD's
+                // metadata family stores them little-endian, in which
+                // case the span flag is already false; swap back to the
                 // little-endian samples the extracted bin carries.
-                if frame_audio[first_frame + frame] {
+                if swap {
                     swap_audio_sector(&mut out.hunk[off..off + size]);
                 }
                 sectors.extend_from_slice(&out.hunk[off..off + size]);
@@ -446,9 +449,7 @@ pub(crate) fn verify_hunks(
 pub(crate) struct TrackDigestArgs<'a> {
     pub map: &'a [MapEntry],
     pub hunk_bytes: usize,
-    pub frame_sizes: &'a [usize],
-    pub frame_track: &'a [usize],
-    pub frame_audio: &'a [bool],
+    pub spans: &'a [ChdTrackSpan],
     pub hashers: &'a mut [MultiHasher],
     pub whole: &'a mut MultiHasher,
     pub bytes_done: &'a Arc<AtomicU64>,
@@ -460,12 +461,12 @@ pub(crate) struct TrackDigestArgs<'a> {
 /// hunk in parallel and the ordered consume closure feeds each
 /// frame's payload slice into its track hasher (`hashers[track]`)
 /// and into the whole-image hasher. Shaping matches `extract_hunks`
-/// byte-for-byte (same per-frame slice widths, same drop of padding
-/// frames past the CHT2 counts), so the per-track digests reproduce
-/// the reference extractor would write and `whole` reproduces the single
-/// concatenated bin.
+/// byte-for-byte: the same per-frame slice widths, with a GD-ROM
+/// track's `PAD:` frames and the boundary padding frames dropped, so
+/// the per-track digests match the bins the reference extractor would
+/// write and `whole` the single concatenated bin.
 ///
-/// Routing is per FRAME via `frame_track`, never by byte offset into
+/// Routing is per FRAME via the span table, never by byte offset into
 /// the shaped output: track datasizes vary (2048/2336/2352) and one
 /// hunk can straddle a track boundary, so only the frame index is a
 /// reliable key.
@@ -476,9 +477,7 @@ pub(crate) fn digest_hunks_per_track(
     let TrackDigestArgs {
         map,
         hunk_bytes,
-        frame_sizes,
-        frame_track,
-        frame_audio,
+        spans,
         hashers,
         whole,
         bytes_done,
@@ -487,8 +486,8 @@ pub(crate) fn digest_hunks_per_track(
     } = args;
     let hunk_count = map.len() as u64;
     let max_in_flight = admission.max_in_flight;
-    let frames_per_hunk = hunk_bytes / FRAME_SIZE;
-    let total_frames = frame_sizes.len();
+    let frames_per_hunk = (hunk_bytes / FRAME_SIZE) as u64;
+    let total_frames = spans.last().map(|s| s.end_frame).unwrap_or(0);
 
     drive(
         pool,
@@ -502,20 +501,22 @@ pub(crate) fn digest_hunks_per_track(
             Ok(ChdExtractWork { entry })
         },
         |seq, mut out| -> ChdResult<()> {
-            let first_frame = seq as usize * frames_per_hunk;
+            let first_frame = seq * frames_per_hunk;
             let frames_in_hunk = frames_per_hunk.min(total_frames.saturating_sub(first_frame));
             let mut folded = 0u64;
             for frame in 0..frames_in_hunk {
-                let idx = first_frame + frame;
-                let off = frame * FRAME_SIZE;
-                let size = frame_sizes[idx];
+                let Some((size, track, swap)) = chd_span_frame(spans, first_frame + frame) else {
+                    continue;
+                };
+                let off = (frame * FRAME_SIZE as u64) as usize;
                 // Match the extracted bin: audio frames are stored
-                // big-endian and swapped back on the way out.
-                if frame_audio[idx] {
+                // big-endian and swapped back on the way out, unless the
+                // metadata family stores them little-endian (flag false).
+                if swap {
                     swap_audio_sector(&mut out.hunk[off..off + size]);
                 }
                 let slice = &out.hunk[off..off + size];
-                hashers[frame_track[idx]].update(slice);
+                hashers[track].update(slice);
                 whole.update(slice);
                 folded += slice.len() as u64;
             }

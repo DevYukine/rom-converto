@@ -373,7 +373,8 @@ fn first_data_track(metadata: &[ChdMetadataHeader]) -> io::Result<(TrackType, u6
 /// Two CHD layout rules drive the arithmetic: every track is padded to
 /// a 4-frame boundary in the hunk stream, and a cue `INDEX 00` pregap is
 /// stored inside the track's own `FRAMES:`, flagged by a `V` prefix on
-/// `PGTYPE:`. A pregap that is not stored carries no frames to skip.
+/// `PGTYPE:`. A pregap that is not stored carries no frames to skip. GD-ROM
+/// `PAD:` zero frames at the end of a track are not data either.
 fn pick_data_track(tracks: &[ChdTrackInfo]) -> io::Result<(TrackType, u64, u64)> {
     let mut frame = 0u64;
     for track in tracks {
@@ -385,7 +386,10 @@ fn pick_data_track(tracks: &[ChdTrackInfo]) -> io::Result<(TrackType, u64, u64)>
             return Ok((
                 track_type,
                 frame + stored_pregap as u64,
-                track.frames.saturating_sub(stored_pregap) as u64,
+                track
+                    .frames
+                    .saturating_sub(stored_pregap)
+                    .saturating_sub(track.pad_frames) as u64,
             ));
         }
         frame += padded_track_frames(track.frames) as u64;
@@ -446,6 +450,28 @@ mod tests {
         let tracks = [track("MODE2_RAW", 300, 150, Some("MODE2"))];
         let (_, first_frame, frames) = pick_data_track(&tracks).expect("data track present");
         assert_eq!((first_frame, frames), (0, 300));
+    }
+
+    /// A GD-ROM data track's `PAD:` zero frames are not readable sectors,
+    /// but they still count toward where the next track starts.
+    #[test]
+    fn gd_rom_pad_frames_are_excluded_from_the_data_track() {
+        let mut padded = track("MODE1_RAW", 450, 0, Some("MODE1"));
+        padded.pad_frames = 150;
+        let (_, first_frame, frames) = pick_data_track(&[padded]).expect("data track present");
+        assert_eq!((first_frame, frames), (0, 300));
+    }
+
+    /// A padded track before the data track shifts its start by the
+    /// padded frame count (10 frames rounded up to 12), not by the raw
+    /// frame count.
+    #[test]
+    fn padded_track_shifts_the_data_track_start() {
+        let mut audio = track("AUDIO", 10, 0, None);
+        audio.pad_frames = 6;
+        let tracks = [audio, track("MODE1_RAW", 300, 0, Some("MODE1"))];
+        let (_, first_frame, frames) = pick_data_track(&tracks).expect("data track present");
+        assert_eq!((first_frame, frames), (12, 300));
     }
 
     #[test]

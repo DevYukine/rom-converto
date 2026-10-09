@@ -60,14 +60,18 @@ pub struct ChdHardDiskInfo {
     pub sector_bytes: u32,
 }
 
-/// One CD track parsed from the CHD's CHT2 metadata.
+/// One CD track parsed from the CHD's track metadata (CHT2/CHTR/CHGD/CHGT).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[cfg_attr(feature = "ts-export", ts(export_to = "info.ts"))]
 pub struct ChdTrack {
     pub number: u8,
     pub track_type: String,
+    /// Frames the track occupies, including `pad_frames`.
     pub frames: u32,
+    /// Zero frames a GD-ROM track ends with (`PAD:`), absent from the
+    /// track data; always 0 for CD tracks.
+    pub pad_frames: u32,
     pub pregap: u32,
     pub subtype: Option<String>,
     pub pgtype: Option<String>,
@@ -485,6 +489,7 @@ fn extract_tracks(metadata: &[ChdMetadataHeader]) -> Vec<ChdTrack> {
                     number: t.track_number,
                     track_type: t.track_type,
                     frames: t.frames,
+                    pad_frames: t.pad_frames,
                     pregap: t.pregap,
                     subtype: t.subtype,
                     pgtype: t.pgtype,

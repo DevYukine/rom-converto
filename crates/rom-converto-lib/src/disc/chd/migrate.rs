@@ -118,7 +118,9 @@ pub async fn migrate_chd_to_v5(
         // The reference implementation's copy operation rewrites the pre-CHT2
         // `CHTR` entries as hashed CHT2, so the migrated disc hashes like
         // current reference CD-CHD output and matches MAME's checksums.
-        // `CHGD` stays verbatim: its upgrade also byte-swaps the audio frames.
+        // `CHGD` and `CHGT` stay verbatim: legacy `CHGT` keeps its
+        // little-endian GD-ROM audio, which extract and hash also pass
+        // through unswapped.
         if metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD_TRACK)
             && !metadata.iter().any(|m| m.tag == CHD_METADATA_TAG_CD)
         {

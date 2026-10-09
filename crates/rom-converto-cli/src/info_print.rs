@@ -280,9 +280,22 @@ fn render_chd(info: &rom_converto_lib::info::ChdInfo) -> String {
                 .filter(|s| !s.is_empty())
                 .map(|s| format!(" pgsub={}", s))
                 .unwrap_or_default();
+            let pad = if tr.pad_frames > 0 {
+                format!(" pad={}", tr.pad_frames)
+            } else {
+                String::new()
+            };
             inner.push_str(&format!(
-                "  {:>2}  {:<12}  frames={:<8} pregap={}{}{}{}{}\n",
-                tr.number, tr.track_type, tr.frames, tr.pregap, pgtype, pgsub, subtype, postgap
+                "  {:>2}  {:<12}  frames={:<8} pregap={}{}{}{}{}{}\n",
+                tr.number,
+                tr.track_type,
+                tr.frames,
+                tr.pregap,
+                pgtype,
+                pgsub,
+                pad,
+                subtype,
+                postgap
             ));
         }
         nested(&mut out, "Inner files", &inner);
@@ -2936,6 +2949,7 @@ mod tests {
                 number: 1,
                 track_type: "MODE1/2048".to_string(),
                 frames: 100,
+                pad_frames: 0,
                 pregap: 0,
                 subtype: None,
                 pgtype: Some("MODE1".to_string()),
@@ -2947,6 +2961,29 @@ mod tests {
         let out = render_chd(&info);
         assert!(out.contains("pgtype=MODE1"));
         assert!(out.contains("pgsub=RW"));
+    }
+
+    #[test]
+    fn render_chd_shows_gd_rom_pad_only_when_present() {
+        let track = |pad_frames| rom_converto_lib::disc::chd::info::ChdTrack {
+            number: 2,
+            track_type: "AUDIO".to_string(),
+            frames: 44550,
+            pad_frames,
+            ..Default::default()
+        };
+        let info = rom_converto_lib::info::ChdInfo {
+            version: 5,
+            tracks: vec![track(44350)],
+            ..Default::default()
+        };
+        assert!(render_chd(&info).contains("pad=44350"));
+        let info = rom_converto_lib::info::ChdInfo {
+            version: 5,
+            tracks: vec![track(0)],
+            ..Default::default()
+        };
+        assert!(!render_chd(&info).contains("pad="));
     }
 
     #[test]

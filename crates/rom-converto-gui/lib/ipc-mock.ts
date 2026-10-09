@@ -346,7 +346,7 @@ const CHD_INFO = {
 	raw_sha1: HEX40,
 	sha1: HEX40B,
 	parent_sha1: null,
-	tracks: [{ number: 1, track_type: "MODE1_RAW", frames: 330_000, pregap: 0, subtype: null, pgtype: null, pgsub: null, postgap: null }],
+	tracks: [{ number: 1, track_type: "MODE1_RAW", frames: 330_000, pad_frames: 0, pregap: 0, subtype: null, pgtype: null, pgsub: null, postgap: null }],
 	metadata_tags: [],
 	version_string: "MAME compress 0.264",
 	dvd: null,
