@@ -25,7 +25,7 @@ import DatScanView from "~/components/op/DatScanView.vue";
 import DatRenameView from "~/components/op/DatRenameView.vue";
 import DatVerifyView from "~/components/op/DatVerifyView.vue";
 import OrganizeView from "~/components/op/OrganizeView.vue";
-import { opProgressKey } from "~/lib/opdefs/types";
+import { opProgressKey, pageEchoArgs } from "~/lib/opdefs/types";
 import type { FieldDef, FileField, OpDef, OutputRow, StagedItem } from "~/lib/opdefs/types";
 
 const props = defineProps<{ def: OpDef }>();
@@ -43,7 +43,7 @@ const cli = computed(() => {
 	const name = props.def.browseDirectory || !props.def.acceptedExts.length ? "input" : `input.${props.def.acceptedExts[0]}`;
 	const sample: StagedItem = staged.value[0] ?? { id: "", path: name, name, size: 0, outExt: "" };
 	const taskId = opProgressKey(props.def, store) ?? "job";
-	return buildCliCommand(props.def.buildArgs(store, sample, taskId));
+	return buildCliCommand(pageEchoArgs(props.def, store, staged.value, sample, taskId));
 });
 
 const stagedLabel = computed(() => {

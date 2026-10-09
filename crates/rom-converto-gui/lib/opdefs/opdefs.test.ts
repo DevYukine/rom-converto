@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { registeredCommands, runOptionKeys } from "../source-parsers";
+import { buildCliCommand, setWindowsQuoting } from "~/composables/useCliEcho";
 import { allOpDefs, opCommand } from "./index";
-import type { RunPayload, StagedItem } from "./types";
+import { pageEchoArgs, type RunPayload, type StagedItem } from "./types";
 
 const ITEM: StagedItem = {
 	id: "item-1",
@@ -18,9 +19,9 @@ function payloadsOf(def: ReturnType<typeof allOpDefs>[number]): RunPayload[] {
 	return payloads;
 }
 
-describe("op registry", () => {
-	const defs = allOpDefs();
+const defs = allOpDefs();
 
+describe("op registry", () => {
 	it("registers every op module", () => {
 		expect(defs.length).toBeGreaterThan(0);
 	});
@@ -76,5 +77,24 @@ describe("op registry", () => {
 			.filter((def) => !registered.has(opCommand(def, def.useStore())))
 			.map((def) => `${def.op}/${def.console}`);
 		expect(missing).toEqual([]);
+	});
+});
+
+describe("page echo parity", () => {
+	// The POSIX-quote expectations below must not depend on the host OS.
+	beforeEach(() => setWindowsQuoting(false));
+
+	const items: StagedItem[] = [
+		{ ...ITEM, id: "a", path: "/roms/Base.nsp", name: "Base.nsp" },
+		{ ...ITEM, id: "b", path: "/roms/Update.nsp", name: "Update.nsp" },
+	];
+
+	it("echoes every staged input for defs that enqueue one combined job", () => {
+		const combined = defs.filter((def) => def.buildArgsAll);
+		expect(combined.length).toBeGreaterThan(0);
+		for (const def of combined) {
+			const echo = buildCliCommand(pageEchoArgs(def, def.useStore(), items, items[0]!, "task-1"));
+			for (const item of items) expect(echo, def.storeId).toContain(item.path);
+		}
 	});
 });

@@ -275,6 +275,21 @@ export function dryRunArgs(args: RunPayload): RunPayload {
 	return { ...args, request: { ...args.request, dry_run: true } };
 }
 
+// The page's CLI echo has to match what queuing sends: a def with
+// `buildArgsAll` folds every staged item into one spec, so the echo is built
+// from the same list. `sample` is the first staged item, or a placeholder
+// when nothing is staged yet.
+export function pageEchoArgs(
+	def: OpDef,
+	store: OpStore,
+	items: StagedItem[],
+	sample: StagedItem,
+	taskId: string,
+): RunPayload {
+	if (def.buildArgsAll) return def.buildArgsAll(store, items.length ? items : [sample], taskId);
+	return def.buildArgs(store, sample, taskId);
+}
+
 export function templateIsActive(store: OpStore): boolean {
 	return typeof store.outputTemplate === "string" && store.outputTemplate.length > 0;
 }
