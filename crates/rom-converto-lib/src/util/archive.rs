@@ -532,7 +532,7 @@ fn cue_sidecar_members(
     let mut indices = Vec::new();
     for reference in references {
         // A multi-disc archive repeats track names per disc folder, so the
-        // cue's own directory disambiguates; only a reference that matches
+        // sheet's own directory disambiguates; only a reference that matches
         // nothing there falls back to the whole archive.
         let hits: Vec<usize> = members
             .iter()
@@ -603,10 +603,10 @@ pub fn resolve_input_with_selection(
     let member = &members[member_index];
 
     let tmp = tempfile::tempdir()?;
-    let is_cue = name_has_ext(&member.name, &["cue"]);
+    let is_sheet = name_has_ext(&member.name, &["cue", "gdi"]);
     let mut needed = member.size;
     let mut referenced = Vec::new();
-    let extracted_cue = if is_cue {
+    let extracted_sheet = if is_sheet {
         if let Ok(available) = available_space(tmp.path())
             && space_shortfall(available, member.size, DEFAULT_SPACE_HEADROOM).is_some()
         {
@@ -628,17 +628,28 @@ pub fn resolve_input_with_selection(
     } else {
         None
     };
-    if let Some(cue_path) = extracted_cue.as_ref() {
-        // Best-effort: a non-UTF-8 or nonstandard cue sheet yields no sidecars
+    if let Some(sheet_path) = extracted_sheet.as_ref() {
+        // Best-effort: a non-UTF-8 or nonstandard sheet yields no sidecars
         // rather than failing extraction of the primary member.
-        let cue_files = crate::disc::cue::CueParser::new(cue_path)
-            .parse_reader(BufReader::new(File::open(cue_path)?))
-            .map(|cue| cue.files)
-            .unwrap_or_default();
-        let wanted: HashSet<String> = cue_files
-            .into_iter()
-            .map(|file| basename(&file.filename).to_ascii_lowercase())
-            .collect();
+        let wanted: HashSet<String> = if name_has_ext(&member.name, &["gdi"]) {
+            crate::sega::katana::parse_gdi_index(sheet_path)
+                .map(|index| {
+                    index
+                        .tracks
+                        .iter()
+                        .map(|track| basename(&track.filename).to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            crate::disc::cue::CueParser::new(sheet_path)
+                .parse_reader(BufReader::new(File::open(sheet_path)?))
+                .map(|cue| cue.files)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|file| basename(&file.filename).to_ascii_lowercase())
+                .collect()
+        };
         referenced = cue_sidecar_members(path, &members, &member.name, &wanted)?;
         for &index in &referenced {
             needed = needed
@@ -647,18 +658,19 @@ pub fn resolve_input_with_selection(
         }
     }
     if let Ok(available) = available_space(tmp.path()) {
-        let available_before_cue = available.saturating_add(if is_cue { member.size } else { 0 });
-        if space_shortfall(available_before_cue, needed, DEFAULT_SPACE_HEADROOM).is_some() {
+        let available_before_sheet =
+            available.saturating_add(if is_sheet { member.size } else { 0 });
+        if space_shortfall(available_before_sheet, needed, DEFAULT_SPACE_HEADROOM).is_some() {
             return Err(anyhow::Error::new(TempSpaceShortfall).context(format!(
                 "not enough space on the temp volume at {} to extract {}: need about {}, only {} free. Point TMPDIR at a larger volume or extract the archive first.",
                 tmp.path().display(),
                 format_bytes(needed),
                 format_bytes(needed.saturating_add(DEFAULT_SPACE_HEADROOM)),
-                format_bytes(available_before_cue)
+                format_bytes(available_before_sheet)
             )));
         }
     }
-    let extracted = match extracted_cue {
+    let extracted = match extracted_sheet {
         Some(path) => path,
         None => extract_one(path, kind, &member.name, member_index, tmp.path())?,
     };
@@ -1056,6 +1068,36 @@ mod tests {
             b"bin-track-bytes"
         );
         // Only referenced bins are pulled, not every bin in the archive.
+        assert!(!dir.join("unrelated.bin").exists());
+    }
+
+    #[test]
+    fn gdi_pulls_referenced_track_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("disc.zip");
+        let gdi = b"2\n1 0 4 2352 track01.bin 0\n2 4500 0 2352 track02.raw 0\n";
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[
+                ("game.gdi", gdi.as_slice()),
+                ("track01.bin", b"first-track"),
+                ("track02.raw", b"second-track"),
+                ("unrelated.bin", b"other"),
+            ],
+        );
+        let resolved = resolve_input(&zip, &["gdi"]).unwrap();
+        assert_eq!(resolved.path().file_name().unwrap(), "game.gdi");
+        let dir = resolved.path().parent().unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("track01.bin")).unwrap(),
+            b"first-track"
+        );
+        assert_eq!(
+            std::fs::read(dir.join("track02.raw")).unwrap(),
+            b"second-track"
+        );
+        // Only referenced tracks are pulled, not every file in the archive.
         assert!(!dir.join("unrelated.bin").exists());
     }
 

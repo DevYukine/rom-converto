@@ -11,7 +11,7 @@ use std::fs::File;
 #[cfg(test)]
 use std::io::Cursor;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Fields of the Dreamcast IP header, with the area and peripheral fields
 /// kept raw alongside what is decoded from them.
@@ -101,16 +101,19 @@ pub fn parse(head: &[u8]) -> Result<KatanaInfo> {
 /// area starts.
 ///
 /// # Errors
-/// Returns an error when the index is malformed, lists fewer than three
-/// tracks, names a track file outside the sheet's folder, or the third
-/// track's file holds no Dreamcast IP header.
+/// Returns an error naming `path` when the index is malformed, lists
+/// fewer than three tracks, names a track file outside the sheet's
+/// folder, or the third track's file holds no Dreamcast IP header.
 pub fn parse_gdi(path: &Path) -> Result<KatanaInfo> {
-    let file = File::open(path).with_context(|| format!("retro info: read {}", path.display()))?;
-    let index = parse_index_reader(BufReader::new(file))?;
+    parse_gdi_at(path).map_err(|e| anyhow!("gdi {}: {e:#}", path.display()))
+}
+
+fn parse_gdi_at(path: &Path) -> Result<KatanaInfo> {
+    let index = parse_gdi_index(path)?;
     let third = index
         .tracks
         .get(2)
-        .ok_or_else(|| anyhow!("katana: gdi index lists fewer than three tracks"))?;
+        .ok_or_else(|| anyhow!("index lists fewer than three tracks"))?;
     let track_path = path
         .parent()
         .unwrap_or(Path::new("."))
@@ -121,20 +124,46 @@ pub fn parse_gdi(path: &Path) -> Result<KatanaInfo> {
     Ok(info)
 }
 
+/// Parses the `.gdi` track index at `path` without touching its track
+/// files, reading the declared number of track lines and ignoring
+/// anything after them.
+///
+/// # Errors
+/// Returns an error when the sheet cannot be read, is malformed, or
+/// names a track file outside its folder.
+pub fn parse_gdi_index(path: &Path) -> Result<GdiIndex> {
+    let file = File::open(path).with_context(|| format!("read {}", path.display()))?;
+    parse_index_reader(BufReader::new(file))
+}
+
+impl GdiIndex {
+    /// Each track file's path, resolved against the sheet's folder.
+    pub fn track_paths(&self, sheet: &Path) -> Vec<PathBuf> {
+        let dir = sheet.parent().unwrap_or_else(|| Path::new("."));
+        self.tracks
+            .iter()
+            .map(|track| dir.join(&track.filename))
+            .collect()
+    }
+}
+
+/// Parses the sheet: reads the declared track count, then at most
+/// [`crate::disc::cd::MAX_TRACKS`] track lines, so a bogus declared
+/// count never collects more entries than a disc can hold.
 fn parse_index_reader<R: BufRead>(mut reader: R) -> Result<GdiIndex> {
     let track_count = loop {
         let line = bounded_line::read_line(&mut reader)?
-            .ok_or_else(|| anyhow!("katana: gdi does not open with a track count"))?;
+            .ok_or_else(|| anyhow!("does not open with a track count"))?;
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         break line
             .parse::<usize>()
-            .map_err(|_| anyhow!("katana: gdi does not open with a track count"))?;
+            .map_err(|_| anyhow!("does not open with a track count"))?;
     };
     let mut tracks = Vec::new();
-    while tracks.len() < track_count {
+    while tracks.len() < track_count.min(crate::disc::cd::MAX_TRACKS) {
         let Some(line) = bounded_line::read_line(&mut reader)? else {
             break;
         };
@@ -152,7 +181,7 @@ fn parse_index_reader<R: BufRead>(mut reader: R) -> Result<GdiIndex> {
 /// A track line is `number lba type sector_size filename offset`, with
 /// the filename quoted when it holds spaces.
 fn parse_track(line: &str) -> Result<GdiTrack> {
-    let bad = || anyhow!("katana: malformed gdi track line {line:?}");
+    let bad = || anyhow!("malformed track line {line:?}");
     let fields: Vec<&str> = line.split_whitespace().collect();
     let [number, lba, track_type, sector_size, ..] = fields.as_slice() else {
         return Err(bad());
@@ -165,7 +194,7 @@ fn parse_track(line: &str) -> Result<GdiTrack> {
         None => fields.get(4).ok_or_else(bad)?.to_string(),
     };
     if !is_safe_relative_path(&filename) {
-        return Err(anyhow!("katana: unsafe gdi track file name {filename:?}"));
+        return Err(anyhow!("unsafe track file name {filename:?}"));
     }
 
     Ok(GdiTrack {
@@ -334,6 +363,25 @@ pub(crate) mod tests {
         assert!(parse_index_reader(Cursor::new("1\n1 0 4 2352 a.bin 0\n")).is_ok());
     }
 
+    /// Track lines after the declared count are ignored, as the
+    /// reference parser does: only the declared number of lines is
+    /// read, so the count check never sees the extras.
+    #[test]
+    fn parse_ignores_text_after_the_declared_tracks() {
+        let junk = "1\n1 0 4 2352 a.bin 0\n\x1a\n";
+        assert_eq!(
+            parse_index_reader(Cursor::new(junk)).unwrap().tracks.len(),
+            1
+        );
+        let extra = "1\n1 0 4 2352 a.bin 0\n2 450 0 2352 b.raw 0\n3 45000 4 2352 c.bin 0\n";
+        let index = parse_index_reader(Cursor::new(extra)).unwrap();
+        assert_eq!((index.track_count, index.tracks.len()), (1, 1));
+        assert_eq!(
+            index.track_paths(Path::new("libs/game.gdi")),
+            vec![PathBuf::from("libs/a.bin")]
+        );
+    }
+
     #[test]
     fn skips_blank_line_before_track_count() {
         let line = format!("{}\n0\n", " ".repeat(64 * 1024 + 1));
@@ -349,6 +397,21 @@ pub(crate) mod tests {
         let gdi = dir.path().join("short.gdi");
         std::fs::write(&gdi, "2\n1 0 4 2352 a.bin 0\n2 1798 0 2352 b.raw 0\n").unwrap();
         assert!(parse_gdi(&gdi).is_err());
+    }
+
+    /// A parse failure names the sheet it came from, so `info bad.gdi`
+    /// reports the file and the format.
+    #[test]
+    fn parse_gdi_names_the_sheet_in_its_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let gdi = dir.path().join("bad.gdi");
+        std::fs::write(&gdi, "nope\n").unwrap();
+        let err = parse_gdi(&gdi).unwrap_err();
+        // The plain Display carries the path and the cause, so batch
+        // callers that print `to_string()` lose nothing.
+        let shown = err.to_string();
+        assert!(shown.contains(&gdi.display().to_string()), "{shown}");
+        assert!(shown.contains("track count"), "{shown}");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::disc::chd::error::{ChdError, ChdResult};
+use crate::disc::chd::gdi::GdTrack;
 use crate::disc::chd::models::{
     CHD_METADATA_FLAG_HASHED, CHD_METADATA_HEADER_BYTES, CHD_METADATA_RESERVED_BYTES,
     CHD_METADATA_TAG_AV, CHD_METADATA_TAG_AV_LD, CHD_V5_HEADER_SIZE, ChdMetadataHeader, SHA1_BYTES,
@@ -102,13 +103,29 @@ pub fn track_frames(cue_sheet: &CueSheet, file_sectors: &[u32]) -> ChdResult<Vec
 /// is the per-track source frame count from [`track_frames`], shared with
 /// the CHT2 metadata.
 pub fn cd_frame_layout(cue_sheet: &CueSheet, frames: &[u32]) -> (Vec<bool>, Vec<bool>) {
+    frame_layout(
+        cue_sheet
+            .tracks
+            .iter()
+            .zip(frames)
+            .map(|(track, &frames)| (track.track_type, frames, frames)),
+    )
+}
+
+/// Builds the maps from `(track type, source frames, FRAMES: count)`
+/// per track: source frames carry data, the rest of the `FRAMES:` count
+/// and the 4-frame boundary padding are zero.
+fn frame_layout(tracks: impl Iterator<Item = (TrackType, u32, u32)>) -> (Vec<bool>, Vec<bool>) {
     let mut is_data = Vec::new();
     let mut is_audio = Vec::new();
-    for (track, &frames) in cue_sheet.tracks.iter().zip(frames) {
+    for (track_type, source_frames, frames) in tracks {
         let padded = crate::disc::chd::padded_track_frames(frames);
-        let audio = matches!(track.track_type, TrackType::Audio);
-        is_data.extend(std::iter::repeat_n(true, frames as usize));
-        is_data.extend(std::iter::repeat_n(false, (padded - frames) as usize));
+        let audio = matches!(track_type, TrackType::Audio);
+        is_data.extend(std::iter::repeat_n(true, source_frames as usize));
+        is_data.extend(std::iter::repeat_n(
+            false,
+            (padded - source_frames) as usize,
+        ));
         is_audio.extend(std::iter::repeat_n(audio, padded as usize));
     }
     (is_data, is_audio)
@@ -144,6 +161,37 @@ pub fn generate_cd_metadata(cue_sheet: &CueSheet, frames: &[u32]) -> ChdResult<M
         )));
     }
 
+    chain_and_serialize(entries)
+}
+
+/// GD-ROM twin of [`cd_frame_layout`]: a track's source frames, then
+/// its `pad_frames` zero frames (the gap to the next track, counted in
+/// `FRAMES:`), then the 4-frame boundary padding.
+pub fn gd_frame_layout(tracks: &[GdTrack]) -> (Vec<bool>, Vec<bool>) {
+    frame_layout(
+        tracks
+            .iter()
+            .map(|t| (t.track_type, t.source_frames(), t.frames)),
+    )
+}
+
+/// One `CHGD` entry per track: the `CHT2` text with a `PAD:` field
+/// after `FRAMES:`, as the reference `write_metadata` emits for a
+/// GD-ROM TOC. Gaps live in the pad, so `PREGAP:` is zero and
+/// `PGTYPE:` keeps its MODE1 default.
+pub fn generate_gd_metadata(tracks: &[GdTrack]) -> ChdResult<MetadataBlock> {
+    let entries = tracks
+        .iter()
+        .map(|track| {
+            ChdMetadataHeader::new_gd_metadata(format!(
+                "TRACK:{} TYPE:{} SUBTYPE:NONE FRAMES:{} PAD:{} PREGAP:0 PGTYPE:{PREGAP_TYPE} PGSUB:NONE POSTGAP:0",
+                track.number,
+                track.track_type.chd_metadata_type(),
+                track.frames,
+                track.pad_frames,
+            ))
+        })
+        .collect();
     chain_and_serialize(entries)
 }
 

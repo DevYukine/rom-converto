@@ -2,17 +2,18 @@
 
 use crate::disc::cd::{CD_HUNK_BYTES, IO_BUFFER_SIZE, SECTOR_SIZE};
 use crate::disc::chd::error::{ChdError, ChdResult};
+use crate::disc::chd::gdi::{TrackChain, TrackSource, check_track_count, gd_layout};
 use crate::disc::chd::writer::ChdWriter;
 use crate::disc::cue::CueParser;
 use crate::disc::cue::models::{CueFile, CueSheet, FileType, Index, Msf, Track, TrackType};
 use crate::disc::laserdisc::avi::AviFile;
+use crate::sega::katana::{GdiTrack, parse_gdi_index};
 use crate::util::iso9660::{DiscKind, detect_disc_kind};
 use crate::util::{
     BYTES_PER_MB, CancelToken, DREAMCAST_CHD_WARNING, ProgressReporter, dreamcast_boot_signature,
     run_scratch_write,
 };
 use log::{debug, info, warn};
-use std::io::Read;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
@@ -286,34 +287,6 @@ async fn dreamcast_head_bytes(bin_path: &std::path::Path) -> Vec<u8> {
     }
 }
 
-/// The cue's bin files read back to back in FILE order, each cut at
-/// its whole-sector length, so the writer's frame walk sees the one
-/// continuous sector stream the upstream `chd_cd_compressor` synthesizes.
-struct BinChain {
-    pending: std::vec::IntoIter<(PathBuf, u64)>,
-    current: Option<std::io::Take<std::io::BufReader<std::fs::File>>>,
-}
-
-impl Read for BinChain {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        loop {
-            if let Some(reader) = &mut self.current {
-                let n = reader.read(buf)?;
-                if n > 0 || buf.is_empty() {
-                    return Ok(n);
-                }
-                self.current = None;
-            }
-            let Some((path, bytes)) = self.pending.next() else {
-                return Ok(0);
-            };
-            let file = std::fs::File::open(&path)?;
-            self.current =
-                Some(std::io::BufReader::with_capacity(IO_BUFFER_SIZE, file).take(bytes));
-        }
-    }
-}
-
 /// Compresses a CUE/BIN CD image into a V5 CHD file at `output_path`.
 /// Every FILE the cue references is ingested in order, so both a
 /// single-bin image and a Redump-style one-bin-per-track set produce
@@ -381,7 +354,11 @@ pub async fn convert_to_chd(
         // A FILE no track lands in owns no frames, so it must not be
         // streamed either or every later track would read shifted bytes.
         if cue_sheet.tracks.iter().any(|t| t.file_index == idx) {
-            bins.push((bin_path, sectors as u64 * SECTOR_SIZE as u64));
+            bins.push(TrackSource {
+                path: bin_path,
+                bytes: sectors as u64 * SECTOR_SIZE as u64,
+                sector_width: SECTOR_SIZE,
+            });
         }
     }
 
@@ -390,7 +367,7 @@ pub async fn convert_to_chd(
         progress.warn(DREAMCAST_CHD_WARNING);
     }
 
-    let total_bytes: u64 = bins.iter().map(|(_, bytes)| bytes).sum();
+    let total_bytes: u64 = bins.iter().map(|bin| bin.bytes).sum();
     debug!("Creating CHD file: {:?}", output_path);
 
     let total_mb = (total_bytes as f64) / BYTES_PER_MB;
@@ -407,10 +384,7 @@ pub async fn convert_to_chd(
         progress,
         &cancel,
         move |file, bytes_done, cancel| -> ChdResult<()> {
-            let mut bin_reader = BinChain {
-                pending: bins.into_iter(),
-                current: None,
-            };
+            let mut bin_reader = TrackChain::new(bins);
 
             let mut writer = ChdWriter::create(
                 file,
@@ -428,17 +402,141 @@ pub async fn convert_to_chd(
     )
     .await?;
 
-    let chd_size = fs::metadata(&output_path).await?.len();
+    log_compression(total_bytes, fs::metadata(&output_path).await?.len());
+    debug!("Conversion complete");
+    Ok(())
+}
+
+fn log_compression(total_bytes: u64, chd_size: u64) {
     let saved_bytes = total_bytes.saturating_sub(chd_size);
     let compression_ratio = (chd_size as f64 / total_bytes as f64) * 100.0;
-    let saved_mb = saved_bytes as f64 / BYTES_PER_MB;
-    let chd_mb = chd_size as f64 / BYTES_PER_MB;
-
     info!(
         "Original: {:.2} MB, CHD: {:.2} MB, Saved: {:.2} MB ({:.1}% compression ratio)",
-        total_mb, chd_mb, saved_mb, compression_ratio
+        total_bytes as f64 / BYTES_PER_MB,
+        chd_size as f64 / BYTES_PER_MB,
+        saved_bytes as f64 / BYTES_PER_MB,
+        compression_ratio
+    );
+}
+
+/// Compresses a Dreamcast `.gdi` track set into a GD-ROM CHD at
+/// `output_path`: `CHGD` track metadata, with the gaps between tracks
+/// (including the jump to the high-density area at LBA 45000) stored
+/// as zero padding, laid out as the reference writer derives them from
+/// the sheet. Data tracks may use 2352- or 2048-byte sectors.
+///
+/// # Errors
+/// Returns [`ChdError::ChdFileAlreadyExists`] if the output exists and
+/// `opts.force` is unset; [`ChdError::InvalidGdi`] for a sheet that
+/// cannot be parsed, disagrees with its declared count, numbers its
+/// tracks out of order, starts a track beyond the LBA cap, or names a
+/// file with more sectors than a CHD track can hold;
+/// [`ChdError::TooManyGdiTracks`] for a sheet declaring more tracks
+/// than a disc can hold; [`ChdError::GdiTrackFile`] for a track file
+/// that cannot be opened or measured; [`ChdError::UnsupportedGdiTrack`]
+/// for a track type the format does not define;
+/// [`ChdError::EmptyGdiTrack`] for a track file shorter than one
+/// sector; and [`ChdError::GdiTrackOverlap`] when a track starts
+/// before the previous one ends.
+pub async fn convert_gdi_to_chd(
+    progress: &dyn ProgressReporter,
+    gdi_path: PathBuf,
+    output_path: PathBuf,
+    opts: ChdOptions,
+    cancel: CancelToken,
+) -> ChdResult<()> {
+    validate_chd_options(&opts, false)?;
+    if fs::metadata(&output_path).await.is_ok() && !opts.force {
+        return Err(ChdError::ChdFileAlreadyExists);
+    }
+
+    debug!("Parsing GDI sheet: {:?}", gdi_path);
+    let sheet_path = gdi_path.clone();
+    let index = tokio::task::spawn_blocking(move || parse_gdi_index(&sheet_path))
+        .await?
+        .map_err(|e| ChdError::InvalidGdi(format!("{e:#}")))?;
+    // Runs once, before any track file is touched.
+    check_track_count(&index)?;
+    let track_paths = index.track_paths(&gdi_path);
+
+    // Opens and measures every track before the scratch output exists,
+    // so an unreadable file fails with the track it belongs to.
+    let (index, track_paths, sizes) = tokio::task::spawn_blocking(move || {
+        let mut sizes = Vec::with_capacity(index.tracks.len());
+        for (track, path) in index.tracks.iter().zip(&track_paths) {
+            let open = |e| ChdError::GdiTrackFile {
+                track: track.number,
+                filename: track.filename.clone(),
+                error: e,
+            };
+            let size = std::fs::File::open(path)
+                .map_err(open)?
+                .metadata()
+                .map_err(open)?
+                .len();
+            sizes.push(size);
+        }
+        ChdResult::Ok((index, track_paths, sizes))
+    })
+    .await??;
+
+    let files: Vec<(&GdiTrack, u64)> = index
+        .tracks
+        .iter()
+        .zip(&sizes)
+        .map(|(track, size)| (track, *size))
+        .collect();
+    let tracks = gd_layout(&files)?;
+    let sources: Vec<TrackSource> = tracks
+        .iter()
+        .zip(&track_paths)
+        .map(|(track, path)| {
+            let sector_width = track.track_type.block_size() as usize;
+            debug!(
+                "Track {} {}: {} sectors",
+                track.number,
+                path.display(),
+                track.source_frames()
+            );
+            TrackSource {
+                path: path.clone(),
+                bytes: u64::from(track.source_frames()) * sector_width as u64,
+                sector_width,
+            }
+        })
+        .collect();
+
+    // The chain widens every sector to 2352 bytes, so progress counts
+    // stream bytes rather than file bytes.
+    let total_bytes: u64 = tracks
+        .iter()
+        .map(|t| u64::from(t.source_frames()) * SECTOR_SIZE as u64)
+        .sum();
+    debug!("Creating CHD file: {:?}", output_path);
+    let total_mb = (total_bytes as f64) / BYTES_PER_MB;
+    progress.start(
+        total_bytes,
+        &format!("Compressing to CHD (~{:.2} MB)", total_mb),
     );
 
+    let codecs = opts.codecs.clone().unwrap_or_else(default_cd_codecs);
+    let level = opts.level;
+    run_scratch_write(
+        &output_path,
+        true,
+        progress,
+        &cancel,
+        move |file, bytes_done, cancel| -> ChdResult<()> {
+            let mut chain = TrackChain::new(sources);
+            let mut writer = ChdWriter::create_gdrom(file, &tracks, CD_HUNK_BYTES, codecs, level)?;
+            writer.compress_all_hunks(&mut chain, SECTOR_SIZE, &bytes_done, &cancel)?;
+            writer.finalize()?;
+            Ok(())
+        },
+    )
+    .await?;
+
+    log_compression(total_bytes, fs::metadata(&output_path).await?.len());
     debug!("Conversion complete");
     Ok(())
 }
@@ -1557,6 +1655,281 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (cue_path, bin) = write_single_bin_index00_cue(dir.path());
         assert_chdman_cue_parity(&chdman, dir.path(), cue_path, &bin).await;
+    }
+
+    /// Five-track GD-ROM set: a 2352-byte data track with a 150-frame
+    /// gap after it, an audio track padded up to LBA 45000, a data track
+    /// opening the high-density area with a 250-frame gap after it, an
+    /// audio track, and a 2048-byte data track. Track counts avoid
+    /// 4-frame multiples where that exercises the boundary padding.
+    /// Returns the sheet path and each track file's whole-sector bytes
+    /// in order.
+    fn write_gdi_set(dir: &std::path::Path) -> (PathBuf, Vec<Vec<u8>>) {
+        let lines = [
+            ("track01.bin", 300 * 2352, "1 0 4 2352 track01.bin 0"),
+            ("track02.raw", 200 * 2352, "2 450 0 2352 track02.raw 0"),
+            ("track03.bin", 100 * 2352, "3 45000 4 2352 track03.bin 0"),
+            ("track04.raw", 50 * 2352, "4 45350 0 2352 track04.raw 0"),
+            ("track05.bin", 20 * 2048, "5 45400 4 2048 track05.bin 0"),
+        ];
+        let mut sheet = format!("{}\n", lines.len());
+        let mut tracks = Vec::new();
+        for (i, (name, len, line)) in lines.iter().enumerate() {
+            let mut bytes = pattern_bytes(*len);
+            bytes[0] = i as u8;
+            std::fs::write(dir.join(name), &bytes).unwrap();
+            tracks.push(bytes);
+            sheet.push_str(line);
+            sheet.push('\n');
+        }
+        let gdi_path = dir.join("game.gdi");
+        std::fs::write(&gdi_path, sheet).unwrap();
+        (gdi_path, tracks)
+    }
+
+    /// GDI to CHD to cue/bin: `CHGD` metadata carries the inter-track
+    /// gaps as pad, the physical stream is padded on the frame count
+    /// including the pad, and the extracted tracks equal the source
+    /// files whole sector for whole sector.
+    #[tokio::test]
+    async fn gdi_round_trip() {
+        use crate::util::hash::{HashAlgo, MultiHasher};
+
+        let dir = tempfile::tempdir().unwrap();
+        let (gdi_path, tracks) = write_gdi_set(dir.path());
+        let chd_path = dir.path().join("game.chd");
+        convert_gdi_to_chd(
+            &NoProgress,
+            gdi_path,
+            chd_path.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let meta = cd_track_metadata(&chd_path);
+        for expected in [
+            "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:450 PAD:150 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+            "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:44550 PAD:44350 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+            "TRACK:3 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:350 PAD:250 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+            "TRACK:4 TYPE:AUDIO SUBTYPE:NONE FRAMES:50 PAD:0 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+            "TRACK:5 TYPE:MODE1 SUBTYPE:NONE FRAMES:20 PAD:0 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0",
+        ] {
+            assert!(meta.contains(expected), "missing {expected} in {meta}");
+        }
+        {
+            let handle = crate::disc::chd::reader::open_chd_sync(&chd_path).unwrap();
+            assert!(
+                handle
+                    .metadata
+                    .iter()
+                    .all(|m| m.tag != crate::disc::chd::models::CHD_METADATA_TAG_CD)
+            );
+            assert_eq!(
+                handle.header.logical_bytes,
+                (452 + 44552 + 352 + 52 + 20) * 2448
+            );
+        }
+
+        verify_chd(
+            &NoProgress,
+            chd_path.clone(),
+            None,
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let out_cue = dir.path().join("restored.cue");
+        extract_from_chd(
+            &NoProgress,
+            chd_path.clone(),
+            out_cue.clone(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let restored: Vec<Vec<u8>> = restored_bins(&out_cue)
+            .await
+            .into_iter()
+            .map(|(_, bytes)| bytes)
+            .collect();
+        assert_eq!(restored, tracks);
+        // Each bin carries exactly the source's whole sectors: its
+        // length is the written CHGD FRAMES minus PAD, times the
+        // track's data size. The metadata entries are joined by
+        // spaces, so the per-track fields are split on `TRACK:`.
+        let expected_sizes: Vec<usize> = meta
+            .split("TRACK:")
+            .filter(|track| !track.is_empty())
+            .map(|track| {
+                let field = |key: &str| {
+                    track
+                        .split_whitespace()
+                        .find(|f| f.starts_with(key))
+                        .unwrap_or_else(|| panic!("missing {key} in TRACK:{track}"))[key.len()..]
+                        .parse::<u32>()
+                        .unwrap()
+                };
+                // Plain MODE1 tracks carry 2048-byte sectors; raw and
+                // audio tracks are 2352. The leading space keeps the
+                // PGTYPE field from matching.
+                let datasize = if track.contains(" TYPE:MODE1 ") {
+                    2048
+                } else {
+                    2352
+                };
+                (field("FRAMES:") - field("PAD:")) as usize * datasize
+            })
+            .collect();
+        for (bytes, size) in restored.iter().zip(&expected_sizes) {
+            assert_eq!(bytes.len(), *size);
+        }
+
+        // Hashing the CHD yields one digest per source track, and the
+        // whole-image digest covers every extracted bin in order.
+        let algos = [HashAlgo::Crc32, HashAlgo::Sha1, HashAlgo::Sha256];
+        let (track_digests, whole) = tokio::task::spawn_blocking({
+            let chd_path = chd_path.clone();
+            let bytes_done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            move || {
+                crate::disc::chd::digest::digest_chd_tracks(
+                    &chd_path,
+                    &algos,
+                    &bytes_done,
+                    &CancelToken::new(),
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        for (i, bytes) in tracks.iter().enumerate() {
+            let mut hasher = MultiHasher::new(&algos);
+            hasher.update(bytes);
+            let digest = hasher.finalize(bytes.len() as u64);
+            let track = track_digests
+                .iter()
+                .find(|t| t.track_number as usize == i + 1)
+                .unwrap_or_else(|| panic!("no digest for track {}", i + 1));
+            assert_eq!(track.digests, digest, "track {}", i + 1);
+        }
+        let mut whole_hasher = MultiHasher::new(&algos);
+        let mut whole_size = 0u64;
+        for bytes in &restored {
+            whole_hasher.update(bytes);
+            whole_size += bytes.len() as u64;
+        }
+        assert_eq!(whole, whole_hasher.finalize(whole_size));
+    }
+
+    #[tokio::test]
+    async fn gdi_rejects_dvd_mode_and_missing_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (gdi_path, _) = write_gdi_set(dir.path());
+        let err = convert_disc_to_chd(
+            &NoProgress,
+            gdi_path.clone(),
+            dir.path().join("dvd.chd"),
+            Some(DiscMode::Dvd),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::DvdModeNeedsIso), "{err}");
+
+        std::fs::remove_file(dir.path().join("track04.raw")).unwrap();
+        let err = convert_gdi_to_chd(
+            &NoProgress,
+            gdi_path,
+            dir.path().join("missing.chd"),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, ChdError::GdiTrackFile { track: 4, .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("track04.raw"), "{err}");
+        assert!(!dir.path().join("missing.chd").exists());
+
+        std::fs::write(dir.path().join("game.gdi"), "not a sheet\n").unwrap();
+        let err = convert_gdi_to_chd(
+            &NoProgress,
+            dir.path().join("game.gdi"),
+            dir.path().join("malformed.chd"),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ChdError::InvalidGdi(_)), "{err}");
+        // The internal module prefix never reaches the message.
+        assert!(!err.to_string().contains("katana:"), "{err}");
+    }
+
+    /// The GD-ROM writer must produce the reference writer's raw and
+    /// overall SHA-1 for a `.gdi` set, which covers the `CHGD` text,
+    /// the pad derivation, the 2048-byte track widening and
+    /// the audio swap.
+    #[tokio::test]
+    async fn chdman_gdi_parity() {
+        let Some(chdman) = std::env::var_os("ROMCONVERTO_CHDMAN") else {
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (gdi_path, _) = write_gdi_set(dir.path());
+
+        let their_chd = dir.path().join("their.chd");
+        let status = std::process::Command::new(&chdman)
+            .args(["createcd", "-i"])
+            .arg(&gdi_path)
+            .arg("-o")
+            .arg(&their_chd)
+            .status()
+            .expect("run chdman createcd");
+        assert!(status.success(), "chdman createcd failed");
+
+        let our_chd = dir.path().join("our.chd");
+        convert_gdi_to_chd(
+            &NoProgress,
+            gdi_path,
+            our_chd.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let status = std::process::Command::new(&chdman)
+            .args(["verify", "-i"])
+            .arg(&our_chd)
+            .status()
+            .expect("run chdman verify");
+        assert!(status.success(), "chdman rejected our GD-ROM CHD");
+
+        let info_sha1s = |path: &std::path::Path| -> Vec<String> {
+            let out = std::process::Command::new(&chdman)
+                .args(["info", "-v", "-i"])
+                .arg(path)
+                .output()
+                .expect("run chdman info");
+            assert!(out.status.success(), "chdman info failed");
+            let lines: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| l.contains("SHA1") || l.contains("TRACK:"))
+                .map(str::to_string)
+                .collect();
+            // Two SHA-1 lines plus one per track.
+            assert_eq!(lines.len(), 7, "{lines:?}");
+            lines
+        };
+        assert_eq!(info_sha1s(&their_chd), info_sha1s(&our_chd));
     }
 
     use crate::disc::laserdisc::avi::test_fixtures::{

@@ -100,8 +100,8 @@ pub(crate) static OPS: &[OpSpec] = &[
     OpSpec {
         name: "chd.compress",
         aliases: &[],
-        batch_exts: Some(&["iso", "cue"]),
-        input_exts: Some(&["iso", "cue", "avi"]),
+        batch_exts: Some(&["iso", "cue", "gdi"]),
+        input_exts: Some(&["iso", "cue", "gdi", "avi"]),
         writes_output: true,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(chd_compress(req, progress, cancel)),
@@ -2295,8 +2295,8 @@ pub(crate) fn staged_path<'a>(resolved: &'a Option<ResolvedInput>, input: &'a Pa
 }
 
 /// Bytes a conversion of `source` needs at the output: the operation's own
-/// estimate when it has one, the referenced tracks for a cue sheet, else
-/// the file.
+/// estimate when it has one, the referenced tracks for a cue or gdi sheet,
+/// else the file.
 async fn required_bytes(op: &OpSpec, req: &RunRequest, source: &Path) -> u64 {
     if let Some(estimate) = op.required_bytes {
         return estimate(req, source);
@@ -2305,6 +2305,24 @@ async fn required_bytes(op: &OpSpec, req: &RunRequest, source: &Path) -> u64 {
         return crate::disc::cue::referenced_files_size(source)
             .await
             .unwrap_or_else(|_| file_len(source));
+    }
+    if has_ext(source, "gdi") {
+        let sheet = source.to_path_buf();
+        let tracks_len = tokio::task::spawn_blocking(move || {
+            crate::sega::katana::parse_gdi_index(&sheet)
+                .ok()
+                .map(|index| {
+                    index
+                        .track_paths(&sheet)
+                        .iter()
+                        .map(|path| file_len(path))
+                        .sum()
+                })
+        })
+        .await
+        .ok()
+        .flatten();
+        return tracks_len.unwrap_or_else(|| file_len(source));
     }
     file_len(source)
 }
@@ -3309,6 +3327,44 @@ mod tests {
         let res =
             run_json_with_progress(&req.to_string(), &CancelOnVerify(cancel.clone()), cancel).await;
         assert_eq!(res.status, RunStatus::Cancelled.as_i32(), "{res:?}");
+    }
+
+    /// A `.gdi` set needs the space of the track files it names, not the
+    /// sheet's own few bytes.
+    #[tokio::test]
+    async fn required_bytes_sums_a_gdi_sets_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, len) in [
+            ("track01.bin", 300 * 2352),
+            ("track02.raw", 200 * 2352),
+            ("track03.bin", 100 * 2048),
+        ] {
+            std::fs::write(dir.path().join(name), vec![0u8; len]).unwrap();
+        }
+        let gdi = dir.path().join("game.gdi");
+        std::fs::write(
+            &gdi,
+            "3\n\
+             1 0 4 2352 track01.bin 0\n\
+             2 450 0 2352 track02.raw 0\n\
+             3 45000 4 2048 track03.bin 0\n",
+        )
+        .unwrap();
+
+        let op = find_op("chd.compress").expect("chd.compress op");
+        let req = RunRequest {
+            schema: None,
+            operation: "chd.compress".to_string(),
+            input: Some(gdi.clone()),
+            output: None,
+            config: None,
+            preset: None,
+            options: RunOptions::default(),
+            ctx: crate::runner::models::RunContext::default(),
+            dry_run: false,
+        };
+        let bytes = required_bytes(op, &req, &gdi).await;
+        assert_eq!(bytes, (300 * 2352 + 200 * 2352 + 100 * 2048) as u64);
     }
 
     /// A flipped hunk byte is a verified integrity failure: the CHD's payload

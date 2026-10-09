@@ -283,9 +283,9 @@ pub struct ReportPayload {
 /// Every image extension `info` reads, used to pick the member to inspect
 /// when the input is an archive.
 const ALL_IMAGE_EXTS: &[&str] = &[
-    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
-    "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar", "avi",
+    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "gdi",
+    "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca",
+    "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar", "avi",
 ];
 
 fn input_size(path: &Path) -> u64 {

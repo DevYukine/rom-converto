@@ -8,13 +8,15 @@ use crate::disc::cd::{FRAME_SIZE, IO_BUFFER_SIZE};
 use crate::disc::chd::compression::{ChdCodec, codec_header_slots};
 use crate::disc::chd::compute_overall_sha1;
 use crate::disc::chd::error::{ChdError, ChdResult};
+use crate::disc::chd::gdi::GdTrack;
 use crate::disc::chd::map::{MapEntry, compress_v5_map};
 use crate::disc::chd::models::{
     CHD_V5_HEADER_SIZE, ChdHeaderV5, ChdMetadataHeader, ChdVersion, DVD_SECTOR_SIZE, SHA1_BYTES,
 };
 use crate::disc::chd::writer::metadata::{
-    MetadataBlock, MetadataHash, cd_frame_layout, copy_metadata, generate_cd_metadata,
-    generate_dvd_metadata, generate_ld_metadata, ld_vbi_bytes, track_frames,
+    MetadataBlock, MetadataHash, cd_frame_layout, copy_metadata, gd_frame_layout,
+    generate_cd_metadata, generate_dvd_metadata, generate_gd_metadata, generate_ld_metadata,
+    ld_vbi_bytes, track_frames,
 };
 use crate::disc::chd::writer::worker::{
     ChdLdCompressWorker, HunkCompressArgs, HunkWriteState, LdCompressArgs, compress_hunks,
@@ -87,36 +89,11 @@ impl ChdWriter {
             "one sector count per cue FILE"
         );
         let frames = track_frames(cue_sheet, file_sectors)?;
-        let writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
-
         let (cd_frame_data, cd_audio_frames) = cd_frame_layout(cue_sheet, &frames);
-        let logical_bytes = cd_frame_data.len() as u64 * FRAME_SIZE as u64;
-        let unit_bytes = FRAME_SIZE as u32;
-        if !hunk_size.is_multiple_of(unit_bytes) {
-            return Err(ChdError::InvalidHunkSize);
-        }
-
-        let slots = codec_header_slots(&codecs);
-        let header = ChdHeaderV5 {
-            length: CHD_V5_HEADER_SIZE,
-            version: ChdVersion::V5,
-            compressor_0: slots[0],
-            compressor_1: slots[1],
-            compressor_2: slots[2],
-            compressor_3: slots[3],
-            logical_bytes,
-            map_offset: 0,
-            meta_offset: 0,
-            hunk_bytes: hunk_size,
-            unit_bytes,
-            raw_sha1: [0; SHA1_BYTES],
-            sha1: [0; SHA1_BYTES],
-            parent_sha1: [0; SHA1_BYTES],
-        };
-
+        let header = Self::cd_header(cd_frame_data.len(), hunk_size, &codecs)?;
         let metadata = generate_cd_metadata(cue_sheet, &frames)?;
         Self::init(
-            writer,
+            BufWriter::with_capacity(IO_BUFFER_SIZE, file),
             header,
             codecs,
             level,
@@ -124,6 +101,60 @@ impl ChdWriter {
             cd_frame_data,
             cd_audio_frames,
         )
+    }
+
+    /// GD-ROM writer for a `.gdi` track set: `CHGD` track metadata and a
+    /// stream whose tracks end in the zero pad frames for each
+    /// inter-track gap that `tracks` describe.
+    pub fn create_gdrom(
+        file: std::fs::File,
+        tracks: &[GdTrack],
+        hunk_size: u32,
+        codecs: Vec<ChdCodec>,
+        level: Option<i32>,
+    ) -> ChdResult<Self> {
+        let (cd_frame_data, cd_audio_frames) = gd_frame_layout(tracks);
+        let header = Self::cd_header(cd_frame_data.len(), hunk_size, &codecs)?;
+        let metadata = generate_gd_metadata(tracks)?;
+        Self::init(
+            BufWriter::with_capacity(IO_BUFFER_SIZE, file),
+            header,
+            codecs,
+            level,
+            metadata,
+            cd_frame_data,
+            cd_audio_frames,
+        )
+    }
+
+    /// CD-mode header: one 2448-byte frame per unit, `physical_frames`
+    /// of them (track padding included).
+    fn cd_header(
+        physical_frames: usize,
+        hunk_size: u32,
+        codecs: &[ChdCodec],
+    ) -> ChdResult<ChdHeaderV5> {
+        let unit_bytes = FRAME_SIZE as u32;
+        if !hunk_size.is_multiple_of(unit_bytes) {
+            return Err(ChdError::InvalidHunkSize);
+        }
+        let slots = codec_header_slots(codecs);
+        Ok(ChdHeaderV5 {
+            length: CHD_V5_HEADER_SIZE,
+            version: ChdVersion::V5,
+            compressor_0: slots[0],
+            compressor_1: slots[1],
+            compressor_2: slots[2],
+            compressor_3: slots[3],
+            logical_bytes: physical_frames as u64 * FRAME_SIZE as u64,
+            map_offset: 0,
+            meta_offset: 0,
+            hunk_bytes: hunk_size,
+            unit_bytes,
+            raw_sha1: [0; SHA1_BYTES],
+            sha1: [0; SHA1_BYTES],
+            parent_sha1: [0; SHA1_BYTES],
+        })
     }
 
     /// DVD-mode writer: flat 2048-byte sectors, `logical_bytes` =

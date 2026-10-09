@@ -27,6 +27,7 @@ pub use digest::*;
 pub mod error;
 pub mod extract;
 pub use extract::*;
+pub(crate) mod gdi;
 pub mod info;
 pub mod layout;
 pub(crate) use layout::*;
@@ -113,10 +114,15 @@ pub async fn convert_disc_to_chd(
         return convert_avi_to_chd(progress, input_path, output_path, opts, cancel).await;
     }
 
-    let is_cue = input_path
+    let sheet = input_path
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("cue"));
-    match (mode, is_cue) {
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let is_sheet = matches!(sheet.as_deref(), Some("cue" | "gdi"));
+    match (mode, is_sheet) {
+        (None | Some(DiscMode::Cd), true) if sheet.as_deref() == Some("gdi") => {
+            convert_gdi_to_chd(progress, input_path, output_path, opts, cancel).await
+        }
         (None | Some(DiscMode::Cd), true) => {
             convert_to_chd(progress, input_path, output_path, opts, cancel).await
         }

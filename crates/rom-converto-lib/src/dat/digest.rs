@@ -346,13 +346,7 @@ fn digest_raw(
     }
     // Safe: AtomicProgress only touches the Arc's atomic, which is Sync.
     let reporter = AtomicProgress(bytes_done);
-    hash_file(path, algos, &reporter, cancel).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::Interrupted {
-            DatError::Cancelled(Cancelled)
-        } else {
-            DatError::IoError(e)
-        }
-    })
+    hash_file(path, algos, &reporter, cancel).map_err(DatError::from_hash_io)
 }
 
 /// Synchronous inner-stream digest. Decodes the container in flight
@@ -471,6 +465,9 @@ mod tests {
 
         assert_eq!(kind("game.chd"), InnerStreamKind::ChdTracks);
         assert_eq!(kind("game.cue"), InnerStreamKind::CueSet);
+        // A lone .gdi hashes its own bytes; only a walk groups it with
+        // its tracks.
+        assert_eq!(kind("game.gdi"), InnerStreamKind::Raw);
         assert_eq!(kind("game.nsz"), InnerStreamKind::UnsupportedCompressed);
         assert_eq!(kind("game.xcz"), InnerStreamKind::UnsupportedCompressed);
     }

@@ -49,11 +49,11 @@ pub enum ChdCommands {
 /// Compress a disc image to a CHD (Compressed Hunks of Data) file
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). An .avi input auto-detects LaserDisc mode (the chdman createld equivalent): avhuff-compressed audio/video with VBI metadata. The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default codecs match chdman (CD: cdlz,cdzl,cdfl; DVD: lzma,zlib,huff,flac) and every emulator reads them, including AetherSX2/NetherSX2; pick your own with --codecs. LaserDisc CHDs always use avhuff and ignore --codecs, --level, and --hunk-size.",
+    long_about = "Compress a disc image to a CHD (Compressed Hunks of Data) file\n\nA .cue input (with its .bin) becomes a CD-mode CHD, and a Dreamcast .gdi set becomes a GD-ROM CHD with its track files and the gaps between them laid out as chdman createcd does. An .iso is probed for its console family: CD-media images (PS1, PS2-CD) become CD-mode CHDs with a single MODE1/2048 track (the chdman createcd equivalent), DVD-media images (PS2-DVD, PSP) become DVD-mode CHDs (the createdvd equivalent). An .avi input auto-detects LaserDisc mode (the chdman createld equivalent): avhuff-compressed audio/video with VBI metadata. The mode is picked automatically so the createcd/createdvd mixup cannot happen. Default codecs match chdman (CD: cdlz,cdzl,cdfl; DVD: lzma,zlib,huff,flac) and every emulator reads them, including AetherSX2/NetherSX2; pick your own with --codecs. LaserDisc CHDs always use avhuff and ignore --codecs, --level, and --hunk-size.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto chd compress game.cue\n  Explicit output: rom-converto chd compress game.iso out.chd\n  Whole folder:    rom-converto chd compress -R ./roms --output-dir ./chd\n"
 )]
 pub struct CompressCommand {
-    /// Input image (.cue, .iso with CD/DVD media auto-detected, or .avi for LaserDisc), or a directory with --recursive
+    /// Input image (.cue or .gdi with its tracks, .iso with CD/DVD media auto-detected, or .avi for LaserDisc), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -77,7 +77,7 @@ pub struct CompressCommand {
     #[arg(long, conflicts_with_all = ["cd", "ld"])]
     pub dvd: bool,
 
-    /// Force CD mode (a .cue, or a CD-media .iso)
+    /// Force CD mode (a .cue or .gdi sheet, or a CD-media .iso)
     #[arg(long, conflicts_with_all = ["dvd", "ld"])]
     pub cd: bool,
 
@@ -105,7 +105,7 @@ pub struct CompressCommand {
     #[command(flatten)]
     pub conflict: ConflictArgs,
 
-    /// Compress every .cue and .iso found in the INPUT directory and its subdirectories
+    /// Compress every .cue, .gdi and .iso found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 

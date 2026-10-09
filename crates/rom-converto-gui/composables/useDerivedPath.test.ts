@@ -75,6 +75,7 @@ describe("plain image inputs keep extension replacement", () => {
   it("replaces a real image extension", () => {
     expect(deriveChdPath("game.iso")).toBe("game.chd");
     expect(deriveChdPath("game.cue")).toBe("game.chd");
+    expect(deriveChdPath("game.gdi")).toBe("game.chd");
     expect(deriveCompressedPath("game.cia")).toBe("game.zcia");
     expect(deriveNszPath("game.xci")).toBe("game.xcz");
   });

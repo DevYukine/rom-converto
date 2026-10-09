@@ -3,11 +3,13 @@
 //! rename and fixdat so every workflow groups, caches and buckets the same way.
 
 use crate::dat::digest::{QuickDigest, TrackDigests, quick_crc_digest};
+use crate::dat::fixdat::LocalHashIndex;
 use crate::dat::verdict::DatVerdict;
 use crate::dat::{DatError, DatResult, RomDigests, digest_inner_async, is_raw_reread_cheap};
 use crate::disc::cue::CueParser;
+use crate::sega::katana::parse_gdi_index;
 use crate::util::fs::{collect_all_files, file_len};
-use crate::util::hash::MultiHasher;
+use crate::util::hash::{MultiHasher, hash_file};
 use crate::util::{
     CachedTrack, CancelToken, Cancelled, HashAlgo, HashCache, ProgressReporter, resolve_input,
     spawn_blocking_with_progress,
@@ -23,12 +25,16 @@ pub const ARCHIVE_IMAGE_EXTS: &[&str] = &[
     "xcz", "ncz", "wud", "wux", "xiso", "zar",
 ];
 
-/// One walkable input. A cue set's bins are hashed raw in cue order; their
-/// concatenation is the single-bin whole-image stream.
+/// One walkable input. A cue or gdi set's tracks are hashed raw in sheet
+/// order; their concatenation is the single-bin whole-image stream.
 #[derive(Debug, Clone)]
 pub enum DatUnit {
     File(PathBuf),
-    CueSet { cue: PathBuf, bins: Vec<PathBuf> },
+    /// A cue or gdi sheet grouped with its member track files in sheet order.
+    CueSet {
+        cue: PathBuf,
+        bins: Vec<PathBuf>,
+    },
 }
 
 impl DatUnit {
@@ -57,10 +63,10 @@ impl DatUnit {
     }
 }
 
-/// Walk `dir`, group each .cue with its member .bin files, and drop the
-/// grouped bins plus playlist sidecars from the flat list, keeping walk
-/// order. Bins with no owning cue stay standalone; an unreadable cue is
-/// skipped with a warning.
+/// Walk `dir`, group each .cue or .gdi sheet with its member track files,
+/// and drop the grouped tracks plus playlist sidecars from the flat list,
+/// keeping walk order. Tracks with no owning sheet stay standalone; an
+/// unreadable sheet is skipped with a warning.
 pub async fn collect_units(
     dir: &Path,
     max_depth: Option<usize>,
@@ -74,43 +80,53 @@ pub async fn collect_units(
     };
     let mut sets = HashMap::new();
     let mut covered = HashSet::new();
-    // The extensions (and the no-extension case) the parsed cue sheets
+    // The extensions (and the no-extension case) the parsed sheets
     // actually reference: only walked files matching one need the
     // canonical stat in the coverage lookup.
     let mut referenced: HashSet<Option<String>> = HashSet::new();
-    for cue in files.iter().filter(|f| ext(f).as_deref() == Some("cue")) {
-        let sheet = match CueParser::new(cue).parse().await {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("Skipping unreadable cue {}: {e}", cue.display());
-                continue;
+    for sheet in files
+        .iter()
+        .filter(|f| matches!(ext(f).as_deref(), Some("cue") | Some("gdi")))
+    {
+        let tracks: Vec<PathBuf> = if ext(sheet).as_deref() == Some("gdi") {
+            match parse_gdi_index(sheet) {
+                Ok(index) => index.track_paths(sheet),
+                Err(e) => {
+                    log::warn!("Skipping unreadable gdi {}: {e}", sheet.display());
+                    continue;
+                }
+            }
+        } else {
+            match CueParser::new(sheet).parse().await {
+                Ok(s) => {
+                    let parent = sheet.parent().unwrap_or_else(|| Path::new("."));
+                    s.files.iter().map(|f| parent.join(&f.filename)).collect()
+                }
+                Err(e) => {
+                    log::warn!("Skipping unreadable cue {}: {e}", sheet.display());
+                    continue;
+                }
             }
         };
-        let parent = cue.parent().unwrap_or_else(|| Path::new("."));
-        let bins: Vec<PathBuf> = sheet
-            .files
-            .iter()
-            .map(|f| parent.join(&f.filename))
-            .collect();
-        if bins.is_empty() {
+        if tracks.is_empty() {
             continue;
         }
-        covered.extend(bins.iter().map(|bin| covered_key(bin)));
-        referenced.extend(bins.iter().map(|bin| {
+        covered.extend(tracks.iter().map(|bin| covered_key(bin)));
+        referenced.extend(tracks.iter().map(|bin| {
             bin.extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.to_ascii_lowercase())
         }));
-        sets.insert(cue.clone(), bins);
+        sets.insert(sheet.clone(), tracks);
     }
     let mut units = Vec::new();
-    // A cue can reference any file name, so the coverage lookup needs a
-    // canonical stat per walked file: skipped entirely when no cue
+    // A sheet can reference any file name, so the coverage lookup needs a
+    // canonical stat per walked file: skipped entirely when no sheet
     // produced candidates, and narrowed to referenced extensions.
     let check_covered = !covered.is_empty();
     for f in files {
         match ext(&f).as_deref() {
-            Some("cue") => {
+            Some("cue" | "gdi") => {
                 if let Some(bins) = sets.remove(&f) {
                     units.push(DatUnit::CueSet { cue: f, bins });
                 }
@@ -206,6 +222,36 @@ pub async fn digest_unit(
             Ok(result)
         }
     }
+}
+
+/// Records a cue or gdi set's own files in the fixdat index by raw
+/// bytes: the sheet, which DATs may list itself, plus every given
+/// track, so a set whose group digest failed still lists only its
+/// genuinely missing files. Cancellation propagates; any other failure
+/// is warned about and skipped.
+pub(crate) async fn index_set_files(
+    index: &mut LocalHashIndex,
+    sheet: &Path,
+    tracks: &[PathBuf],
+    algos: &[HashAlgo],
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> DatResult<()> {
+    for path in std::iter::once(sheet).chain(tracks.iter().map(std::path::Path::new)) {
+        let owned = path.to_path_buf();
+        let algos = algos.to_vec();
+        let cancel = cancel.clone();
+        let digests = spawn_blocking_with_progress(progress, move |progress| {
+            hash_file(&owned, &algos, progress, &cancel).map_err(DatError::from_hash_io)
+        })
+        .await;
+        match digests {
+            Ok(digests) => index.insert(&digests),
+            Err(e @ DatError::Cancelled(_)) => return Err(e),
+            Err(e) => progress.warn(&format!("No digest recorded for {}: {e}", path.display())),
+        }
+    }
+    Ok(())
 }
 
 // Each bin feeds its own track hasher and the whole-image hasher in one
@@ -323,6 +369,7 @@ pub fn bucket(e: DatError) -> DatResult<(DigestBucket, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dat::fixdat::game_file_for;
 
     /// A cue sheet referencing a bin through a redundant `sub/../` path
     /// still covers the file the walk produced: the bin does not resurface
@@ -373,6 +420,76 @@ mod tests {
         assert_eq!(units[0].size_bytes(), 3);
         assert!(matches!(&units[1], DatUnit::File(p) if p.ends_with("loose.bin")));
         assert!(is_tierable(&units[0]));
+    }
+
+    #[tokio::test]
+    async fn gdi_set_groups_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("game.gdi"),
+            "3\n1 0 4 2352 track01.bin 0\n2 450 0 2352 track02.raw 0\n3 45000 4 2352 track03.bin 0\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("track01.bin"), b"1").unwrap();
+        std::fs::write(dir.path().join("track02.raw"), b"22").unwrap();
+        std::fs::write(dir.path().join("track03.bin"), b"333").unwrap();
+        std::fs::write(dir.path().join("other.iso"), b"4444").unwrap();
+
+        let units = collect_units(dir.path(), None, &CancelToken::new())
+            .await
+            .unwrap();
+        assert_eq!(units.len(), 2);
+        let DatUnit::CueSet { cue, bins } = &units[0] else {
+            panic!("first unit should be the gdi set");
+        };
+        assert_eq!(cue, &dir.path().join("game.gdi"));
+        assert_eq!(
+            bins,
+            &vec![
+                dir.path().join("track01.bin"),
+                dir.path().join("track02.raw"),
+                dir.path().join("track03.bin"),
+            ]
+        );
+        assert_eq!(units[0].size_bytes(), 6);
+        assert!(matches!(&units[1], DatUnit::File(p) if p.ends_with("other.iso")));
+    }
+
+    /// A set's sheet and every requested fallback track land in the
+    /// fixdat index by raw bytes.
+    #[tokio::test]
+    async fn index_set_files_records_sheet_and_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        let sheet = dir.path().join("game.gdi");
+        let bin1 = dir.path().join("track01.bin");
+        let bin2 = dir.path().join("track02.raw");
+        std::fs::write(&sheet, b"sheet bytes").unwrap();
+        std::fs::write(&bin1, b"track one").unwrap();
+        std::fs::write(&bin2, b"track two").unwrap();
+
+        let algos = [HashAlgo::Crc32, HashAlgo::Sha1];
+        let mut index = LocalHashIndex::default();
+        index_set_files(
+            &mut index,
+            &sheet,
+            &[bin1.clone(), bin2.clone()],
+            &algos,
+            &crate::util::NoProgress,
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        for (name, path) in [
+            ("game.gdi", &sheet),
+            ("track01.bin", &bin1),
+            ("track02.raw", &bin2),
+        ] {
+            let mut hasher = MultiHasher::new(&algos);
+            let bytes = std::fs::read(path).unwrap();
+            hasher.update(&bytes);
+            let file = game_file_for(name, &hasher.finalize(bytes.len() as u64));
+            assert!(index.contains(&file), "{name} is indexed");
+        }
     }
 
     #[tokio::test]

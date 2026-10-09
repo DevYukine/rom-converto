@@ -20,9 +20,9 @@ pub(crate) const CTR_CRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
 // Union of image extensions the read side recognizes, used to pick the first
 // convertible member when a format-agnostic command (hash) is handed an archive.
 pub(crate) const ALL_IMAGE_EXTS: &[&str] = &[
-    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "cia",
-    "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca", "nsz",
-    "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
+    "iso", "gcm", "wbfs", "rvz", "gcz", "wia", "nkit", "chd", "cso", "zso", "dax", "cue", "gdi",
+    "cia", "3ds", "cci", "cxi", "3dsx", "zcia", "zcci", "zcxi", "z3dsx", "nsp", "xci", "nca",
+    "nsz", "xcz", "ncz", "dnsp", "dxci", "wud", "wux", "xiso", "zar",
 ];
 
 /// Default GoD output directory for `input`: its file stem with `_god`
@@ -160,7 +160,8 @@ pub(crate) fn resolve_migrate_opts(
 }
 
 /// Best-effort media label for a CHD dry-run plan line. ISO inputs read a
-/// header to predict the disc kind; cue inputs imply a CD with no header probe.
+/// header to predict the disc kind; a cue implies a CD and a gdi a GD-ROM
+/// with no header probe.
 pub(crate) fn chd_media_label(input: &Path) -> Option<String> {
     let ext = input
         .extension()
@@ -168,6 +169,7 @@ pub(crate) fn chd_media_label(input: &Path) -> Option<String> {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("cue") => Some("CD".to_string()),
+        Some("gdi") => Some("GD-ROM".to_string()),
         Some("avi") => Some("LaserDisc".to_string()),
         Some("iso") => rom_converto_lib::util::iso9660::detect_disc_kind(input)
             .ok()

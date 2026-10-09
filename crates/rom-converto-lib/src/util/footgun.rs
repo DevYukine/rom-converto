@@ -21,8 +21,8 @@ pub fn dreamcast_boot_signature(bytes: &[u8]) -> bool {
 
 /// Warning for a cue-sourced Dreamcast image heading into a CD-mode CHD.
 pub const DREAMCAST_CHD_WARNING: &str = "This looks like a Dreamcast disc image; some emulator cores only boot Dreamcast from a \
-     GDI-based image and will not boot a CD-mode CHD. If it fails to boot, convert from the \
-     GDI-based image instead.";
+     GD-ROM image and will not boot a CD-mode CHD. If it fails to boot, compress the .gdi \
+     set instead.";
 
 /// Returns the distinct extensions (sorted, lowercased) when `exts` mixes
 /// more than one track format, or `None` when the set is consistent.

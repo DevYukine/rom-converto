@@ -8,6 +8,10 @@ pub const FRAME_SIZE: usize = SECTOR_SIZE + SUBCODE_SIZE;
 pub const FRAMES_PER_HUNK: u32 = 8;
 pub const CD_HUNK_BYTES: u32 = FRAME_SIZE as u32 * FRAMES_PER_HUNK;
 
+// Track count
+/// Track entries a CD TOC and the reference `.gdi` parser allow.
+pub const MAX_TRACKS: usize = 99;
+
 // CD timing
 pub const FRAMES_PER_SECOND: u32 = 75;
 pub const SECONDS_PER_MINUTE: u32 = 60;

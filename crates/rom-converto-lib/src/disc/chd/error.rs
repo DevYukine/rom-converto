@@ -1,5 +1,6 @@
 //! Error type for the CHD module.
 
+use crate::disc::cd::MAX_TRACKS;
 use crate::disc::chd::DiscMode;
 use crate::disc::chd::compression::ChdCodec;
 use crate::disc::cue::error::CueError;
@@ -44,8 +45,10 @@ pub enum ChdError {
     )]
     IsoNotSectorAligned { size: u64 },
 
-    /// A `.cue` input was given with `--dvd`, which needs a flat `.iso` instead.
-    #[error("DVD mode needs a flat .iso input; a .cue describes a CD-layout disc, drop --dvd")]
+    /// A `.cue` or `.gdi` input was given with `--dvd`, which needs a flat `.iso` instead.
+    #[error(
+        "DVD mode needs a flat .iso input; a .cue or .gdi sheet describes a CD or GD-ROM layout, drop --dvd"
+    )]
     DvdModeNeedsIso,
 
     /// A cue track whose sector width is not 2352 bytes; the CD ingest
@@ -72,6 +75,43 @@ pub enum ChdError {
     /// The CUE sheet has FILE entries but no TRACK.
     #[error("no tracks are defined in the CUE sheet")]
     NoTrackInCueSheet,
+
+    /// A `.gdi` sheet that cannot be read or does not describe a
+    /// complete, in-order track list.
+    #[error("invalid gdi sheet: {0}")]
+    InvalidGdi(String),
+
+    /// A `.gdi` sheet declaring more tracks than a disc can hold.
+    #[error("gdi sheet declares {declared} tracks; at most {MAX_TRACKS} are allowed")]
+    TooManyGdiTracks { declared: usize },
+
+    /// A `.gdi` track whose type and sector size pair is not one the
+    /// format defines (data 2352, data 2048, audio 2352).
+    #[error(
+        "gdi track {track} has type {track_type} with {sector_size}-byte sectors; only data \
+         (4) tracks of 2352 or 2048 bytes and audio (0) tracks of 2352 bytes can be compressed"
+    )]
+    UnsupportedGdiTrack {
+        track: u32,
+        track_type: u32,
+        sector_size: u32,
+    },
+
+    /// A `.gdi` track whose file holds no whole sector.
+    #[error("gdi track {track} has no frames; its file holds no whole sector")]
+    EmptyGdiTrack { track: u32 },
+
+    /// A `.gdi` track file that cannot be opened or measured.
+    #[error("cannot read gdi track {track} file {filename:?}: {error}")]
+    GdiTrackFile {
+        track: u32,
+        filename: String,
+        error: std::io::Error,
+    },
+
+    /// A `.gdi` track that starts before the previous track ends.
+    #[error("gdi track {track} starts before the previous track ends; check its LBA")]
+    GdiTrackOverlap { track: u32 },
 
     /// Compressing a CHD map hunk failed.
     #[error("CHD map compression failed")]

@@ -826,7 +826,13 @@ pub(super) fn classify(
             _ => Err("unrecognized"),
         },
         DetectedConsole::Retro => match ext.as_str() {
-            "gdi" => Err("GDI disc sets are not supported"),
+            // A .gdi sheet converts together with its track files, so it
+            // must stay ahead of the generic extension guard below.
+            "gdi" => Ok(Action::Convert {
+                op: "chd.compress",
+                ext: "chd".to_string(),
+                format: None,
+            }),
             ext if crate::info::retro::RETRO_EXTENSIONS.contains(&ext) => Ok(Action::Zip),
             // Sega disc images (Saturn, Sega CD, Dreamcast) compress to CHD.
             _ => Ok(Action::Convert {
@@ -982,8 +988,8 @@ mod tests {
             Ok(Action::Zip)
         );
         assert_eq!(
-            classify(DetectedConsole::Retro, None, &path("gdi")),
-            Err("GDI disc sets are not supported")
+            convert(classify(DetectedConsole::Retro, None, &path("gdi"))),
+            ("chd.compress", "chd".to_string(), None)
         );
         assert!(copy(classify(
             DetectedConsole::Chd,

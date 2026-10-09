@@ -77,8 +77,9 @@ pub fn classify(desired: &Path, resolution: &ConflictResolution) -> PlanDecision
     }
 }
 
-/// Best-effort media label for a CHD dry-run plan line: cue inputs imply a
-/// CD, AVI inputs a LaserDisc, ISO inputs read a header to predict the kind.
+/// Best-effort media label for a CHD dry-run plan line: a cue implies a
+/// CD, a gdi a GD-ROM, an AVI a LaserDisc; ISO inputs read a header to
+/// predict the kind.
 pub fn chd_media_label(input: &Path) -> Option<String> {
     let ext = input
         .extension()
@@ -86,6 +87,7 @@ pub fn chd_media_label(input: &Path) -> Option<String> {
         .map(|s| s.to_ascii_lowercase());
     match ext.as_deref() {
         Some("cue") => Some("CD".to_string()),
+        Some("gdi") => Some("GD-ROM".to_string()),
         Some("avi") => Some("LaserDisc".to_string()),
         Some("iso") => super::iso9660::detect_disc_kind(input)
             .ok()
@@ -107,6 +109,18 @@ mod tests {
             decision,
             media: media.map(str::to_string),
             missing_keys: None,
+        }
+    }
+
+    #[test]
+    fn media_label_follows_the_sheet_extension() {
+        for (name, label) in [
+            ("game.cue", Some("CD")),
+            ("game.GDI", Some("GD-ROM")),
+            ("movie.avi", Some("LaserDisc")),
+            ("game.bin", None),
+        ] {
+            assert_eq!(chd_media_label(Path::new(name)).as_deref(), label, "{name}");
         }
     }
 

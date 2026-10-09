@@ -115,11 +115,24 @@ pub struct ChdMetadataHeader {
 
 impl ChdMetadataHeader {
     pub fn new_cd_metadata(metadata_string: String) -> Self {
+        Self::new_track_metadata(CHD_METADATA_TAG_CD, metadata_string)
+    }
+
+    /// A GD-ROM track entry (`CHGD`), the tag the reference writer uses
+    /// for every track of a disc parsed from a `.gdi` sheet.
+    pub fn new_gd_metadata(metadata_string: String) -> Self {
+        Self::new_track_metadata(
+            crate::disc::chd::layout::CHD_METADATA_TAG_GD_TRACK,
+            metadata_string,
+        )
+    }
+
+    fn new_track_metadata(tag: [u8; 4], metadata_string: String) -> Self {
         let mut data = metadata_string.into_bytes();
         data.push(0);
 
         Self {
-            tag: CHD_METADATA_TAG_CD,
+            tag,
             flags: CHD_METADATA_FLAG_HASHED,
             reserved: [0; CHD_METADATA_RESERVED_BYTES],
             data,

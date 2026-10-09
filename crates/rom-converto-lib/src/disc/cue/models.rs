@@ -133,7 +133,7 @@ impl Track {
 }
 
 /// CD track mode, as named in a CUE sheet's `TRACK` line.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackType {
     Audio,
     CdG,

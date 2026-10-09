@@ -1,10 +1,10 @@
 //! CHD to disc image extraction: CD-mode CHDs restore a `.cue` and one
 //! `.bin` per track, DVD-mode CHDs a flat `.iso`.
 
-use crate::disc::cd::{FRAME_SIZE, IO_BUFFER_SIZE};
+use crate::disc::cd::{FRAME_SIZE, IO_BUFFER_SIZE, MAX_TRACKS};
 use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::chd::reader::cue_generator::{
-    ChdTrackInfo, MAX_CD_TRACKS, generate_cue_sheet, parse_chd_track_metadata,
+    ChdTrackInfo, generate_cue_sheet, parse_chd_track_metadata,
 };
 use crate::disc::chd::reader::{ChdFlavor, SyncChdHandle};
 use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
@@ -235,7 +235,7 @@ pub(crate) fn track_bin_paths(cue: &Path, track_count: usize) -> Vec<PathBuf> {
 
 pub(crate) fn possible_track_bins(cue: &Path) -> impl Iterator<Item = PathBuf> {
     std::iter::once(track_bin_path(cue, None, false))
-        .chain((1..=MAX_CD_TRACKS).map(move |track| track_bin_path(cue, Some(track), false)))
+        .chain((1..=MAX_TRACKS).map(move |track| track_bin_path(cue, Some(track), false)))
         .chain((1..=9).map(move |track| track_bin_path(cue, Some(track), true)))
 }
 
@@ -468,7 +468,7 @@ mod tests {
     fn possible_bins_cover_every_supported_track_count() {
         let cue = Path::new("output/Game v1.1.cue");
         let possible: std::collections::HashSet<_> = possible_track_bins(cue).collect();
-        for count in 1..=MAX_CD_TRACKS {
+        for count in 1..=MAX_TRACKS {
             for path in track_bin_paths(cue, count) {
                 assert!(possible.contains(&path), "missing {}", path.display());
             }

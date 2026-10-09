@@ -74,8 +74,8 @@ database, filed under `<output>/<console>/` following the layout template
 {funkeyos} {minui} {mister} {miyoocfw} {onion} {pocket} {retrodeck}
 {rocknix} {romm} {spruce} {twmenu}`), and converted to the best archival
 format for its console: GameCube and Wii compress to RVZ, 3DS to Z3DS, Switch
-to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD and
-LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
+to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD,
+Dreamcast and LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
 decrypted ISO, and cartridge ROMs including DS to ZIP. Files already in their target
 format are copied unchanged; unrecognized files are skipped.
 

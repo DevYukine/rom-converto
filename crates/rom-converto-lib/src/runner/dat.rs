@@ -16,14 +16,16 @@ use crate::dat::run::{
     report_record,
 };
 use crate::dat::scan::scan_units;
-use crate::dat::units::{DatUnit, DigestBucket, bucket, collect_units, digest_unit};
+use crate::dat::units::{
+    DatUnit, DigestBucket, bucket, collect_units, digest_unit, index_set_files,
+};
 use crate::dat::verdict::DatVerdict;
 use crate::dat::{DatFileFilter, PlaymatchClient, RomDigests};
 use crate::util::fs::file_len;
 use crate::util::report::{DatReportRecord, write_dat_report};
 use crate::util::{
     CancelToken, Cancelled, ChecksumBounds, ConflictPolicy, ConflictResolution, FileStatus,
-    HashAlgo, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat, ReportRecord,
+    HashAlgo, HashCache, NX_DAT_UNSUPPORTED_HINT, ProgressReporter, ReportFormat, ReportRecord,
     ReportRecordInput, ReportTotals, parse_algos, parse_checksum_bound, resolve_conflict,
 };
 use anyhow::{Context, Result, anyhow};
@@ -351,7 +353,8 @@ pub(crate) async fn dat_rename(
                     to: None,
                     action: "skipped",
                     detail: Some(
-                        "cue set: rename skipped to keep FILE lines consistent".to_string(),
+                        "disc set: rename skipped to keep the sheet's track references consistent"
+                            .to_string(),
                     ),
                 },
             );
@@ -514,6 +517,53 @@ fn apply_renames(
     Ok(resolutions)
 }
 
+/// One unit's fixdat index entry. A set whose group digest failed
+/// still records its sheet and every readable track raw, so only the
+/// genuinely missing files are listed; cancellation propagates, an
+/// unsupported format sets `unsupported`, and any other failure is
+/// warned about.
+async fn index_fixdat_unit(
+    index: &mut LocalHashIndex,
+    unit: &DatUnit,
+    algos: &[HashAlgo],
+    cache: Option<&HashCache>,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    unsupported: &mut bool,
+) -> Result<()> {
+    match digest_unit(unit, algos, cache, progress, cancel).await {
+        Ok(RomDigests::Single(d)) => index.insert(&d),
+        Ok(RomDigests::Tracks { tracks, whole }) => {
+            index.insert_tracks(&tracks);
+            index.insert(&whole);
+            // DATs may list the sheet itself, so its raw bytes are
+            // indexed beside the set's digests.
+            if let DatUnit::CueSet { cue, .. } = unit {
+                index_set_files(index, cue, &[], algos, progress, cancel).await?;
+            }
+        }
+        Err(e) => {
+            if let DatUnit::CueSet { cue, bins } = unit {
+                index_set_files(index, cue, bins, algos, progress, cancel).await?;
+            }
+            match bucket(e)? {
+                (DigestBucket::Unsupported, _) => *unsupported = true,
+                (DigestBucket::Failed, msg) => match unit {
+                    DatUnit::CueSet { cue, .. } => progress.warn(&format!(
+                        "{}: set digest failed; recorded its readable files: {msg}",
+                        cue.display()
+                    )),
+                    _ => progress.warn(&format!(
+                        "Skipping {}: {msg}",
+                        unit.display_path().display()
+                    )),
+                },
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn dat_fixdat(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -554,20 +604,16 @@ pub(crate) async fn dat_fixdat(
             HashAlgo::Md5,
             HashAlgo::Sha256,
         ];
-        match digest_unit(unit, &algos, cache, progress, &cancel).await {
-            Ok(RomDigests::Single(d)) => index.insert(&d),
-            Ok(RomDigests::Tracks { tracks, whole }) => {
-                index.insert_tracks(&tracks);
-                index.insert(&whole);
-            }
-            Err(e) => match bucket(e)? {
-                (DigestBucket::Unsupported, _) => unsupported = true,
-                (DigestBucket::Failed, msg) => progress.warn(&format!(
-                    "Skipping {}: {msg}",
-                    unit.display_path().display()
-                )),
-            },
-        }
+        index_fixdat_unit(
+            &mut index,
+            unit,
+            &algos,
+            cache,
+            progress,
+            &cancel,
+            &mut unsupported,
+        )
+        .await?;
     }
     if unsupported {
         progress.warn(NX_DAT_UNSUPPORTED_HINT);
@@ -789,9 +835,92 @@ pub(crate) async fn resolve_dat_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dat::fixdat::game_file_for;
     use crate::dat::rename::RenamePlan;
     use crate::runner::models::RunOptions;
-    use crate::util::NoProgress;
+    use crate::util::{NoProgress, hash::MultiHasher};
+
+    /// A set whose group digest failed still puts its sheet and every
+    /// readable track in the index; only the missing file is absent.
+    #[tokio::test]
+    async fn fixdat_unit_indexes_a_partly_missing_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let sheet = dir.path().join("game.gdi");
+        let present = dir.path().join("track01.bin");
+        let missing = dir.path().join("track02.raw");
+        std::fs::write(&sheet, b"sheet bytes").unwrap();
+        std::fs::write(&present, b"track one").unwrap();
+
+        let algos = [HashAlgo::Crc32, HashAlgo::Sha1];
+        let mut index = LocalHashIndex::default();
+        let mut unsupported = false;
+        let unit = DatUnit::CueSet {
+            cue: sheet.clone(),
+            bins: vec![present.clone(), missing.clone()],
+        };
+        index_fixdat_unit(
+            &mut index,
+            &unit,
+            &algos,
+            None,
+            &NoProgress,
+            &CancelToken::new(),
+            &mut unsupported,
+        )
+        .await
+        .unwrap();
+        assert!(!unsupported);
+
+        for (name, path) in [("game.gdi", &sheet), ("track01.bin", &present)] {
+            let mut hasher = MultiHasher::new(&algos);
+            let bytes = std::fs::read(path).unwrap();
+            hasher.update(&bytes);
+            let digests = hasher.finalize(bytes.len() as u64);
+            let file = game_file_for(name, &digests);
+            assert!(index.contains(&file), "{name} is indexed");
+        }
+        let mut hasher = MultiHasher::new(&algos);
+        hasher.update(b"track two");
+        let digests = hasher.finalize(9);
+        let gone = game_file_for("track02.raw", &digests);
+        assert!(!index.contains(&gone), "the missing track stays unlisted");
+    }
+
+    /// A cancel that lands while a failed set's files are indexed
+    /// surfaces as Cancelled, never as a partial planned result. The
+    /// first bin is missing, so the set digest fails with an I/O error
+    /// before it can see the token and only the file indexing can
+    /// raise the cancellation.
+    #[tokio::test]
+    async fn fixdat_unit_propagates_a_cancel_while_indexing_a_failed_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let sheet = dir.path().join("game.gdi");
+        let missing = dir.path().join("track01.bin");
+        let present = dir.path().join("track02.raw");
+        std::fs::write(&sheet, b"sheet bytes").unwrap();
+        std::fs::write(&present, b"track two").unwrap();
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut index = LocalHashIndex::default();
+        let mut unsupported = false;
+        let unit = DatUnit::CueSet {
+            cue: sheet,
+            bins: vec![missing, present],
+        };
+        let err = index_fixdat_unit(
+            &mut index,
+            &unit,
+            &[HashAlgo::Crc32],
+            None,
+            &NoProgress,
+            &cancel,
+            &mut unsupported,
+        )
+        .await
+        .unwrap_err();
+        assert!(Cancelled::in_chain(&err), "{err}");
+    }
 
     #[tokio::test]
     async fn single_verify_caches_digest_under_the_archive_path() {

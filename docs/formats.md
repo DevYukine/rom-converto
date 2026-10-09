@@ -13,7 +13,7 @@ and `info` extensions in the installed build.
 | Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
 | Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua`; `.wux` or `.wud` | compress, to-wux, to-wud, decrypt NUS to loadiine |
 | Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, per-title NSPs, `.dnsp`/`.dxci` | compress, decompress, decrypt, merge, split |
-| CHD (`chd`) | `.cue` with tracks, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
+| CHD (`chd`) | `.cue` with tracks, Dreamcast `.gdi` sets, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
 | CSO (`cso`) | `.iso` | `.cso` or `.zso` | compress, decompress, convert to CHD |
 | CUE (`cue`) | Multi-file `.cue`/`.bin` | single `.cue`/`.bin`, `.iso`, CSO/ZSO | merge, to-iso, to-cso |
 | Original Xbox (`xbox`) | Full XDVDFS `.iso` or extracted game directory | `.xiso` | convert, extract |
@@ -134,10 +134,19 @@ DNSP/DXCI.
 ### CHD
 
 CHD mode is chosen from the input: CUE input makes a CD CHD, suitable ISO input is
-probed as CD or DVD, and `.avi` selects LaserDisc. `--cd`, `--dvd`, and `--ld` override
+probed as CD or DVD, and `.avi` selects LaserDisc. A `.gdi` set is written as a GD-ROM
+CHD (CHGD track metadata) and reads back in Flycast and other Dreamcast emulators that
+load CHD. `--cd`, `--dvd`, and `--ld` override
 the automatic choice where the command permits it. LaserDisc input must use uncompressed
 YUY2, UYVY, or VYUY video and 8- or 16-bit PCM audio. LaserDisc CHDs can be written but
 are not extracted by this tool.
+
+Extracting a GD-ROM CHD writes a cue sheet with one bin per track, not a `.gdi`, and
+drops the inter-track gaps (stored as `PAD:` frames at the end of the preceding track),
+so the extracted set no longer carries the high-density layout at LBA 45000.
+Compressing that cue again yields a plain CD CHD rather than a
+GD-ROM one, and a set whose data track uses 2048-byte sectors extracts to a MODE1/2048
+cue that CD-mode compression rejects. Keep the original `.gdi` set.
 
 `info` reads CHD versions 1 through 5. `chd migrate` upgrades supported v1 to v4
 files to v5 while preserving decoded data and updating legacy metadata. It writes
@@ -147,10 +156,6 @@ are unsupported, and legacy audio/video images may grow substantially. See the
 
 Stored legacy hashes are shown by `info`, but migration does not validate them.
 `extract`, `verify`, and `to-cso` require v5, so migrate older files first.
-
-A GD-ROM CHD stores the gaps between its tracks as `PAD:` frames at the end of the
-preceding track. Extracting drops them, so the extracted cue/bin does not keep the
-high-density-area layout, and compressing it again does not restore it.
 
 ### CSO and ZSO
 
@@ -173,7 +178,7 @@ with a root `default.xex`, not an extracted game folder.
 ## Recommended formats
 
 Choose a format for the emulator or loader you use. These recommendations cover
-rom-converto's compression and disc-conversion targets. Sources checked September 5, 2026.
+rom-converto's compression and disc-conversion targets. Sources checked October 9, 2026.
 
 | Console / media | Recommended format | Target and limits |
 |---|---|---|
@@ -185,12 +190,12 @@ rom-converto's compression and disc-conversion targets. Sources checked Septembe
 | PlayStation 2 | CHD for emulation; ZSO for hardware | [PCSX2](https://github.com/PCSX2/pcsx2/blob/master/pcsx2/VMManager.cpp) reads CHD. Use ZSO with [Open PS2 Loader](https://github.com/ps2homebrew/Open-PS2-Loader/blob/master/README.md) on a real PS2. |
 | PSP | CSO | [PPSSPP and real PSPs with custom firmware](https://www.ppsspp.org/docs/getting-started/dumping-games/). PPSSPP also reads DVD-mode CHD, but CSO works across both targets. |
 | Saturn | CHD | [Beetle Saturn](https://docs.libretro.com/library/beetle_saturn/). Convert from the CUE sheet to retain the track layout. |
+| Dreamcast | CHD | [Flycast](https://github.com/flyinghead/flycast/blob/master/core/imgread/chd.cpp) reads GD-ROM CHDs. Convert from the `.gdi` set; see the CHD notes for what extracting gives back. |
 | Xbox | XISO (`.iso`) | [xemu](https://github.com/xemu-project/xemu-website/blob/master/docs/docs/disc-images.md) requires the game-partition image, not a full Redump ISO. XISO trims data; it does not compress it. |
 | Xbox 360 | ZAR | Loads directly in [Xenia Canary](https://github.com/xenia-canary/xenia-canary/blob/canary_experimental/src/xenia/emulator.cc). Upstream Xenia does not support ZAR. |
 | LaserDisc | CHD | [MAME](https://docs.mamedev.org/tools/chdman.html), using LaserDisc mode with AVHUFF and a supported AVI input. |
 
-DS, PS3, and Vita operations do not produce compressed formats. Dreamcast GDI is
-inspection-only input; rom-converto cannot convert it to CHD.
+DS, PS3, and Vita operations do not produce compressed formats.
 
 ## Organize targets
 

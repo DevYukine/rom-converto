@@ -513,7 +513,7 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 
 | Subcommand | Description |
 |---|---|
-| `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.iso`, or `.avi` to `.chd`; CD, DVD, and LaserDisc media are auto-detected |
+| `compress <INPUT> [OUTPUT]` | Compress a `.cue`, `.gdi`, `.iso`, or `.avi` to `.chd`; CD, GD-ROM, DVD, and LaserDisc media are auto-detected |
 | `migrate <INPUT> [OUTPUT]` | Rewrite a CHD v1 to v4 as v5; defaults to `<name>.v5.chd` |
 | `extract <INPUT> [OUTPUT]` | Extract a `.chd` back to `.cue` plus one `.bin` per track (CD) or `.iso` (DVD); LaserDisc CHDs are not supported |
 | `verify <INPUT>` | Verify SHA-1 integrity of a v5 CHD; migrate older versions first |
@@ -522,8 +522,8 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `--dvd` / `--cd` / `--ld` | `compress` | Override the auto-detected mode (CD mode needs a cue sheet, LD mode needs a `.avi`) |
-| `--hunk-size <BYTES>` | `compress`, `migrate` | DVD compression uses a multiple of 2048, defaulting to 4096 (2048 for detected PSP images). Migration inherits the source size; overrides must be a nonzero multiple of its unit size |
+| `--dvd` / `--cd` / `--ld` | `compress` | Override the auto-detected mode (CD mode needs a `.cue` or `.gdi` sheet, LD mode needs a `.avi`) |
+| `--hunk-size <BYTES>` | `compress`, `migrate` | DVD compression uses a multiple of 2048, defaulting to 4096 (2048 for detected PSP images). CD and GD-ROM compression always use the CD hunk size and ignore this flag. Migration inherits the source size; overrides must be a nonzero multiple of its unit size |
 | `-c, --codecs <LIST>` | `compress`, `migrate` | Up to four comma-separated codecs: `zlib`, `zstd`, `lzma`, `huff`, `flac`, `cdzl`, `cdzs`, `cdlz`, `cdfl` |
 | `-l, --level <LEVEL>` | `compress`, `migrate` | Compression level 1..=22. Zlib and LZMA cap at 9 |
 | `--in-place` | `migrate` | Replace the source with its v5 conversion. Conflicts with explicit output paths, `--output-dir`, and `--output-template` |
@@ -535,6 +535,10 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 
 `compress` probes the media type from the image: a `.cue` is CD mode, an `.iso` is CD or DVD
 mode depending on the detected console, and an `.avi` is LD mode, the `createld` equivalent.
+A `.gdi` set becomes a GD-ROM CHD: each track file is read up to its last whole sector and
+the gaps between tracks, including the jump to the high-density area at LBA 45000, are stored
+as zero padding, so the output matches chdman createcd on the same `.gdi`. Data tracks may use
+2352- or 2048-byte sectors.
 The createcd/createdvd mixup cannot happen. LD mode always writes an avhuff-compressed CHD and
 does not accept `--codecs`, `--level`, or `--hunk-size`, since the codec and per-field hunk
 size are fixed by the AVI. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or VYUY)
@@ -601,7 +605,7 @@ see [info](#info).
 
 Advisory warning: compressing a `.cue` whose data track carries the Dreamcast IP.BIN
 signature into a CD-mode CHD prints a warning, since some cores only boot Dreamcast from a
-GDI-based image. Convert from the GDI-based image instead if the CHD does not boot.
+GDI-based image. Convert from the `.gdi` set instead; rom-converto compresses it directly.
 
 ## cso (PSP / PS2)
 
@@ -840,10 +844,16 @@ Every file is hashed on its decoded inner stream, not the compressed container b
 `.chd`, `.rvz`, `.wbfs`, `.cso`, `.zso`, `.gcz`, `.wia`, NKit, or Z3DS file verifies the same
 as the raw ROM or disc image it holds. GCZ, WIA, and NKit containers are detected by content,
 so a renamed file still verifies correctly. Multi-track discs check every track. `.nsz` and
-`.xcz` have no inner hasher and are reported as `unsupported` while the run continues. A
-`.cue` file is never hashed on its own: a recursive walk groups each cue with the `.bin`
-tracks it lists and hashes those, and `rename` always leaves a cue set untouched so its
-`FILE` lines stay consistent.
+`.xcz` have no inner hasher and are reported as `unsupported` while the run continues.
+
+In a recursive walk, each `.cue` or `.gdi` sheet is grouped with the track files it lists, and
+those tracks are hashed; `verify` and `scan` do not hash the sheet itself. A `.cue` file
+passed directly is rejected; a `.gdi` file passed directly is hashed by its own bytes, so it
+verifies against DATs that list the sheet. `fixdat` records a set's sheet digest beside its
+track digests for both formats, so DATs that list either the sheet or the tracks match, and a
+set with an unreadable track still records the files that are there. In a recursive walk,
+`rename` leaves a sheet's set untouched so its file references stay consistent; a `.gdi` file
+passed directly can be renamed on a hash match.
 
 Advisory warning: `verify` and `scan` print a warning once per run when any file reports
 `unsupported`, explaining that compressed Switch containers (`.nsz`, `.xcz`) need
@@ -933,7 +943,7 @@ Per-console targets:
 | Nintendo 3DS | Z3DS (`.zcci`, `.zcia`, ...); encrypted ROMs are refused unless `--allow-encrypted` |
 | Switch | NSZ / XCZ; needs `prod.keys` |
 | Wii U | WUA |
-| PS1, PS2, Saturn, Sega CD, Dreamcast (`.cue`), LaserDisc | CHD; `.gdi` sets are skipped |
+| PS1, PS2, Saturn, Sega CD, Dreamcast (`.cue` or `.gdi`), LaserDisc | CHD |
 | PSP | CSO |
 | Xbox (full disc image) | XISO (the game partition) |
 | Xbox 360 disc | ZAR |

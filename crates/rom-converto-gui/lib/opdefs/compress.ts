@@ -377,9 +377,9 @@ export const compressOps: OpDef[] = [
 		title: "Compress to CHD",
 		optionsTitle: "Compression",
 		subtitle: "Output matches chdman createcd/createdvd/createld.",
-		dropText: "Drop .cue+.bin pairs, .iso or .avi files or folders",
-		acceptedExts: ["cue", "iso", "avi", ...ARCHIVE_EXTS],
-		browseFilters: [{ name: "Disc image", extensions: ["cue", "iso", "avi", ...ARCHIVE_EXTS] }],
+		dropText: "Drop .cue+.bin pairs, .gdi sets, .iso or .avi files or folders",
+		acceptedExts: ["cue", "gdi", "iso", "avi", ...ARCHIVE_EXTS],
+		browseFilters: [{ name: "Disc image", extensions: ["cue", "gdi", "iso", "avi", ...ARCHIVE_EXTS] }],
 		browseAlsoDirectory: true,
 		fields: [
 			{
@@ -392,9 +392,9 @@ export const compressOps: OpDef[] = [
 					{ label: "DVD", value: "dvd" },
 					{ label: "LD", value: "ld" },
 				],
-				hint: "Auto probes CD vs DVD from the image, or picks LD for .avi input. Override only when detection is wrong.",
+				hint: "Auto picks CD for .cue and .gdi, probes CD vs DVD from an .iso, or LD for .avi input. Override only when detection is wrong.",
 				tooltip:
-					"CD mode writes CD-style CHDs (PS1, PS2 CD) with a single MODE1/2048 track. DVD mode writes DVD-style CHDs (PS2 DVD, PSP). LD mode writes a LaserDisc CHD from an .avi rip.",
+					"CD mode writes CD-style CHDs: every track of a .cue, a GD-ROM layout from a .gdi, or a single MODE1/2048 track from a CD-media .iso (PS1, PS2 CD). DVD mode writes DVD-style CHDs (PS2 DVD, PSP). LD mode writes a LaserDisc CHD from an .avi rip.",
 			},
 			{
 				kind: "number",

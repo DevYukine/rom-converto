@@ -8971,6 +8971,122 @@ mod tests {
         }
     }
 
+    /// A `.gdi` set converts as one unit under `--move`: the CHD is
+    /// written and verifies, and only then are the sheet and every
+    /// track file deleted. A sibling file the run does not organize
+    /// stays put, and a set whose conversion fails keeps every source.
+    #[tokio::test]
+    async fn a_move_deletes_a_gdi_set_only_after_its_chd_is_written() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        let mut track1 = vec![0u8; 300 * 2352];
+        track1[..8].copy_from_slice(b"GDIHEAD1");
+        let track2 = vec![0x7Fu8; 200 * 2352];
+        let mut track3 = crate::sega::katana::tests::cooked_sector();
+        track3.resize(100 * 2048, 0xAB);
+        std::fs::write(lib.path().join("track01.bin"), &track1).unwrap();
+        std::fs::write(lib.path().join("track02.raw"), &track2).unwrap();
+        std::fs::write(lib.path().join("track03.bin"), &track3).unwrap();
+        std::fs::write(
+            lib.path().join("game.gdi"),
+            "3\n\
+             1 0 4 2352 track01.bin 0\n\
+             2 450 0 2352 track02.raw 0\n\
+             3 45000 4 2048 track03.bin 0\n",
+        )
+        .unwrap();
+        std::fs::write(lib.path().join("notes.txt"), b"not a rom").unwrap();
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.move_source = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        // One row for the set, one for the skipped sibling: the tracks
+        // never become rows of their own.
+        assert_eq!(data.rows.len(), 2, "{:?}", data.rows);
+        assert_eq!(data.ok, 1, "{data:?}");
+        let row = row_for(&data, "game.gdi");
+        assert_eq!(row.status, FileStatus::Ok, "{row:?}");
+        // Conversions report their operation, not the copy-to-move relabel.
+        assert_eq!(row.action, "chd.compress", "{row:?}");
+
+        let chd = out.path().join("Dreamcast").join("game.chd");
+        assert!(chd.exists(), "the CHD is written before the sources move");
+        crate::disc::chd::verify_chd(
+            &crate::util::NoProgress,
+            chd,
+            None,
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        for name in ["game.gdi", "track01.bin", "track02.raw", "track03.bin"] {
+            assert!(!lib.path().join(name).exists(), "{name} is deleted");
+        }
+        assert!(
+            lib.path().join("notes.txt").exists(),
+            "the sibling survives"
+        );
+
+        // A set whose conversion fails writes nothing and keeps the
+        // sheet, every track and the sibling, as one row.
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("track01.bin"), vec![0u8; 300 * 2352]).unwrap();
+        // Shorter than one sector, so the conversion rejects the track.
+        std::fs::write(lib.path().join("track02.raw"), vec![0u8; 16]).unwrap();
+        let mut track3 = crate::sega::katana::tests::cooked_sector();
+        track3.resize(100 * 2048, 0xAB);
+        std::fs::write(lib.path().join("track03.bin"), &track3).unwrap();
+        std::fs::write(
+            lib.path().join("game.gdi"),
+            "3\n\
+             1 0 4 2352 track01.bin 0\n\
+             2 450 0 2352 track02.raw 0\n\
+             3 45000 4 2048 track03.bin 0\n",
+        )
+        .unwrap();
+        std::fs::write(lib.path().join("notes.txt"), b"not a rom").unwrap();
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.move_source = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        assert_eq!(data.rows.len(), 2, "{:?}", data.rows);
+        let row = row_for(&data, "game.gdi");
+        assert_eq!(row.status, FileStatus::Failed, "{row:?}");
+        for name in [
+            "game.gdi",
+            "track01.bin",
+            "track02.raw",
+            "track03.bin",
+            "notes.txt",
+        ] {
+            assert!(lib.path().join(name).exists(), "{name} survives");
+        }
+        // The failed conversion leaves no output file behind, though
+        // planning may have created the target folder.
+        fn count_files(dir: &std::path::Path) -> usize {
+            std::fs::read_dir(dir)
+                .unwrap()
+                .map(|entry| {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() { count_files(&path) } else { 1 }
+                })
+                .sum()
+        }
+        assert_eq!(count_files(out.path()), 0, "no output files are written");
+    }
+
     /// A dry run under `--move` applies every release gate and touches
     /// nothing: a cue set (cue plus bin) keeps both files, and its planned
     /// row is a conversion.

@@ -1,3 +1,4 @@
+use crate::disc::cd::MAX_TRACKS;
 use crate::disc::chd::error::{ChdError, ChdResult};
 use crate::disc::cue::models::Msf;
 
@@ -6,10 +7,6 @@ use crate::disc::cue::models::Msf;
 /// 4.2M frames) while keeping the padding math clear of u32 overflow
 /// on hostile metadata.
 pub(crate) const MAX_TRACK_FRAMES: u32 = 0x00FF_FFFF;
-
-/// Track count a CD can carry: the subchannel only encodes two BCD
-/// digits, so more entries mean corrupt or hostile metadata.
-pub(crate) const MAX_CD_TRACKS: usize = 99;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ChdTrackInfo {
@@ -116,9 +113,9 @@ pub(crate) fn parse_chd_track_metadata(metadata_str: &str) -> ChdResult<Vec<ChdT
         ));
     }
 
-    if tracks.len() > MAX_CD_TRACKS {
+    if tracks.len() > MAX_TRACKS {
         return Err(ChdError::InvalidTrackMetadata(format!(
-            "CD has {} tracks, maximum is {MAX_CD_TRACKS}",
+            "CD has {} tracks, maximum is {MAX_TRACKS}",
             tracks.len()
         )));
     }
@@ -343,16 +340,16 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// A CD cannot carry more than [`MAX_CD_TRACKS`] tracks; every
+    /// A CD cannot carry more than [`MAX_TRACKS`] tracks; every
     /// reader that parses the metadata shares the cap.
     #[test]
     fn parse_rejects_more_than_the_cd_track_cap() {
-        let ok: String = (1..=MAX_CD_TRACKS)
+        let ok: String = (1..=MAX_TRACKS)
             .map(|t| format!("TRACK:{t} TYPE:MODE1_RAW FRAMES:10 "))
             .collect();
-        assert_eq!(parse_chd_track_metadata(&ok).unwrap().len(), MAX_CD_TRACKS);
+        assert_eq!(parse_chd_track_metadata(&ok).unwrap().len(), MAX_TRACKS);
 
-        let hostile: String = (1..=MAX_CD_TRACKS + 1)
+        let hostile: String = (1..=MAX_TRACKS + 1)
             .map(|t| format!("TRACK:{t} TYPE:MODE1_RAW FRAMES:10 "))
             .collect();
         assert!(parse_chd_track_metadata(&hostile).is_err());

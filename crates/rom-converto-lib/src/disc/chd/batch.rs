@@ -83,7 +83,7 @@ pub(crate) async fn run_file_batch<E: std::fmt::Display>(
     Ok((ok, failed))
 }
 
-/// Compress every `.cue`, `.iso`, and `.avi` under `input_dir`, descending
+/// Compress every `.cue`, `.gdi`, `.iso`, and `.avi` under `input_dir`, descending
 /// into subdirectories up to `max_depth` (`None` for unlimited). Outputs
 /// land next to their inputs with the extension replaced by `.chd`, or
 /// mirror the source tree under `output_dir` when one is given.
@@ -99,7 +99,7 @@ pub async fn convert_disc_to_chd_batch(
         BatchSpec {
             input_dir,
             output_dir,
-            exts: &["cue", "iso", "avi"],
+            exts: &["cue", "gdi", "iso", "avi"],
             max_depth,
             verb: "Compressing",
             action: "compress",

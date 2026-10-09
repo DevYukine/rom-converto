@@ -61,6 +61,24 @@ impl LocalHashIndex {
     }
 }
 
+/// A DAT file entry carrying every hash of `digests`, for tests that
+/// probe [`LocalHashIndex::contains`].
+#[cfg(test)]
+pub(crate) fn game_file_for(name: &str, digests: &FileDigests) -> PlaymatchGameFile {
+    PlaymatchGameFile {
+        id: String::new(),
+        game_id: String::new(),
+        file_name: name.to_string(),
+        file_size_in_bytes: Some(digests.size_bytes),
+        crc: digests.crc32.clone(),
+        md5: digests.md5.clone(),
+        sha1: digests.sha1.clone(),
+        sha256: digests.sha256.clone(),
+        current_in_latest_dat: true,
+        last_seen_dat_version: None,
+    }
+}
+
 fn norm(h: &str) -> String {
     h.trim().to_ascii_lowercase()
 }

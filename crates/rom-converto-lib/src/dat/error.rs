@@ -33,5 +33,16 @@ impl From<tokio::task::JoinError> for DatError {
     }
 }
 
+impl DatError {
+    /// Maps a raw-hash I/O error: an interrupted read is a cancellation.
+    pub(crate) fn from_hash_io(error: std::io::Error) -> Self {
+        if error.kind() == std::io::ErrorKind::Interrupted {
+            DatError::Cancelled(crate::util::Cancelled)
+        } else {
+            DatError::IoError(error)
+        }
+    }
+}
+
 /// Result alias for Playmatch API client operations.
 pub type DatResult<T> = Result<T, DatError>;
