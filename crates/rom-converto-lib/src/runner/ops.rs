@@ -3063,7 +3063,8 @@ fn output_exists(desired: &Path, message: String) -> anyhow::Error {
 /// Directory-output twin of [`prepare_output`]. Directories cannot
 /// auto-number, so `rename` is rejected; `skip` keeps a directory that
 /// already holds files and `error` refuses it. `overwrite` removes an
-/// existing file at the path and writes into a non-empty directory as is.
+/// existing file at the path and writes into a non-empty directory as is,
+/// but refuses a path that is the input itself.
 pub(crate) fn prepare_output_dir(
     req: &RunRequest,
     input: &Path,
@@ -3108,8 +3109,20 @@ pub(crate) fn prepare_output_dir(
             }
         }
     };
-    if write && !req.dry_run && desired.is_file() {
-        std::fs::remove_file(desired)?;
+    if write && desired.is_file() {
+        // `overwrite` removes the file at the output path, which would delete
+        // the input before it is read when the two are the same file.
+        if FileIdentity::probe(input).is_ok_and(|input_identity| {
+            FileIdentity::probe(desired).is_ok_and(|identity| identity == input_identity)
+        }) {
+            return Err(invalid_arg(format!(
+                "{} is the input file; writing the output there would delete it",
+                desired.display()
+            )));
+        }
+        if !req.dry_run {
+            std::fs::remove_file(desired)?;
+        }
     }
     let line = req.dry_run.then(|| PlanLine {
         operation: operation.to_string(),
@@ -4316,6 +4329,34 @@ mod tests {
             prepared.line.unwrap().decision,
             crate::util::PlanDecision::Skip
         );
+    }
+
+    /// `overwrite` removes a file at a directory output's path, so an output
+    /// that names the input itself is refused, on a dry run too, and the
+    /// input survives.
+    #[test]
+    fn prepare_output_dir_never_removes_its_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.nsp");
+        std::fs::write(&input, b"nsp").unwrap();
+        for dry_run in [false, true] {
+            let req = RunRequest {
+                schema: None,
+                operation: "nx.split".to_string(),
+                input: Some(input.clone()),
+                output: Some(input.clone()),
+                config: None,
+                preset: None,
+                options: RunOptions {
+                    on_conflict: Some("overwrite".to_string()),
+                    ..RunOptions::default()
+                },
+                dry_run,
+                ctx: Default::default(),
+            };
+            assert!(prepare_output_dir(&req, &input, &input, "nx.split").is_err());
+            assert_eq!(std::fs::read(&input).unwrap(), b"nsp");
+        }
     }
 
     /// An Nx target with no header key is unverifiable: `overwrite-invalid`
