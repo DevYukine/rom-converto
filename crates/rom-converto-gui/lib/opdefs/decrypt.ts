@@ -5,7 +5,7 @@ import { useWupDecryptStore } from "~/stores/wup-decrypt";
 import { usePs3DecryptStore } from "~/stores/ps3-decrypt";
 import { useNtrDecryptStore } from "~/stores/ntr-decrypt";
 import { useNxDecryptStore } from "~/stores/nx-decrypt";
-import { basename, deriveDecryptedPath, deriveDnspPath, withOutputDir } from "~/composables/useDerivedPath";
+import { basename, deriveDecryptedPath, deriveDnspPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -295,17 +295,28 @@ const nx: OpDef = {
 		},
 	],
 	actionNote: "Output only loads in NxEmu; other emulators keep using the encrypted NSP / XCI.",
-	deriveOutput: deriveDnspPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	// An archive's member decides between .dnsp and .dxci, so no hint is
+	// shown for it; the runner names the file.
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveDnspPath(input)),
+	buildArgs: (store, item, taskId) => {
+		// Archives and templates leave the output name to the runner: it
+		// derives it from the extracted member or the template and places it
+		// in output_dir, so 'Game (USA).zip' does not become '.dnsp'.
+		const runnerDerives = templateIsActive(store) || hasArchiveExt(item.path);
+		return runArgs(
 			"nx.decrypt",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveDnspPath(item.path), store.outputDir || ""),
-			{ keys: store.keys || null, ...commonOptions(store) },
+			runnerDerives ? null : withOutputDir(deriveDnspPath(item.path), store.outputDir || ""),
+			{
+				keys: store.keys || null,
+				...(runnerDerives ? { output_dir: store.outputDir || null } : {}),
+				...commonOptions(store),
+			},
 			false,
 			taskId,
 			store.reportFile || null,
-		),
+		);
+	},
 	chips: (store) => (store.keys ? "keys" : ""),
 };
 

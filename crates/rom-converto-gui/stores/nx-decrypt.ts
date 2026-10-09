@@ -4,7 +4,7 @@ import { useUiStore } from "~/stores/ui";
 export const useNxDecryptStore = makeOpStore("nx-decrypt", () => ({
   recursive: true,
   maxDepth: null as number | null,
-  output: "",
+  outputDir: "",
   keys: "",
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,

@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
 import { registeredCommands, runOptionKeys } from "../source-parsers";
 import { buildCliCommand, setWindowsQuoting } from "~/composables/useCliEcho";
 import { allOpDefs, opCommand } from "./index";
-import { pageEchoArgs, type RunPayload, type StagedItem } from "./types";
+import { pageEchoArgs, type OpStore, type RunPayload, type StagedItem } from "./types";
 
 const ITEM: StagedItem = {
 	id: "item-1",
@@ -96,5 +97,45 @@ describe("page echo parity", () => {
 			const echo = buildCliCommand(pageEchoArgs(def, def.useStore(), items, items[0]!, "task-1"));
 			for (const item of items) expect(echo, def.storeId).toContain(item.path);
 		}
+	});
+});
+
+describe("nx decrypt page args", () => {
+	// Each test mutates the shared op store, so every one starts from defaults.
+	beforeEach(() => setActivePinia(createPinia()));
+
+	function requestOf(path: string, mutate: (store: OpStore) => void = () => {}) {
+		const def = defs.find((def) => def.storeId === "nx-decrypt")!;
+		const store = def.useStore();
+		mutate(store);
+		return def.buildArgs(store, { ...ITEM, path }, "task-1").request;
+	}
+
+	it("lets the runner name archive outputs inside the chosen directory", () => {
+		const plain = requestOf("/roms/Game (USA).zip");
+		expect(plain.output).toBeNull();
+		expect(plain.options.output_dir).toBeNull();
+
+		const directed = requestOf("/roms/Game (USA).zip", (store) => { store.outputDir = "/out"; });
+		expect(directed.output).toBeNull();
+		expect(directed.options.output_dir).toBe("/out");
+	});
+
+	it("lets the runner place templated outputs in the directory", () => {
+		const request = requestOf("/roms/Game (USA).nsp", (store) => {
+			store.outputTemplate = "{title}.{ext}";
+			store.outputDir = "/out";
+		});
+		expect(request.output).toBeNull();
+		expect(request.options.output_dir).toBe("/out");
+	});
+
+	it("keeps the explicit derived output for plain inputs", () => {
+		expect(requestOf("/roms/Game (USA).nsp").output).toBe("/roms/Game (USA).dnsp");
+		expect(requestOf("/roms/Game (USA).xci").output).toBe("/roms/Game (USA).dxci");
+
+		const directed = requestOf("/roms/Game (USA).xci", (store) => { store.outputDir = "/out"; });
+		expect(directed.output).toBe("/out/Game (USA).dxci");
+		expect(directed.options.output_dir ?? null).toBeNull();
 	});
 });

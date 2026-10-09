@@ -46,12 +46,17 @@ function replaceExt(path: string, newExt: string): string {
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
+// True when the name carries an archive wrapper stripArchiveExt removes.
+export function hasArchiveExt(name: string): boolean {
+	return ARCHIVE_EXTS.includes(getExt(name));
+}
+
 // Archive wrappers are transparent inputs: the backend extracts the inner
 // image, so a picked `game.zip` should derive output names as if it were
 // `game`. A `.tar.gz` collapses both extensions.
 export function stripArchiveExt(name: string): string {
   if (/\.tar\.gz$/i.test(name)) return name.slice(0, -7);
-  if (!ARCHIVE_EXTS.includes(getExt(name))) return name;
+  if (!hasArchiveExt(name)) return name;
   const dot = name.lastIndexOf(".");
   return dot === -1 ? name : name.slice(0, dot);
 }
