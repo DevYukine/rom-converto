@@ -1,5 +1,6 @@
 import {
 	commonOptions,
+	directoryConflict,
 	directoryOutputRows,
 	recursiveFields,
 	runArgs,
@@ -587,6 +588,7 @@ const xenon: OpDef = {
 	outputRows: directoryOutputRows(
 		"Where the GoD container is written. Leave empty to create a folder next to the input file.",
 	),
+	renameDisabled: true,
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveGodDir,
 	buildArgs: (store, item, taskId) =>
@@ -596,7 +598,7 @@ const xenon: OpDef = {
 			withOutputDir(deriveGodDir(item.path), store.outputDir || ""),
 			{
 				title: store.title || null,
-				on_conflict: store.onConflict,
+				on_conflict: directoryConflict(store.onConflict),
 				skip_space_check: store.skipSpaceCheck,
 			},
 			false,

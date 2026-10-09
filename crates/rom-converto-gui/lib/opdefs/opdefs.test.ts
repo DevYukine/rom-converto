@@ -34,8 +34,18 @@ describe("op registry", () => {
 	});
 
 	it("never sends rename for pages whose output is a directory", () => {
-		for (const id of ["ctr-unbundle", "nx-split", "wup-decrypt"]) {
+		for (const id of [
+			"ctr-unbundle",
+			"nx-split",
+			"wup-decrypt",
+			"xenon-convert",
+			"xbox-extract",
+			"xenon-extract",
+			"psp-extract",
+			"vita-extract",
+		]) {
 			const def = defs.find((def) => def.storeId === id);
+			expect(def, id).toBeDefined();
 			if (!def) continue;
 			const store = def.useStore();
 			store.onConflict = "rename";
