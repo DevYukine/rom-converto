@@ -829,6 +829,42 @@ mod tests {
         assert_eq!(std::fs::read(&decrypted_path).unwrap(), plain);
     }
 
+    /// The staged copy is normalized, so a read-only input encrypts instead
+    /// of failing its rewrite open, and an executable, world-writable input
+    /// (common on FAT and SMB mounts) does not pass those bits on.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn encrypt_ncch_normalizes_the_input_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let plain = make_plain_ncch_with_romfs();
+        for input_mode in [0o444, 0o777] {
+            let plain_path = dir.path().join(format!("plain-{input_mode:o}.cxi"));
+            let encrypted_path = dir.path().join(format!("encrypted-{input_mode:o}.cxi"));
+            std::fs::write(&plain_path, &plain).unwrap();
+            std::fs::set_permissions(&plain_path, std::fs::Permissions::from_mode(input_mode))
+                .unwrap();
+
+            encrypt_rom(
+                &plain_path,
+                &encrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+
+            let meta = std::fs::metadata(&encrypted_path).unwrap();
+            assert_eq!(meta.len(), plain.len() as u64);
+            assert_eq!(
+                meta.permissions().mode() & 0o7777,
+                0o644,
+                "input {input_mode:o}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn cia_encrypt_decrypt_round_trip() {
         let dir = tempfile::tempdir().unwrap();

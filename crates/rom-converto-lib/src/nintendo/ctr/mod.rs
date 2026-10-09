@@ -580,15 +580,32 @@ fn private_temp_file(dir: &Path, suffix: &str) -> std::io::Result<tempfile::Name
 /// Copies `input` into a private scratch next to `output` and opens it for
 /// in-place rewriting. Going through `fs::copy` keeps the filesystem clone
 /// fast path (APFS clonefile, `copy_file_range`); opening by path is safe
-/// because the directory was just created 0700. The guard removes the
-/// directory on drop, so publish the returned path first.
+/// because the directory was just created 0700. The staged copy keeps a
+/// `.tmp` name, since a leftover named like the ROM would be picked up by
+/// later recursive walks, organize, dat scan and hash as a real ROM. The
+/// clone keeps the input's mode, so it is normalized: owner read and write
+/// for the rewrite open (a read-only input works), group and world at most
+/// read, no exec or set-id bits. The guard removes the directory on drop,
+/// so publish the returned path first.
 pub(super) fn copy_to_private_scratch(
     input: &Path,
     output: &Path,
 ) -> std::io::Result<(tempfile::TempDir, TempPath, std::fs::File)> {
     let dir = private_temp_dir(output)?;
-    let path = dir.path().join(output.file_name().unwrap_or_default());
+    let path = dir.path().join("rom.tmp");
     std::fs::copy(input, &path)?;
+    let mut permissions = std::fs::metadata(&path)?.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode((permissions.mode() & 0o644) | 0o600);
+    }
+    // Off unix this only clears the read-only attribute; the lint's concern
+    // (a world-writable mode) is unix-only and handled above.
+    #[cfg(not(unix))]
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions)?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
