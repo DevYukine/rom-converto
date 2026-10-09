@@ -15,7 +15,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
 | `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA); convert WUD and WUX disc images |
-| `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split uncompressed NSP/XCI |
+| `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split uncompressed NSP/XCI; decrypt NSP/XCI to NxEmu DNSP/DXCI |
 | `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
 | `cso` | Compress and verify PSP/PS2 ISOs (CSO/ZSO) |
 | `cue` | Merge a multi-bin `.cue` into one `.bin`/`.cue` pair |
@@ -149,14 +149,14 @@ and `.tgz` archives: conversion, extraction, verification, and info under `ctr`,
 `rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `vita`, `xbox`, and `xenon`,
 including `nx merge`, `nx split`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
 and `dat identify`. Commands that take a directory, such as `wup decrypt` and
-`ctr cdn-to-cia`, cannot.
+`ctr cdn-to-cia`, cannot. `ctr bundle` opens none either: its members must be plain files.
 
 The first matching member in name order is extracted to a temporary directory, with a cue
 or gdi sheet first and a `.md` member last. Cue and GDI track files are extracted with
 their sheet. Output is named after the member and written next to the archive unless another
-output path is set; directory outputs (`nx split`, `xenon convert`) and `nx merge` are named
-after the archive. An archive holding several matching members converts only the first and
-logs a warning, also for the archives a recursive run keeps. Encrypted archives and plain `.gz` files are unsupported. RAR input is read
+output path is set; directory outputs (`nx split`, `xenon convert`, `ctr unbundle`) and
+`nx merge` are named after the archive. An archive holding several matching members
+converts only the first and logs a warning, also for the archives a recursive run keeps. Encrypted archives and plain `.gz` files are unsupported. RAR input is read
 only. The temp filesystem needs room for the unpacked input.
 
 Recursive runs (`-R`, `info --batch`) open archives too: an archive counts as an input when
@@ -328,8 +328,8 @@ Generated tickets from `generate-cdn-ticket` use placeholder values and only wor
 consoles and emulators. `cdn-to-cia` checks a generated ticket's key against the content and
 fails with a clear error when it cannot decrypt, so supply the real ticket (cetk) for titles
 whose key is not derivable. `decrypt` and `encrypt` support `.cia`, `.3ds`, `.cci`, and `.cxi`,
-with the format detected automatically; place a `seeddb.bin` next to the executable to
-resolve seeds locally, otherwise the seed is fetched from Nintendo's API. `encrypt` is the
+with the format detected automatically; a `seeddb.bin` in the current working directory
+resolves seeds locally, otherwise the seed is fetched from Nintendo's API. `encrypt` is the
 inverse of the tool's decrypted output and rewrites CIA TMD hashes/content flags as it wraps
 content with the ticket title key, so encrypted CIA bytes may differ from an original source
 even when decrypting back to the same plaintext. `compress` inspects the crypto flags and
@@ -365,7 +365,8 @@ Default outputs:
 command supports recursion, reports, output templates, or a positional output. Unbundle
 rejects `rename` when its output directory already holds files, because the members
 have no numbered names to move to. An existing file at the output path needs
-`overwrite`. Unbundle refuses a bundle with more than 50 members. `overwrite-invalid`
+`overwrite`, which refuses an output path that is the input itself as an invalid argument.
+Unbundle refuses a bundle with more than 50 members. `overwrite-invalid`
 acts as `skip` because these commands do not verify existing outputs. With `overwrite`, unbundle writes
 into a non-empty directory, replacing members under their own names and leaving
 unrelated files in place. `ctr info` reports the bundle kind, the primary member, and
@@ -496,7 +497,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `decrypt <INPUT> [-o OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
 | `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
 | `split <INPUT> [--output-dir DIR] [-R]` | Write one NSP per title from an NSP or XCI, or from every one under a directory |
-| `verify <INPUT>` | Check NCA hashes, including in compressed and decrypted containers |
+| `verify <INPUT>` | Check that the header and the start of every section of each NCA decrypt and read back, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
@@ -507,7 +508,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `--block-size-exp <EXP>` | `compress` | Block size is `1 << exp` bytes; range 14..=32, default 20 (1 MiB) |
 | `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `split` | Choose the output directory |
 | `--format <nsp\|xci>` | `merge` | Default NSP. XCI output requires every input to be an XCI |
-| `--on-conflict <POLICY>`, `-f, --force` | `merge`, `split` | Default `error`; `-f` means overwrite. The flags conflict |
+| `--on-conflict <POLICY>`, `-f, --force` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Default `error` (`compress`, `decompress`, and `decrypt` take the config's `on_conflict` first); `-f` means overwrite. The flags conflict |
 | `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Process every container found in `INPUT` and its subdirectories |
 | `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Maximum directory depth under `--recursive`. 1 = top level only |
 | `--report <FILE>` | `compress`, `decompress`, `decrypt`, `split` | Write a run report. See [Run reports](#run-reports) |
@@ -638,8 +639,8 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 mode depending on the detected console, and an `.avi` is LD mode, the `createld` equivalent.
 A `.gdi` set becomes a GD-ROM CHD: each track file is read up to its last whole sector and
 the gaps between tracks, including the jump to the high-density area at LBA 45000, are stored
-as zero padding, so the output matches chdman createcd on the same `.gdi`. Data tracks may use
-2352- or 2048-byte sectors.
+as zero padding, so the output matches chdman createcd 0.289 on the same `.gdi`. Other
+releases can lay the gaps out differently. Data tracks may use 2352- or 2048-byte sectors.
 The createcd/createdvd mixup cannot happen. LD mode always writes an avhuff-compressed CHD and
 does not accept `--codecs`, `--level`, or `--hunk-size`, since the codec and per-field hunk
 size are fixed by the AVI. The input must be uncompressed 4:2:2 video (YUY2, UYVY, or VYUY)
@@ -1146,7 +1147,7 @@ the earliest listed code wins.
 | `--dir-letter-count <N>` | How many leading letters the folder uses, 1 through 26. Default `1`. Ignored unless `--dir-letter` is on (flag or config) |
 | `--dir-letter-limit <N>` | Cap how many items a letter folder holds; a letter that exceeds the cap is split into numbered folders. Ignored unless `--dir-letter` is on (flag or config) |
 | `--dir-letter-group` | Merge adjacent letter folders into ranges sized by the limit, such as `A-C` and `D-F`. Requires `--dir-letter-limit`. Ignored unless `--dir-letter` is on (flag or config) |
-| `--multi-disc-dirs` | Place each multi-disc set in its own folder named after the game (`PS1/Final Fantasy VII (USA)/Final Fantasy VII (USA) (Disc 1).chd`). A set is two or more outputs in the same output folder whose names share a base title and carry a Redump or TOSEC disc token (`(Disc 1)`, `Disc 1 of 2`); single-disc titles stay flat, and a set whose folder already carries the game name is not nested again. The folder sits below the letter folder when `--dir-letter` is on, and a set never splits across the numbered folders of `--dir-letter-limit` (the folder holding it may exceed the limit). With `--playlists` the `.m3u` is written inside the game folder and lists bare file names; it is only derived for chd, cue, iso, cso, zso, and rvz outputs. Clean removes files only, so turning the option off later leaves the emptied game folders behind, as with letter folders. Reshuffling an already flat library in place (INPUT is `--output-dir`, with `--move`) keeps the old flat `.m3u`, since files under INPUT are never deleted; remove it by hand |
+| `--multi-disc-dirs` | Place each multi-disc set in its own folder named after the game (`PS1/Final Fantasy VII (USA)/Final Fantasy VII (USA) (Disc 1).chd`). A set is two or more outputs in the same output folder whose names share a base title and carry a Redump or TOSEC disc token (`(Disc 1)`, `Disc 1 of 2`); single-disc titles stay flat, and a set whose folder already carries the game name is not nested again. The folder sits below the letter folder when `--dir-letter` is on, and a set never splits across the numbered folders of `--dir-letter-limit` (the folder holding it may exceed the limit). With `--playlists` the `.m3u` is written inside the game folder and lists bare file names; it is only derived for chd, cue, iso, cso, zso, and rvz outputs. A set forms from the discs one run organizes: a disc added in a later run is placed flat beside the existing game folder. With `--clean`, the game folder is cleaned recursively like every folder the run wrote into, including one that already existed under the game's name, so keep other files out of it or protect them with `--clean-exclude`. Clean removes files only, so turning the option off later leaves the emptied game folders behind, as with letter folders. Reshuffling an already flat library in place (INPUT is `--output-dir`, with `--move`) keeps the old flat `.m3u`, since files under INPUT are never deleted; remove it by hand |
 | `--zip-format <FORMAT>` | Zip structure for cartridge outputs: `torrentzip` (default) or `rvzstd` |
 | `--zip-exclude <GLOB>` | Copy instead of zip when the planned `.zip` output path under `--output-dir` matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (`--zip-exclude=`, or `zip_exclude = ""` in the config) is the explicit no-exclusion override |
 | `--link-mode <MODE>` | Replace the copy of an already-correct file with a `hardlink`, `symlink`, or `reflink`. `symlink` cannot be combined with `--move` (flag or config) |

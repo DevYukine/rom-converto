@@ -115,9 +115,11 @@ set produces (`.bcci`, `.bcxi`, or `.bcia`). `ctr.unbundle` writes into
 `output` or `options.output_dir`, defaulting to a `<name>_unbundled` directory
 next to the input. Directory-output operations (`nx.split`, `ctr.unbundle`,
 `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
-`xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`,
-and `skip` but not `rename`; `overwrite` replaces an existing file at the path
-and writes into a non-empty directory as it is.
+`xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`, and `skip`;
+`rename` is refused when the output directory already holds files. `overwrite` replaces an
+existing file at the path and writes into a non-empty directory as it is, but refuses an
+output path that is the input itself, or an existing file inside a directory input, with
+`invalid_argument`; `overwrite_invalid` acts as `skip`.
 
 `xenon.convert` writes a Games on Demand container and returns `data` with
 `title_id`, `media_id`, `part_count`, and `total_bytes`. `options.title`

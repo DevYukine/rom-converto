@@ -69,10 +69,10 @@ decompress NSZ/XCZ first.
 Merge defaults to `<first stem> (Merged).nsp` or `.xci`. Split does not offer Rename
 because its output is a directory.
 
-**Decrypt Switch NSP/XCI** converts an encrypted NSP or XCI into the DNSP or DXCI that
-[NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and uncompressed inputs;
-decompress NSZ/XCZ first. The output is `<name>.dnsp` or `<name>.dxci` and loads only
-in NxEmu.
+Under Decrypt, **Decrypt for NxEmu** converts an encrypted NSP or XCI into the DNSP or DXCI
+that [NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and accepts plain
+NSP/XCI files or archives holding one; decompress NSZ/XCZ first. The output is
+`<name>.dnsp` or `<name>.dxci` and loads only in NxEmu.
 
 ### Bundle and unbundle 3DS ROMs
 
@@ -89,7 +89,7 @@ directory, defaulting to `<stem>_unbundled` beside the input. It also reads a bu
 inside an archive. Both pages support
 output directory, conflicts, and dry run. Unbundle does not offer Rename because
 its output is a directory. It refuses a bundle with more than 50 members, and an
-existing file at the output path needs Overwrite.
+existing file at the output path needs Overwrite. Overwrite if invalid acts as Skip.
 
 ### Xbox 360 GoD conversion
 
@@ -97,8 +97,9 @@ existing file at the output path needs Overwrite.
 `<stem>_god` by default. You can choose an output directory and title, start a dry
 run, or add folders to the queue.
 
-The page has no key, report, output-template, or verification setting. Unlike the CLI,
-GUI conflict handling supports Rename; Overwrite if invalid skips existing output
+The page has no key, report, output-template, or verification setting. Directory-output
+pages (Convert ISO to GoD, and the Xbox, Xbox 360, PSP, and PS Vita extract pages) do not
+offer Rename because the output is a folder; Overwrite if invalid skips existing output
 because GoD has no integrity probe. Folder scanning creates separate queue jobs,
 not a recursive `xenon convert` command, so the title applies to every job while the
 CLI rejects `--title` with `-R`.

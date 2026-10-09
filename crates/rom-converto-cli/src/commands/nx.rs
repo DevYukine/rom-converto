@@ -167,7 +167,7 @@ pub struct NxDecryptCommand {
     pub batch: BatchArgs,
 }
 
-/// Verify hash integrity of every NCA in a Switch container
+/// Check that the header and section start of every NCA in a Switch container decrypt
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
     after_long_help = "EXAMPLES:\n  Single file:  rom-converto nx verify game.nsp\n  Whole folder: rom-converto nx verify -R ./roms\n"
