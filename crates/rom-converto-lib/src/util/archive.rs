@@ -198,12 +198,20 @@ fn push_member(
 /// List the convertible members of an archive in archive order: regular files
 /// only, with OS junk and nested archives filtered out. Bare gzip returns a
 /// clear unsupported error.
+///
+/// # Errors
+/// Errors on unsupported or corrupt archives, 7z header guard refusals,
+/// I/O failures, or listings exceeding the member-count or name-byte caps.
 pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
     list_members_with(path, &crate::util::CancelToken::new())
 }
 
 /// [`list_members`] that stops a long tar listing when `cancel` fires: a
 /// `.tar.gz` listing is a full decompression pass.
+///
+/// # Errors
+/// Same as [`list_members`], plus [`crate::util::Cancelled`] when a tar
+/// listing is cancelled.
 fn list_members_with(path: &Path, cancel: &crate::util::CancelToken) -> Result<Vec<ArchiveMember>> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
@@ -317,7 +325,8 @@ pub(crate) fn probe_with_head(
 /// Streams one member of a zip, 7z, or tar archive into `read`. Tar uses
 /// `member_index`, the member's position among the listing's entries in
 /// archive order, and checks the lossy decoded name; distinct raw names can
-/// share that name. Zip and 7z resolve by exact decoded name.
+/// share that name. 7z does the same over its listing. Zip resolves by
+/// exact decoded name.
 fn read_member<T>(
     path: &Path,
     kind: ArchiveKind,
@@ -333,29 +342,75 @@ fn read_member<T>(
             Ok(read(&mut entry)?)
         }
         ArchiveKind::SevenZ => {
-            let (archive, file) = crate::util::sevenz_guard::open(path)?;
-            for block in 0..archive.blocks.len() {
-                crate::util::sevenz_guard::check_block(&archive, block, path)?;
+            let (archive, mut file) = crate::util::sevenz_guard::open(path)?;
+            // list_7z keeps members in `archive.files` order, so the
+            // listing index maps back through the same filter. Names can
+            // repeat in a 7z, so the exact entry is matched by address.
+            let index = archive
+                .files
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| is_kept(entry.name(), entry.is_directory()))
+                .nth(member_index)
+                .map(|(index, _)| index)
+                .ok_or_else(|| anyhow!("member {member_name} not found in {}", path.display()))?;
+            let target = &archive.files[index];
+            if target.name() != member_name {
+                bail!(
+                    "archive member at index {member_index} changed: expected {member_name}, found {}",
+                    target.name()
+                );
             }
-            // One thread: the multithreaded LZMA2 reader allocates one
-            // dictionary per worker and buffers whole work units.
-            let mut reader = sevenz_rust2::ArchiveReader::from_archive(
-                archive,
-                file,
-                sevenz_rust2::Password::empty(),
-            );
-            reader.set_thread_count(1);
             let mut read = Some(read);
             let mut result: Option<std::io::Result<T>> = None;
-            reader.for_each_entries(|entry, rd| {
-                if entry.name() == member_name
-                    && let Some(read) = read.take()
-                {
-                    result = Some(read(rd));
-                    return Ok(false);
+            match archive.stream_map.file_block_index[index] {
+                // An empty-stream member carries no data to decode.
+                None => {
+                    let mut empty: &[u8] = &[];
+                    if let Some(read) = read.take() {
+                        result = Some(read(&mut empty));
+                    }
                 }
-                Ok(true)
-            })?;
+                Some(block) => {
+                    crate::util::sevenz_guard::check_block(&archive, block, path)?;
+                    // One thread: the multithreaded LZMA2 reader allocates
+                    // one dictionary per worker and buffers whole work
+                    // units. Decoding only the target's block leaves the
+                    // members after it in other blocks untouched.
+                    let password = sevenz_rust2::Password::empty();
+                    let decoder =
+                        sevenz_rust2::BlockDecoder::new(1, block, &archive, &password, &mut file);
+                    // A block that does not list the member (empty entries
+                    // interleaved among the data ones) would decode to the
+                    // end and report it missing.
+                    if !decoder
+                        .entries()
+                        .iter()
+                        .any(|entry| std::ptr::eq(entry, target))
+                    {
+                        bail!(
+                            "{} stores {member_name} in a block layout that is not supported",
+                            path.display()
+                        );
+                    }
+                    decoder
+                        .for_each_entries(&mut |entry, rd| {
+                            if std::ptr::eq(entry, target)
+                                && let Some(read) = read.take()
+                            {
+                                result = Some(read(rd));
+                                return Ok(false);
+                            }
+                            // A solid block hands every entry a reader over
+                            // the same decoded stream, so a member that is
+                            // not drained leaves the stream mid-entry and
+                            // the next member reads the wrong bytes.
+                            std::io::copy(rd, &mut std::io::sink())?;
+                            Ok(true)
+                        })
+                        .map_err(|err| anyhow!("decoding {}: {err}", path.display()))?;
+                }
+            }
             result
                 .ok_or_else(|| anyhow!("member {member_name} not found in {}", path.display()))?
                 .map_err(Into::into)
@@ -466,6 +521,126 @@ fn declared_size_error(
     }
 }
 
+/// Copies at most one byte beyond the declared size and flushes before
+/// returning, so a buffered write failure cannot pass the size check.
+fn copy_member(rd: &mut dyn std::io::Read, out: &Path, declared_size: u64) -> std::io::Result<u64> {
+    let mut writer = std::io::BufWriter::with_capacity(1 << 20, File::create(out)?);
+    let written = std::io::copy(
+        &mut std::io::Read::take(&mut *rd, declared_size.saturating_add(1)),
+        &mut writer,
+    )?;
+    writer.into_inner().map_err(|err| err.into_error())?;
+    Ok(written)
+}
+
+/// Stages referenced 7z tracks in one decode pass per block, after the sheet
+/// has been read to learn its references.
+/// The caller's temporary directory cleans up staged files on error.
+fn extract_7z_members(
+    path: &Path,
+    members: &[ArchiveMember],
+    indices: &[usize],
+    dest_dir: &Path,
+) -> Result<()> {
+    if indices.is_empty() {
+        return Ok(());
+    }
+    let (archive, mut file) = crate::util::sevenz_guard::open(path)?;
+    let kept: Vec<usize> = archive
+        .files
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| is_kept(entry.name(), entry.is_directory()))
+        .map(|(index, _)| index)
+        .collect();
+    let mut blocks = std::collections::BTreeMap::new();
+    for &index in indices {
+        let member = &members[index];
+        let file_index = *kept
+            .get(index)
+            .ok_or_else(|| anyhow!("member {} not found in {}", member.name, path.display()))?;
+        let target = &archive.files[file_index];
+        if target.name() != member.name {
+            bail!(
+                "archive member at index {index} changed: expected {}, found {}",
+                member.name,
+                target.name()
+            );
+        }
+        blocks
+            .entry(archive.stream_map.file_block_index[file_index])
+            .or_insert_with(Vec::new)
+            .push((target, member, dest_dir.join(safe_basename(&member.name)?)));
+    }
+    let password = sevenz_rust2::Password::empty();
+    for (block, targets) in blocks {
+        let mut remaining = targets.len();
+        let mut failure = None;
+        let mut stage = |entry: &sevenz_rust2::ArchiveEntry, rd: &mut dyn std::io::Read| {
+            if let Some((_, member, out)) = targets
+                .iter()
+                .find(|(target, _, _)| std::ptr::eq(*target, entry))
+            {
+                let copied = copy_member(rd, out, member.size);
+                match copied {
+                    Ok(written) if written == member.size => {}
+                    Ok(written) => {
+                        failure = Some(declared_size_error(
+                            path,
+                            &member.name,
+                            written,
+                            member.size,
+                        ));
+                    }
+                    Err(err) => failure = Some(err.into()),
+                }
+                remaining -= 1;
+                Ok(failure.is_none() && remaining != 0)
+            } else {
+                // Solid members share the decoded stream: drain every
+                // preceding member so the next starts at its own bytes.
+                std::io::copy(rd, &mut std::io::sink())?;
+                Ok(true)
+            }
+        };
+        let decoded = match block {
+            None => {
+                for (entry, _, _) in &targets {
+                    if !stage(entry, &mut std::io::empty())? {
+                        break;
+                    }
+                }
+                Ok(true)
+            }
+            Some(block) => {
+                crate::util::sevenz_guard::check_block(&archive, block, path)?;
+                let decoder =
+                    sevenz_rust2::BlockDecoder::new(1, block, &archive, &password, &mut file);
+                if targets.iter().any(|(target, _, _)| {
+                    !decoder
+                        .entries()
+                        .iter()
+                        .any(|entry| std::ptr::eq(entry, *target))
+                }) {
+                    bail!(
+                        "{} stores tracks in an unsupported block layout",
+                        path.display()
+                    );
+                }
+                decoder.for_each_entries(&mut stage)
+            }
+        };
+        decoded
+            .map_err(|err| anyhow!("decoding {}: {err}", path.display()))
+            .and_then(|_| match failure {
+                Some(err) => Err(err),
+                None if remaining != 0 => bail!("{} is missing referenced tracks", path.display()),
+                None => Ok(()),
+            })?;
+    }
+    Ok(())
+}
+
 /// Extract one member to `dest_dir`, returning the written path. Streams so a
 /// multi-gigabyte member never buffers in memory. See [`read_member`] for how
 /// each format finds its member.
@@ -484,11 +659,7 @@ fn extract_one(
             // archive declares must not silently stage the difference:
             // hold the copy to the declared size and refuse a mismatch.
             let copied = read_member(path, kind, member_name, member_index, |rd| {
-                let mut writer = File::create(&out)?;
-                std::io::copy(
-                    &mut std::io::Read::take(&mut *rd, declared_size.saturating_add(1)),
-                    &mut writer,
-                )
+                copy_member(rd, &out, declared_size)
             });
             match copied {
                 Ok(written) if written == declared_size => Ok(out),
@@ -606,6 +777,10 @@ pub struct TempSpaceShortfall;
 /// listing with no filtering: an archive holding several entries is never
 /// removed wholesale, because every entry this run did not place (a sidecar
 /// or a nested archive) would be destroyed with it.
+///
+/// # Errors
+/// Errors on unsupported or corrupt archives, 7z header guard refusals,
+/// or I/O failures while reading their raw entry listings.
 pub fn entry_count(path: &Path) -> Result<usize> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
@@ -1180,15 +1355,19 @@ pub fn resolve_input_with_selection(
             member.size,
         )?,
     };
-    for index in referenced {
-        extract_one(
-            path,
-            kind,
-            &members[index].name,
-            index,
-            tmp.path(),
-            members[index].size,
-        )?;
+    if kind == ArchiveKind::SevenZ {
+        extract_7z_members(path, &members, &referenced, tmp.path())?;
+    } else {
+        for index in referenced {
+            extract_one(
+                path,
+                kind,
+                &members[index].name,
+                index,
+                tmp.path(),
+                members[index].size,
+            )?;
+        }
     }
 
     Ok(ResolvedInput {
@@ -1330,6 +1509,21 @@ mod tests {
         writer.finish().unwrap();
     }
 
+    /// Like [`write_7z`], but packs all members into one solid block.
+    fn write_7z_solid(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut writer = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+        let names = entries
+            .iter()
+            .map(|(name, _)| sevenz_rust2::ArchiveEntry::new_file(name))
+            .collect();
+        let sources = entries
+            .iter()
+            .map(|(_, data)| sevenz_rust2::SourceReader::new(*data))
+            .collect();
+        writer.push_archive_entries(names, sources).unwrap();
+        writer.finish().unwrap();
+    }
+
     /// A listing stops keeping members at the caps: one more member is
     /// refused, and so are names that add up past the byte budget.
     #[test]
@@ -1353,7 +1547,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(err.contains("100000"), "{err}");
+        assert!(err.contains(&MAX_LISTED_MEMBERS.to_string()), "{err}");
 
         let mut out = Vec::new();
         let mut name_bytes = MAX_LISTED_NAME_BYTES - 4;
@@ -1371,6 +1565,7 @@ mod tests {
         assert!(err.contains(&MAX_LISTED_NAME_BYTES.to_string()), "{err}");
         assert!(out.is_empty());
     }
+
     #[test]
     fn lists_members_filtering_junk_and_nested_archives() {
         let dir = tempfile::tempdir().unwrap();
@@ -1911,6 +2106,141 @@ mod tests {
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"seven-payload");
     }
 
+    /// One solid block hands every member a reader over the same decoded
+    /// stream, so staging a member that is not first must drain the ones
+    /// before it.
+    #[test]
+    fn sevenz_solid_block_stages_a_member_that_is_not_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let sz = dir.path().join("solid.7z");
+        write_7z_solid(
+            &sz,
+            &[
+                ("readme.txt", b"first member bytes"),
+                ("game.iso", b"second member payload"),
+            ],
+        );
+        let (archive, _) = crate::util::sevenz_guard::open(&sz).unwrap();
+        assert_eq!(archive.blocks.len(), 1);
+        let resolved = resolve_input(&sz, &["iso"]).unwrap();
+        assert_eq!(
+            std::fs::read(resolved.path()).unwrap(),
+            b"second member payload"
+        );
+    }
+
+    #[test]
+    fn sevenz_solid_tracks_stage_together_with_a_sheet_last() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disc.7z");
+        let cue = b"FILE \"track01.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"track02.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n";
+        write_7z_solid(
+            &path,
+            &[
+                ("track01.bin", b"first track bytes"),
+                ("unrelated.bin", b"drained but not staged"),
+                ("track02.bin", b"second track bytes"),
+                ("game.cue", cue),
+            ],
+        );
+        let (archive, _) = crate::util::sevenz_guard::open(&path).unwrap();
+        assert_eq!(archive.blocks.len(), 1);
+        let resolved = resolve_input(&path, &["cue"]).unwrap();
+        let staged = resolved.path().parent().unwrap();
+        assert_eq!(std::fs::read(resolved.path()).unwrap(), cue);
+        assert_eq!(
+            std::fs::read(staged.join("track01.bin")).unwrap(),
+            b"first track bytes"
+        );
+        assert_eq!(
+            std::fs::read(staged.join("track02.bin")).unwrap(),
+            b"second track bytes"
+        );
+        assert!(!staged.join("unrelated.bin").exists());
+        assert_eq!(
+            resolved.staged_bytes(),
+            cue.len() as u64
+                + b"first track bytes".len() as u64
+                + b"second track bytes".len() as u64
+        );
+    }
+
+    #[test]
+    fn sevenz_grouped_staging_checks_declared_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("disc.7z");
+        write_7z_solid(&path, &[("one.bin", b"first"), ("two.bin", b"second")]);
+        let mut members = list_members(&path).unwrap();
+        members[1].size -= 1;
+        let staged = tempfile::tempdir().unwrap();
+        let err = extract_7z_members(&path, &members, &[0, 1], staged.path())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(&format!(
+                "member {} decodes past its declared {} bytes",
+                members[1].name, members[1].size
+            )),
+            "{err}"
+        );
+        let staged_path = staged.path().to_path_buf();
+        drop(staged);
+        assert!(!staged_path.exists());
+    }
+
+    #[test]
+    fn sevenz_grouped_staging_handles_empty_members_and_separate_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tracks.7z");
+        write_7z(
+            &path,
+            &[
+                ("empty.bin", b""),
+                ("one.bin", b"first"),
+                ("two.bin", b"second"),
+            ],
+        );
+        let members = list_members(&path).unwrap();
+        let staged = tempfile::tempdir().unwrap();
+        extract_7z_members(&path, &members, &[0, 1, 2], staged.path()).unwrap();
+        assert!(
+            std::fs::read(staged.path().join("empty.bin"))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read(staged.path().join("one.bin")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(staged.path().join("two.bin")).unwrap(),
+            b"second"
+        );
+    }
+
+    /// Members pushed separately sit in their own blocks: corrupting the
+    /// packed bytes of the member after the target must not stop staging
+    /// the target, whose block is never built.
+    #[test]
+    fn sevenz_other_block_corruption_does_not_stop_staging() {
+        let dir = tempfile::tempdir().unwrap();
+        let sz = dir.path().join("twoblock.7z");
+        write_7z(
+            &sz,
+            &[("game.iso", b"iso-payload"), ("zz.txt", b"second block")],
+        );
+        let (archive, _) = crate::util::sevenz_guard::open(&sz).unwrap();
+        assert_eq!(archive.blocks.len(), 2);
+        let mut raw = std::fs::read(&sz).unwrap();
+        let packed_end =
+            (32 + archive.pack_pos()) as usize + archive.pack_sizes().iter().sum::<u64>() as usize;
+        // The last packed byte belongs to the last block, the one behind
+        // the target.
+        raw[packed_end - 1] ^= 0xFF;
+        std::fs::write(&sz, raw).unwrap();
+        let resolved = resolve_input(&sz, &["iso"]).unwrap();
+        assert_eq!(std::fs::read(resolved.path()).unwrap(), b"iso-payload");
+    }
 
     #[test]
     fn rejects_traversal_member_names_in_zip() {
@@ -1951,6 +2281,24 @@ mod tests {
         let resolved = resolve_input(&rar, &["iso"]).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"rar-payload");
         assert_eq!(resolved.output_basis(), dir.path().join("game.iso"));
+    }
+
+    #[test]
+    fn sevenz_rejects_member_name_mismatch_at_selected_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("g.7z");
+        write_7z(&path, &[("game.iso", b"payload")]);
+        let mut selection = probe_archive(&path, &["iso"], &CancelToken::new())
+            .unwrap()
+            .unwrap();
+        selection.members[selection.member_index].name = "other.iso".into();
+        let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("other.iso") && err.contains("game.iso"),
+            "{err}"
+        );
     }
 
     #[test]
