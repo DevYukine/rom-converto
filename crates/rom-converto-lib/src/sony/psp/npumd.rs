@@ -11,7 +11,7 @@ use crate::sony::psp::amctrl::{BbCipher, bb_mac};
 use crate::sony::psp::info::{PsarKind, read_psar_kind};
 use crate::sony::psp::lzrc;
 use crate::sony::psp::pbp::{DATA_PSAR, Pbp};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, atomic_write};
 
 const ISO_SECTOR_SIZE: usize = 2048;
 /// Largest sectors-per-block the header at `0x0c` is known to carry.
@@ -29,13 +29,19 @@ const TABLE_ENTRY_LEN: u64 = 32;
 
 /// Decrypts the `NPUMDIMG` image carried by `input` and writes the resulting
 /// ISO to `output`. `input` is either an `EBOOT.PBP` or a PSN `.pkg` package
-/// whose `EBOOT.PBP` item is read in place.
+/// whose `EBOOT.PBP` item is read in place. The ISO is published by rename
+/// once it is fully written.
 ///
 /// # Errors
 /// Returns an error if `input` is neither format, its `DATA.PSAR` is not an
 /// `NPUMDIMG` image, the decrypted header is inconsistent, or any read,
-/// write, or block decompression fails.
-pub fn to_iso(progress: &dyn ProgressReporter, input: &Path, output: &Path) -> Result<()> {
+/// write, or block decompression fails, or `cancel` fires (`util::Cancelled`).
+pub fn to_iso(
+    progress: &dyn ProgressReporter,
+    input: &Path,
+    output: &Path,
+    cancel: &CancelToken,
+) -> Result<()> {
     let mut file =
         File::open(input).with_context(|| format!("psp to-iso: open {}", input.display()))?;
     let mut magic = [0u8; 4];
@@ -43,27 +49,43 @@ pub fn to_iso(progress: &dyn ProgressReporter, input: &Path, output: &Path) -> R
         .with_context(|| format!("psp to-iso: read {}", input.display()))?;
 
     match &magic {
-        b"\0PBP" => convert(progress, &mut file, input, output),
+        b"\0PBP" => convert_atomic(progress, &mut file, input, output, cancel)?,
         &[0x7F, b'P', b'K', b'G'] => {
             let info = crate::sony::vita::pkg::read_info(input)?;
             if info.content_type == 6 {
                 bail!("psp to-iso: PS1 Classic packages cannot be converted to a PSP ISO");
             }
             let mut item = crate::sony::vita::pkg::open_item(input, "EBOOT.PBP")?;
-            convert(progress, &mut item, input, output)
+            convert_atomic(progress, &mut item, input, output, cancel)?;
         }
         _ => bail!(
             "psp to-iso: {} is neither an EBOOT.PBP nor a PSN .pkg package",
             input.display()
         ),
     }
+    Ok(())
+}
+
+/// Write the ISO through a scratch sibling of `output`, published by rename
+/// only once it is fully written.
+fn convert_atomic<R: Read + Seek>(
+    progress: &dyn ProgressReporter,
+    file: &mut R,
+    input: &Path,
+    output: &Path,
+    cancel: &CancelToken,
+) -> Result<()> {
+    atomic_write(output, true, |out| {
+        convert(progress, file, input, out, cancel)
+    })
 }
 
 fn convert<R: Read + Seek>(
     progress: &dyn ProgressReporter,
     file: &mut R,
     input: &Path,
-    output: &Path,
+    out: &mut File,
+    cancel: &CancelToken,
 ) -> Result<()> {
     let pbp = Pbp::read(file).with_context(|| format!("psp to-iso: parse {}", input.display()))?;
     let psar = pbp.segments[DATA_PSAR];
@@ -132,13 +154,14 @@ fn convert<R: Read + Seek>(
         ),
     );
 
-    let mut out = BufWriter::new(
-        File::create(output).with_context(|| format!("psp to-iso: create {}", output.display()))?,
-    );
+    let mut out = BufWriter::new(out);
     let mut data = vec![0u8; block_bytes];
     let mut plain = vec![0u8; block_bytes];
 
     for index in 0..block_count {
+        if cancel.is_cancelled() {
+            return Err(crate::util::Cancelled.into());
+        }
         file.seek(SeekFrom::Start(
             psar.offset + iso_table + u64::from(index) * TABLE_ENTRY_LEN,
         ))?;
@@ -301,7 +324,7 @@ mod tests {
         let (dir, input) = write_eboot(&build_npumdimg(&sectors, false));
         let output = dir.path().join("out.iso");
 
-        to_iso(&NoProgress, &input, &output).expect("to iso");
+        to_iso(&NoProgress, &input, &output, &CancelToken::new()).expect("to iso");
 
         let iso = std::fs::read(&output).expect("read iso");
         assert_eq!(iso, sectors.concat());
@@ -313,14 +336,20 @@ mod tests {
         let (dir, input) = write_eboot(&build_npumdimg(&sectors, true));
         let output = dir.path().join("out.iso");
 
-        to_iso(&NoProgress, &input, &output).expect("to iso");
+        to_iso(&NoProgress, &input, &output, &CancelToken::new()).expect("to iso");
         assert_eq!(std::fs::read(&output).expect("read iso"), sectors.concat());
     }
 
     #[test]
     fn rejects_a_ps1_classic_psar() {
         let (dir, input) = write_eboot(b"PSISOIMG\0\0\0\0\0\0\0\0");
-        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        let err = to_iso(
+            &NoProgress,
+            &input,
+            &dir.path().join("out.iso"),
+            &CancelToken::new(),
+        )
+        .expect_err("rejected");
         assert!(err.to_string().contains("PSISOIMG"), "{err}");
     }
 
@@ -330,7 +359,15 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let input = dir.path().join("EBOOT.PBP");
         std::fs::write(&input, bytes).expect("write eboot");
-        assert!(to_iso(&NoProgress, &input, &dir.path().join("out.iso")).is_err());
+        assert!(
+            to_iso(
+                &NoProgress,
+                &input,
+                &dir.path().join("out.iso"),
+                &CancelToken::new()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -340,7 +377,15 @@ mod tests {
         // the decrypted geometry stops making sense.
         psar[0x50] ^= 0xFF;
         let (dir, input) = write_eboot(&psar);
-        assert!(to_iso(&NoProgress, &input, &dir.path().join("out.iso")).is_err());
+        assert!(
+            to_iso(
+                &NoProgress,
+                &input,
+                &dir.path().join("out.iso"),
+                &CancelToken::new()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -352,12 +397,12 @@ mod tests {
         let pbp_input = dir.path().join("EBOOT.PBP");
         std::fs::write(&pbp_input, &eboot).expect("write eboot");
         let pbp_output = dir.path().join("from-pbp.iso");
-        to_iso(&NoProgress, &pbp_input, &pbp_output).expect("pbp to iso");
+        to_iso(&NoProgress, &pbp_input, &pbp_output, &CancelToken::new()).expect("pbp to iso");
 
         let pkg_input = dir.path().join("game.pkg");
         std::fs::write(&pkg_input, build_psp_pkg(7, eboot)).expect("write pkg");
         let pkg_output = dir.path().join("from-pkg.iso");
-        to_iso(&NoProgress, &pkg_input, &pkg_output).expect("pkg to iso");
+        to_iso(&NoProgress, &pkg_input, &pkg_output, &CancelToken::new()).expect("pkg to iso");
 
         let iso = std::fs::read(&pkg_output).expect("read iso");
         assert_eq!(iso, sectors.concat());
@@ -381,7 +426,13 @@ mod tests {
         );
         std::fs::write(&input, pkg).expect("write pkg");
 
-        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        let err = to_iso(
+            &NoProgress,
+            &input,
+            &dir.path().join("out.iso"),
+            &CancelToken::new(),
+        )
+        .expect_err("rejected");
         assert!(err.to_string().contains("EBOOT.PBP"), "{err}");
     }
 
@@ -392,7 +443,13 @@ mod tests {
         let input = dir.path().join("classic.pkg");
         std::fs::write(&input, build_psp_pkg(6, eboot)).expect("write pkg");
 
-        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        let err = to_iso(
+            &NoProgress,
+            &input,
+            &dir.path().join("out.iso"),
+            &CancelToken::new(),
+        )
+        .expect_err("rejected");
         assert!(err.to_string().contains("PS1 Classic packages"), "{err}");
     }
 
@@ -402,7 +459,13 @@ mod tests {
         let input = dir.path().join("garbage.bin");
         std::fs::write(&input, b"JUNKJUNK").expect("write garbage");
 
-        let err = to_iso(&NoProgress, &input, &dir.path().join("out.iso")).expect_err("rejected");
+        let err = to_iso(
+            &NoProgress,
+            &input,
+            &dir.path().join("out.iso"),
+            &CancelToken::new(),
+        )
+        .expect_err("rejected");
         let text = err.to_string();
         assert!(
             text.contains("EBOOT.PBP") && text.contains(".pkg"),
@@ -415,6 +478,47 @@ mod tests {
         let mut psar = build_npumdimg(&[sector(0x20)], false);
         psar.truncate(HEADER_LEN + 8);
         let (dir, input) = write_eboot(&psar);
-        assert!(to_iso(&NoProgress, &input, &dir.path().join("out.iso")).is_err());
+        assert!(
+            to_iso(
+                &NoProgress,
+                &input,
+                &dir.path().join("out.iso"),
+                &CancelToken::new()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn a_failed_run_leaves_a_pre_existing_output_intact() {
+        // Truncating after the block table makes every block read run past
+        // the end of DATA.PSAR.
+        let mut psar = build_npumdimg(&[sector(0x10), sector(0x20)], false);
+        psar.truncate(HEADER_LEN + 2 * TABLE_ENTRY_LEN as usize);
+        let (dir, input) = write_eboot(&psar);
+        let output = dir.path().join("out.iso");
+        let original = vec![0x5Au8; 128];
+        std::fs::write(&output, &original).expect("write output");
+
+        assert!(to_iso(&NoProgress, &input, &output, &CancelToken::new()).is_err());
+        assert_eq!(std::fs::read(&output).expect("read output"), original);
+        assert!(!crate::util::scratch_output_exists(&output).expect("scratch check"));
+    }
+
+    #[test]
+    fn a_cancelled_token_writes_nothing() {
+        let sectors = vec![sector(0x10), sector(0x20)];
+        let (dir, input) = write_eboot(&build_npumdimg(&sectors, false));
+        let output = dir.path().join("out.iso");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = to_iso(&NoProgress, &input, &output, &cancel).expect_err("cancelled");
+        assert!(
+            err.downcast_ref::<crate::util::Cancelled>().is_some(),
+            "{err}"
+        );
+        assert!(!output.exists(), "nothing was published");
+        assert!(!crate::util::scratch_output_exists(&output).unwrap());
     }
 }

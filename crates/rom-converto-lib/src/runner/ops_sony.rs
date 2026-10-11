@@ -81,9 +81,9 @@ pub(crate) async fn psp_to_iso(
             verify: OutputVerify::None,
         },
         cancel,
-        |input, output, _cancel| async move {
+        |input, output, cancel| async move {
             spawn_blocking_with_progress(progress, move |progress| {
-                crate::sony::psp::to_iso(progress, &input, &output)
+                crate::sony::psp::to_iso(progress, &input, &output, &cancel)
             })
             .await
         },
