@@ -29,8 +29,8 @@ pub(crate) async fn cue_to_iso(
             verify: OutputVerify::None,
         },
         cancel,
-        |input, output, _cancel| async move {
-            crate::disc::cue::to_iso::cue_to_iso(progress, input, output, true)
+        |input, output, cancel| async move {
+            crate::disc::cue::to_iso::cue_to_iso(progress, input, output, true, cancel)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -55,8 +55,8 @@ pub(crate) async fn cue_to_cso(
             verify: OutputVerify::Cso,
         },
         cancel,
-        |input, output, _cancel| async move {
-            crate::pipeline::cue_to_cso(progress, input, output, format, true).await
+        |input, output, cancel| async move {
+            crate::pipeline::cue_to_cso(progress, input, output, format, true, cancel).await
         },
     )
     .await

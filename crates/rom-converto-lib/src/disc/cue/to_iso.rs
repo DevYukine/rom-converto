@@ -6,12 +6,11 @@ use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::disc::cue::CueParser;
 use crate::disc::cue::error::CueError;
 use crate::disc::cue::models::{FileType, TrackType};
-use crate::util::{BYTES_PER_MB, ProgressReporter};
+use crate::util::{BYTES_PER_MB, CancelToken, ProgressReporter, run_scratch_write};
 use log::info;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use thiserror::Error;
 use tokio::fs;
 
@@ -79,6 +78,10 @@ pub enum ToIsoError {
     /// plain 2048-byte ISO representation.
     #[error("sector {0} is MODE2 Form2 (2324-byte payload); track has no plain ISO representation")]
     Form2Sector(u64),
+
+    /// The operation was cancelled by the caller.
+    #[error("{0}")]
+    Cancelled(#[from] crate::util::Cancelled),
 }
 
 /// Result alias for CUE-to-ISO extraction.
@@ -131,11 +134,20 @@ pub(crate) fn extract_user_data(
 ///
 /// Any additional tracks (audio and so on) are reported as skipped. The data
 /// track must live in the first `FILE`, be BINARY, and use a MODE1/MODE2 mode.
+/// The ISO is written to a scratch sibling of the output and published by
+/// rename once it is fully written.
+///
+/// # Errors
+/// Returns [`ToIsoError::OutputExists`] when the output exists and `force`
+/// is false, the CUE parse and track errors ([`ToIsoError::NoTracks`],
+/// [`ToIsoError::UnsupportedDataTrack`], [`ToIsoError::Form2Sector`], and so
+/// on), and [`ToIsoError::Cancelled`] when `cancel` fires.
 pub async fn cue_to_iso(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
     output_iso_path: PathBuf,
     force: bool,
+    cancel: CancelToken,
 ) -> ToIsoResult<()> {
     if !force && fs::metadata(&output_iso_path).await.is_ok() {
         return Err(ToIsoError::OutputExists(
@@ -222,48 +234,33 @@ pub async fn cue_to_iso(
         &format!("Extracting ISO from track 1 (~{total_mb:.2} MB)"),
     );
 
-    let bytes_done = Arc::new(AtomicU64::new(0));
-    let bytes_done_bg = bytes_done.clone();
-    let output_owned = output_iso_path.clone();
+    run_scratch_write(
+        &output_iso_path,
+        force,
+        progress,
+        &cancel,
+        move |file, bytes_done, cancel| -> ToIsoResult<()> {
+            let in_file = std::fs::File::open(&bin_path)?;
+            let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
+            reader.seek(SeekFrom::Start(start_lba * block_size as u64))?;
 
-    let mut handle = tokio::task::spawn_blocking(move || -> ToIsoResult<()> {
-        let in_file = std::fs::File::open(&bin_path)?;
-        let mut reader = BufReader::with_capacity(IO_BUFFER_SIZE, in_file);
-        reader.seek(SeekFrom::Start(start_lba * block_size as u64))?;
+            let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
 
-        let out_file = std::fs::File::create(&output_owned)?;
-        let mut writer = BufWriter::with_capacity(IO_BUFFER_SIZE, out_file);
-
-        let mut sector = vec![0u8; block_size as usize];
-        for index in start_lba..end_lba {
-            reader.read_exact(&mut sector)?;
-            let payload = extract_user_data(track_type, &sector, index)?;
-            writer.write_all(payload)?;
-            bytes_done_bg.fetch_add(block_size as u64, Ordering::Relaxed);
-        }
-        writer.flush()?;
-        Ok(())
-    });
-
-    loop {
-        match tokio::time::timeout(std::time::Duration::from_millis(100), &mut handle).await {
-            Ok(result) => {
-                result??;
-                break;
-            }
-            Err(_) => {
-                let delta = bytes_done.swap(0, Ordering::Relaxed);
-                if delta > 0 {
-                    progress.inc(delta);
+            let mut sector = vec![0u8; block_size as usize];
+            for index in start_lba..end_lba {
+                if cancel.is_cancelled() {
+                    return Err(crate::util::Cancelled.into());
                 }
+                reader.read_exact(&mut sector)?;
+                let payload = extract_user_data(track_type, &sector, index)?;
+                writer.write_all(payload)?;
+                bytes_done.fetch_add(block_size as u64, Ordering::Relaxed);
             }
-        }
-    }
-    let remaining = bytes_done.swap(0, Ordering::Relaxed);
-    if remaining > 0 {
-        progress.inc(remaining);
-    }
-    progress.finish();
+            writer.flush()?;
+            Ok(())
+        },
+    )
+    .await?;
 
     let out_sectors = end_lba - start_lba;
     info!(
@@ -333,7 +330,7 @@ mod tests {
         ];
         let cue = write_image(dir.path(), track_type, &sectors).await;
         let iso = dir.path().join("game.iso");
-        cue_to_iso(&NoProgress, cue, iso.clone(), false)
+        cue_to_iso(&NoProgress, cue, iso.clone(), false, CancelToken::new())
             .await
             .unwrap();
 
@@ -372,8 +369,43 @@ mod tests {
         ];
         let cue = write_image(dir.path(), TrackType::Mode2_2352, &sectors).await;
         let iso = dir.path().join("game.iso");
-        let err = cue_to_iso(&NoProgress, cue, iso, false).await.unwrap_err();
+        let err = cue_to_iso(
+            &NoProgress,
+            cue.clone(),
+            iso.clone(),
+            false,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, ToIsoError::Form2Sector(1)));
+        assert!(!iso.exists(), "no partial iso is left behind");
+        assert!(!crate::util::scratch_output_exists(&iso).unwrap());
+
+        // Under overwrite a pre-existing output survives the failed run.
+        let original = vec![0x5Au8; 128];
+        tokio::fs::write(&iso, &original).await.unwrap();
+        let err = cue_to_iso(&NoProgress, cue, iso.clone(), true, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToIsoError::Form2Sector(1)));
+        assert_eq!(tokio::fs::read(&iso).await.unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn cancelled_token_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let sectors = vec![make_sector(TrackType::Mode1_2352, 0x11, false)];
+        let cue = write_image(dir.path(), TrackType::Mode1_2352, &sectors).await;
+        let iso = dir.path().join("game.iso");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = cue_to_iso(&NoProgress, cue, iso.clone(), false, cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToIsoError::Cancelled(_)));
+        assert!(!iso.exists(), "nothing was published");
+        assert!(!crate::util::scratch_output_exists(&iso).unwrap());
     }
 
     #[tokio::test]
@@ -403,7 +435,7 @@ mod tests {
         .unwrap();
 
         let iso = dir.path().join("game.iso");
-        cue_to_iso(&NoProgress, cue, iso.clone(), false)
+        cue_to_iso(&NoProgress, cue, iso.clone(), false, CancelToken::new())
             .await
             .unwrap();
 
@@ -426,7 +458,9 @@ mod tests {
         .await
         .unwrap();
         let iso = dir.path().join("game.iso");
-        let err = cue_to_iso(&NoProgress, cue, iso, false).await.unwrap_err();
+        let err = cue_to_iso(&NoProgress, cue, iso, false, CancelToken::new())
+            .await
+            .unwrap_err();
         assert!(matches!(err, ToIsoError::UnsupportedDataTrack(_)));
     }
 
@@ -443,7 +477,9 @@ mod tests {
         .await
         .unwrap();
         let iso = dir.path().join("game.iso");
-        let err = cue_to_iso(&NoProgress, cue, iso, false).await.unwrap_err();
+        let err = cue_to_iso(&NoProgress, cue, iso, false, CancelToken::new())
+            .await
+            .unwrap_err();
         assert!(matches!(err, ToIsoError::SizeNotMultipleOfBlock { .. }));
     }
 }

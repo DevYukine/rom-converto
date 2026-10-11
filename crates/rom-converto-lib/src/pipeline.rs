@@ -128,15 +128,28 @@ pub async fn chd_to_cso(
 /// Compress a `.cue`/`.bin` straight to a `.cso`/`.zso`: extract the data
 /// track to a temporary ISO, then compress it, always removing the temporary
 /// ISO afterward.
+///
+/// # Errors
+/// Errors if the cue cannot be parsed, its track layout is unsupported,
+/// a referenced track is missing or truncated, temporary staging or output
+/// I/O fails, CSO compression fails, or [`crate::util::Cancelled`] is raised.
 pub async fn cue_to_cso(
     progress: &dyn ProgressReporter,
     cue_path: PathBuf,
     output_path: PathBuf,
     format: CsoFormat,
     force: bool,
+    cancel: CancelToken,
 ) -> Result<()> {
     let (_temp_dir, temp_iso) = temp_iso_stage(&output_path)?;
-    cue_to_iso(progress, cue_path.clone(), temp_iso.clone(), true).await?;
+    cue_to_iso(
+        progress,
+        cue_path.clone(),
+        temp_iso.clone(),
+        true,
+        cancel.clone(),
+    )
+    .await?;
     compress_to_cso(
         progress,
         temp_iso,
@@ -146,7 +159,7 @@ pub async fn cue_to_cso(
             block_size: None,
             force,
         },
-        CancelToken::new(),
+        cancel,
     )
     .await?;
     Ok(())
@@ -269,6 +282,7 @@ mod tests {
             zso_path.clone(),
             CsoFormat::Zso,
             false,
+            CancelToken::new(),
         )
         .await
         .unwrap();
