@@ -406,7 +406,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     }
                     return dry_run::finish(&tally, &records, report.as_deref());
                 }
-                return migrate_chd_to_v5_batch(
+                let (ok, failed) = migrate_chd_to_v5_batch(
                     &progress,
                     &total_progress,
                     &cmd.input,
@@ -416,8 +416,11 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     true,
                     &cancel,
                 )
-                .await
-                .map_err(Into::into);
+                .await?;
+                if failed > 0 {
+                    anyhow::bail!("{failed} of {} files failed", ok + failed);
+                }
+                return Ok(());
             }
             if cmd.in_place && rom_converto_lib::util::is_archive_path(&cmd.input) {
                 anyhow::bail!(
@@ -480,7 +483,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                         cmd.input.display()
                     );
                 }
-                verify_chd_batch(
+                let (_, failed) = verify_chd_batch(
                     &progress,
                     &total_progress,
                     cmd.input,
@@ -489,7 +492,10 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                     cmd.max_depth,
                     &cancel,
                 )
-                .await?
+                .await?;
+                if failed > 0 {
+                    anyhow::bail!("verification failed");
+                }
             } else {
                 ensure_input_exists(&cmd.input)?;
                 if cmd.fix && rom_converto_lib::util::is_archive_path(&cmd.input) {

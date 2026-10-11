@@ -206,11 +206,12 @@ pub async fn extract_from_chd_batch(
 }
 
 /// Verify every `.chd` in `input_dir`. Logs a per-file failure and a final
-/// `Verified N files: X OK, Y failed` summary. Unless `plain_only` is set,
-/// archives holding a `.chd` member are verified too: a fix rewrites the file
-/// in place, which an archive member cannot be, so a fix run sets it. `fix`
-/// alone says whether the header is rewritten, which a dry run withholds
-/// without changing which files are walked.
+/// `Verified N files: X OK, Y failed` summary and returns `(ok, failed)` so
+/// the caller can fail the run. Unless `plain_only` is set, archives holding
+/// a `.chd` member are verified too: a fix rewrites the file in place, which
+/// an archive member cannot be, so a fix run sets it. `fix` alone says
+/// whether the header is rewritten, which a dry run withholds without
+/// changing which files are walked.
 pub async fn verify_chd_batch(
     progress: &dyn ProgressReporter,
     total_progress: &dyn ProgressReporter,
@@ -219,7 +220,7 @@ pub async fn verify_chd_batch(
     plain_only: bool,
     max_depth: Option<usize>,
     cancel: &CancelToken,
-) -> ChdResult<()> {
+) -> ChdResult<(usize, usize)> {
     let (ok, failed) = run_file_batch(
         BatchSpec {
             input_dir: &input_dir,
@@ -252,12 +253,13 @@ pub async fn verify_chd_batch(
     .await
     .map_err(batch_error)?;
     info!("Verified {} files: {ok} OK, {failed} failed", ok + failed);
-    Ok(())
+    Ok((ok, failed))
 }
 
 /// Batch twin of [`migrate_chd_to_v5`], mirroring
 /// [`convert_disc_to_chd_batch`]: every `.chd` under `input_dir` that is
-/// not already V5 is migrated.
+/// not already V5 is migrated. Returns `(ok, failed)`; files skipped as
+/// already V5 are in neither count.
 #[allow(clippy::too_many_arguments)]
 pub async fn migrate_chd_to_v5_batch(
     progress: &dyn ProgressReporter,
@@ -268,7 +270,7 @@ pub async fn migrate_chd_to_v5_batch(
     max_depth: Option<usize>,
     in_place: bool,
     cancel: &CancelToken,
-) -> ChdResult<()> {
+) -> ChdResult<(usize, usize)> {
     run_file_batch(
         BatchSpec {
             input_dir,
@@ -283,16 +285,11 @@ pub async fn migrate_chd_to_v5_batch(
         total_progress,
         cancel,
         |path| {
-            match legacy::peek_chd_version(path) {
-                Ok(Some(5)) => {
-                    warn!("Skipping {}: already CHD V5", path.display());
-                    return None;
-                }
-                Err(err) => {
-                    warn!("Skipping {}: {err}", path.display());
-                    return None;
-                }
-                _ => {}
+            // A file whose header cannot be read is migrated anyway so its
+            // open error is counted as a failure, not logged as a skip.
+            if let Ok(Some(5)) = legacy::peek_chd_version(path) {
+                warn!("Skipping {}: already CHD V5", path.display());
+                return None;
             }
             Some(match (in_place, output_dir) {
                 (true, _) => path.to_path_buf(),
@@ -305,8 +302,7 @@ pub async fn migrate_chd_to_v5_batch(
         },
     )
     .await
-    .map_err(batch_error)?;
-    Ok(())
+    .map_err(batch_error)
 }
 
 /// A cancel must surface as a cancellation, not as an I/O failure.
