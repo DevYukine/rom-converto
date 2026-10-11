@@ -375,6 +375,27 @@ fn list_tar(
     Ok(out)
 }
 
+/// The error for a member that decoded to `written` bytes when its archive
+/// declares `declared_size`.
+fn declared_size_error(
+    path: &Path,
+    member_name: &str,
+    written: u64,
+    declared_size: u64,
+) -> anyhow::Error {
+    if written > declared_size {
+        anyhow!(
+            "{} member {member_name} decodes past its declared {declared_size} bytes",
+            path.display()
+        )
+    } else {
+        anyhow!(
+            "{} member {member_name} decoded only {written} of {declared_size} bytes",
+            path.display()
+        )
+    }
+}
+
 /// Extract one member to `dest_dir`, returning the written path. Streams so a
 /// multi-gigabyte member never buffers in memory. See [`read_member`] for how
 /// each format finds its member.
@@ -384,15 +405,37 @@ fn extract_one(
     member_name: &str,
     member_index: usize,
     dest_dir: &Path,
+    declared_size: u64,
 ) -> Result<PathBuf> {
     match kind {
         ArchiveKind::Zip | ArchiveKind::SevenZ | ArchiveKind::Tar | ArchiveKind::TarGz => {
             let out = dest_dir.join(safe_basename(member_name)?);
-            read_member(path, kind, member_name, member_index, |rd| {
+            // A member that decodes to other bytes than the size its
+            // archive declares must not silently stage the difference:
+            // hold the copy to the declared size and refuse a mismatch.
+            let copied = read_member(path, kind, member_name, member_index, |rd| {
                 let mut writer = File::create(&out)?;
-                std::io::copy(rd, &mut writer).map(|_| ())
-            })?;
-            Ok(out)
+                std::io::copy(
+                    &mut std::io::Read::take(&mut *rd, declared_size.saturating_add(1)),
+                    &mut writer,
+                )
+            });
+            match copied {
+                Ok(written) if written == declared_size => Ok(out),
+                Ok(written) => {
+                    let _ = std::fs::remove_file(&out);
+                    Err(declared_size_error(
+                        path,
+                        member_name,
+                        written,
+                        declared_size,
+                    ))
+                }
+                Err(err) => {
+                    let _ = std::fs::remove_file(&out);
+                    Err(err)
+                }
+            }
         }
         ArchiveKind::Rar => {
             let out = dest_dir.join(safe_basename(member_name)?);
@@ -418,6 +461,16 @@ fn extract_one(
                             );
                         }
                         header.extract_to(&out)?;
+                        let staged = std::fs::metadata(&out)?.len();
+                        if staged != declared_size {
+                            let _ = std::fs::remove_file(&out);
+                            return Err(declared_size_error(
+                                path,
+                                member_name,
+                                staged,
+                                declared_size,
+                            ));
+                        }
                         return Ok(out);
                     }
                     kept += 1;
@@ -882,12 +935,20 @@ fn cue_sidecar_members(
 }
 
 /// Resolve a read input, reusing an archive probe if available.
+///
+/// # Errors
+/// Errors on unsupported or corrupt archives, 7z guard refusals, listing
+/// caps, no matching image, unsafe member names, ambiguous track references,
+/// insufficient temp space, declared-size mismatches, or extraction I/O failures.
 pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
     resolve_input_with_selection(path, exts, None)
 }
 
 /// Same as [`resolve_input`], but reuses a previously probed
 /// [`ArchiveSelection`] instead of listing the archive again.
+///
+/// # Errors
+/// Same as [`resolve_input`], plus a member name changing after the probe.
 pub fn resolve_input_with_selection(
     path: &Path,
     exts: &[&str],
@@ -942,6 +1003,7 @@ pub fn resolve_input_with_selection(
             &member.name,
             member_index,
             tmp.path(),
+            member.size,
         )?)
     } else {
         None
@@ -990,10 +1052,24 @@ pub fn resolve_input_with_selection(
     }
     let extracted = match extracted_sheet {
         Some(path) => path,
-        None => extract_one(path, kind, &member.name, member_index, tmp.path())?,
+        None => extract_one(
+            path,
+            kind,
+            &member.name,
+            member_index,
+            tmp.path(),
+            member.size,
+        )?,
     };
     for index in referenced {
-        extract_one(path, kind, &members[index].name, index, tmp.path())?;
+        extract_one(
+            path,
+            kind,
+            &members[index].name,
+            index,
+            tmp.path(),
+            members[index].size,
+        )?;
     }
 
     Ok(ResolvedInput {
@@ -1475,6 +1551,64 @@ mod tests {
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"chd-data");
     }
 
+    /// A member whose decoder produces more bytes than the size its archive
+    /// declares must fail staging and leave nothing larger than the declared
+    /// size behind.
+    #[test]
+    fn zip_member_decoding_past_its_declared_size_fails_to_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("g.zip");
+        let payload = b"deflate-payload-longer-than-declared-bytes";
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Deflated,
+            &[("game.iso", payload)],
+        );
+
+        // Shrink the declared uncompressed size in the local file header and
+        // in the central directory entry, keeping the CRC.
+        let declared = u32::try_from(payload.len() / 2).unwrap();
+        let mut raw = std::fs::read(&zip).unwrap();
+        let mut patched = 0;
+        let mut scan = 0;
+        while scan + 4 <= raw.len() {
+            match u32::from_le_bytes(raw[scan..scan + 4].try_into().unwrap()) {
+                0x0403_4b50 if patched & 1 == 0 => {
+                    raw[scan + 22..scan + 26].copy_from_slice(&declared.to_le_bytes());
+                    patched |= 1;
+                }
+                0x0201_4b50 if patched & 2 == 0 => {
+                    raw[scan + 24..scan + 28].copy_from_slice(&declared.to_le_bytes());
+                    patched |= 2;
+                }
+                _ => {}
+            }
+            scan += 1;
+        }
+        assert_eq!(patched, 3);
+        std::fs::write(&zip, raw).unwrap();
+
+        // The listing now reports the patched declared size.
+        assert_eq!(list_members(&zip).unwrap()[0].size, declared as u64);
+
+        let staging = tempfile::tempdir().unwrap();
+        let err = extract_one(
+            &zip,
+            ArchiveKind::Zip,
+            "game.iso",
+            0,
+            staging.path(),
+            declared as u64,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(&declared.to_string()), "{err}");
+        assert!(
+            std::fs::read_dir(staging.path()).unwrap().next().is_none(),
+            "a leftover file stayed in the staging dir"
+        );
+    }
+
     /// Two tar members whose raw names differ only in a non-UTF-8 byte share
     /// one lossy display name; the selection index, not the name, decides
     /// which entry's bytes are extracted.
@@ -1542,6 +1676,7 @@ mod tests {
         let resolved = resolve_input(&sz, &["iso"]).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"seven-payload");
     }
+
 
     #[test]
     fn rejects_traversal_member_names_in_zip() {
