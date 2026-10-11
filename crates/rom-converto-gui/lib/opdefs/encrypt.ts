@@ -1,7 +1,7 @@
-import { commonOptions, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { commonOptions, recursiveFields, runArgs, runnerDerivedOutput, type OpDef } from "./types";
 import { useCtrEncryptStore } from "~/stores/ctr-encrypt";
 import { useNtrEncryptStore } from "~/stores/ntr-encrypt";
-import { deriveEncryptedPath, withOutputDir } from "~/composables/useDerivedPath";
+import { deriveEncryptedPath, hasArchiveExt } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -47,16 +47,21 @@ const ctr: OpDef = {
 		},
 	],
 	actionNote: "Already-encrypted files are skipped automatically and never queued.",
-	deriveOutput: deriveEncryptedPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveEncryptedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveEncryptedPath);
+		return runArgs(
 			"ctr.encrypt",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			derived.output,
+			{
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: () => "",
 };
 
@@ -93,16 +98,21 @@ const ntr: OpDef = {
 		},
 	],
 	actionNote: "Already-encrypted files are skipped automatically and never queued.",
-	deriveOutput: deriveEncryptedPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveEncryptedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveEncryptedPath);
+		return runArgs(
 			"ntr.encrypt",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveEncryptedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			derived.output,
+			{
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: () => "",
 };
 

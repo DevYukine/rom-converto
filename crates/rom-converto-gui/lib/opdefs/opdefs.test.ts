@@ -23,6 +23,8 @@ function payloadsOf(def: ReturnType<typeof allOpDefs>[number]): RunPayload[] {
 const defs = allOpDefs();
 
 describe("op registry", () => {
+	beforeEach(() => setActivePinia(createPinia()));
+
 	it("registers every op module", () => {
 		expect(defs.length).toBeGreaterThan(0);
 	});
@@ -137,5 +139,42 @@ describe("nx decrypt page args", () => {
 		const directed = requestOf("/roms/Game (USA).xci", (store) => { store.outputDir = "/out"; });
 		expect(directed.output).toBe("/out/Game (USA).dxci");
 		expect(directed.options.output_dir ?? null).toBeNull();
+	});
+});
+
+describe("archive outputs on runner-derived pages", () => {
+	// Each case mutates the shared op store, so every case starts fresh.
+	const cases: Array<[string, string, string]> = [
+		["ctr-decrypt", "/roms/Game (USA).3ds", "/roms/Game (USA).decrypted.3ds"],
+		["ntr-decrypt", "/roms/Game (USA).nds", "/roms/Game (USA).decrypted.nds"],
+		["ctr-encrypt", "/roms/Game (USA).3ds", "/roms/Game (USA).encrypted.3ds"],
+		["ntr-encrypt", "/roms/Game (USA).nds", "/roms/Game (USA).encrypted.nds"],
+		["ctr-compress", "/roms/Game (USA).3ds", "/roms/Game (USA).zcci"],
+		["ctr-convert", "/roms/Game (USA).cia", "/roms/Game (USA).3ds"],
+		["nx-compress", "/roms/Game (USA).nsp", "/roms/Game (USA).nsz"],
+		["nx-decompress", "/roms/Game (USA).nsz", "/roms/Game (USA).nsp"],
+		["ctr-decompress", "/roms/Game (USA).zcia", "/roms/Game (USA).cia"],
+	];
+
+	it.each(cases)("lets the runner name %s archive outputs inside the chosen directory", (storeId, plainPath, plainOutput) => {
+		setActivePinia(createPinia());
+		const def = defs.find((def) => def.storeId === storeId)!;
+
+		// Plain inputs keep their derived path and no directory option.
+		const plain = def.buildArgs(def.useStore(), { ...ITEM, path: plainPath }, "task-1").request;
+		expect(plain.output, storeId).toBe(plainOutput);
+		expect(plain.options.output_dir ?? null, storeId).toBeNull();
+
+		// An archive leaves the name to the runner; output_dir carries the
+		// chosen directory, or null so the runner defaults beside the input.
+		const archive = { ...ITEM, path: "/roms/Game (USA).zip" };
+		const bare = def.buildArgs(def.useStore(), archive, "task-1").request;
+		expect(bare.output, storeId).toBeNull();
+		expect(bare.options.output_dir ?? null, storeId).toBeNull();
+
+		def.useStore().outputDir = "/out";
+		const directed = def.buildArgs(def.useStore(), archive, "task-1").request;
+		expect(directed.output, storeId).toBeNull();
+		expect(directed.options.output_dir, storeId).toBe("/out");
 	});
 });

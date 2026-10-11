@@ -7,6 +7,7 @@ import {
 	deriveRvzPath,
 	deriveWuaPath,
 	deriveZarPath,
+	hasArchiveExt,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { useChdCompressStore } from "~/stores/chd-compress";
@@ -24,6 +25,7 @@ import {
 	commonOptions,
 	recursiveFields,
 	runArgs,
+	runnerDerivedOutput,
 	templateIsActive,
 	type OpDef,
 	type OpStore,
@@ -224,23 +226,26 @@ export const compressOps: OpDef[] = [
 		onStaged: (store, items) => {
 			if (!store.userPickedMode && items.some((i) => isXciInput(i.path))) store.mode = "block";
 		},
-		deriveOutput: (input) => deriveNszPath(input),
-		buildArgs: (store, item, taskId) =>
-			runArgs(
+		deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveNszPath(input)),
+		buildArgs: (store, item, taskId) => {
+			const derived = runnerDerivedOutput(store, item.path, deriveNszPath);
+			return runArgs(
 				"nx.compress",
 				item.path,
-				outPath(store, deriveNszPath(item.path)),
+				derived.output,
 				{
 					keys: store.keys || null,
 					level: store.level,
 					mode: store.mode,
 					block_size_exp: store.blockSizeExp,
+					...derived.options,
 					...commonOptions(store),
 				},
 				false,
 				taskId,
 				store.reportFile || null,
-			),
+			);
+		},
 		chips: (s) =>
 			`level ${s.level} · ${s.mode}${s.mode === "block" ? ` · 2^${s.blockSizeExp}` : ""}`,
 	},
@@ -353,16 +358,23 @@ export const compressOps: OpDef[] = [
 		outputRows: outputRows({ template: true, report: "static" }),
 		actionNote:
 			"Jobs start automatically. Parameters can't be changed after queuing. Remove it and add it again.",
-		deriveOutput: (input) => deriveCompressedPath(input),
-		buildArgs: (store, item, taskId) =>
-			runArgs(
+		deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveCompressedPath(input)),
+		buildArgs: (store, item, taskId) => {
+			const derived = runnerDerivedOutput(store, item.path, deriveCompressedPath);
+			return runArgs(
 				"ctr.compress",
 				item.path,
-				outPath(store, deriveCompressedPath(item.path)),
-				{ level: store.level, allow_encrypted: store.allowEncrypted, ...commonOptions(store) },
+				derived.output,
+				{
+					level: store.level,
+					allow_encrypted: store.allowEncrypted,
+					...derived.options,
+					...commonOptions(store),
+				},
 				false,
 				taskId,
-			),
+			);
+		},
 		chips: (s) => `level ${s.level}${s.allowEncrypted ? " · allow-encrypted" : ""}`,
 	},
 

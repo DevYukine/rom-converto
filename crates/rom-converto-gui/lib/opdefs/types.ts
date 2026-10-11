@@ -1,5 +1,6 @@
 import type { ResultKind } from "~/stores/queue";
 import type { RunOptions, RunRequest } from "~/types";
+import { hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
 
 // A store field is bound live to a control; the concrete op stores are
 // heterogeneous Pinia setup stores, so binding is keyed by field name.
@@ -294,6 +295,21 @@ export function pageEchoArgs(
 
 export function templateIsActive(store: OpStore): boolean {
 	return typeof store.outputTemplate === "string" && store.outputTemplate.length > 0;
+}
+
+// Shared body for buildArgs on pages whose output the runner derives: an
+// archive input keeps the name with the backend (output null plus the output
+// directory), an active template hands both to the runner through
+// commonOptions, and otherwise the page derives the name itself.
+export function runnerDerivedOutput(
+	store: OpStore,
+	path: string,
+	derive: (p: string) => string,
+): { output: string | null; options: Partial<RunOptions> } {
+	const dir = store.outputDir || "";
+	if (hasArchiveExt(path)) return { output: null, options: { output_dir: dir || null } };
+	if (templateIsActive(store)) return { output: null, options: {} };
+	return { output: withOutputDir(derive(path), dir), options: {} };
 }
 
 export function opCommand(def: OpDef, store: OpStore): string {

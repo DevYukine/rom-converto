@@ -4,6 +4,7 @@ import {
 	directoryOutputRows,
 	recursiveFields,
 	runArgs,
+	runnerDerivedOutput,
 	templateIsActive,
 	type OpDef,
 } from "./types";
@@ -23,7 +24,7 @@ import { useXboxConvertStore } from "~/stores/xbox-convert";
 import { usePspToIsoStore } from "~/stores/psp-to-iso";
 import { useXenonConvertStore } from "~/stores/xenon-convert";
 import { useWupConvertStore } from "~/stores/wup-convert";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, withOutputDir } from "~/composables/useDerivedPath";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -101,16 +102,22 @@ const ctr: OpDef = {
 	showVerify: true,
 	verifyLabel: "Compute output hash",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
-	deriveOutput: deriveConvertedPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveConvertedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveConvertedPath);
+		return runArgs(
 			"ctr.convert",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveConvertedPath(item.path), store.outputDir || ""),
-			{ trim: store.trim, ...commonOptions(store) },
+			derived.output,
+			{
+				trim: store.trim,
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: (store) => (store.trim ? "trim 3ds" : ""),
 };
 

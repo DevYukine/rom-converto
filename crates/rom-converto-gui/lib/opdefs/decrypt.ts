@@ -1,4 +1,4 @@
-import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, recursiveFields, runArgs, templateIsActive, type OpDef } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, recursiveFields, runArgs, runnerDerivedOutput, templateIsActive, type OpDef } from "./types";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
@@ -56,16 +56,21 @@ const ctr: OpDef = {
 		},
 	],
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
-	deriveOutput: (input) => deriveDecryptedPath(input),
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveDecryptedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveDecryptedPath);
+		return runArgs(
 			"ctr.decrypt",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			derived.output,
+			{
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: () => "",
 };
 
@@ -225,16 +230,21 @@ const ntr: OpDef = {
 		},
 	],
 	actionNote: "Already-decrypted files are skipped automatically and never queued.",
-	deriveOutput: (input) => deriveDecryptedPath(input),
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveDecryptedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveDecryptedPath);
+		return runArgs(
 			"ntr.decrypt",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveDecryptedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			derived.output,
+			{
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: () => "",
 };
 
@@ -299,17 +309,14 @@ const nx: OpDef = {
 	// shown for it; the runner names the file.
 	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveDnspPath(input)),
 	buildArgs: (store, item, taskId) => {
-		// Archives and templates leave the output name to the runner: it
-		// derives it from the extracted member or the template and places it
-		// in output_dir, so 'Game (USA).zip' does not become '.dnsp'.
-		const runnerDerives = templateIsActive(store) || hasArchiveExt(item.path);
+		const derived = runnerDerivedOutput(store, item.path, deriveDnspPath);
 		return runArgs(
 			"nx.decrypt",
 			item.path,
-			runnerDerives ? null : withOutputDir(deriveDnspPath(item.path), store.outputDir || ""),
+			derived.output,
 			{
 				keys: store.keys || null,
-				...(runnerDerives ? { output_dir: store.outputDir || null } : {}),
+				...derived.options,
 				...commonOptions(store),
 			},
 			false,

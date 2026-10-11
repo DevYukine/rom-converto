@@ -7,6 +7,7 @@ import {
 	directoryOutputRows,
 	recursiveFields,
 	runArgs,
+	runnerDerivedOutput,
 	templateIsActive,
 	type OpDef,
 	type OutputRow,
@@ -29,6 +30,7 @@ import {
 	deriveExtractDir,
 	deriveNspPath,
 	dirName,
+	hasArchiveExt,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 
@@ -101,16 +103,21 @@ const ctr: OpDef = {
 	note: "Restores the original ROM byte-identically.",
 	outputRows: outputRows(),
 	actionNote: "Extraction never overwrites the compressed source.",
-	deriveOutput: deriveDecompressedPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveDecompressedPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveDecompressedPath);
+		return runArgs(
 			"ctr.decompress",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveDecompressedPath(item.path), store.outputDir || ""),
-			commonOptions(store),
+			derived.output,
+			{
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
-		),
+		);
+	},
 	chips: () => "",
 };
 
@@ -219,17 +226,23 @@ const nx: OpDef = {
 	note: "Output is byte-identical to the original installable NSP / XCI.",
 	outputRows: outputRows(),
 	actionNote: "Extraction never overwrites the compressed source.",
-	deriveOutput: deriveNspPath,
-	buildArgs: (store, item, taskId) =>
-		runArgs(
+	deriveOutput: (input) => (hasArchiveExt(input) ? "" : deriveNspPath(input)),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, deriveNspPath);
+		return runArgs(
 			"nx.decompress",
 			item.path,
-			templateIsActive(store) ? null : withOutputDir(deriveNspPath(item.path), store.outputDir || ""),
-			{ keys: store.keys || null, ...commonOptions(store) },
+			derived.output,
+			{
+				keys: store.keys || null,
+				...derived.options,
+				...commonOptions(store),
+			},
 			false,
 			taskId,
 			store.reportFile || null,
-		),
+		);
+	},
 	chips: (store) => (store.keys ? "keys" : ""),
 };
 
