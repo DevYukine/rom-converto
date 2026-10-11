@@ -139,6 +139,39 @@ fn keep_member(name: &str, size: u64, is_dir: bool) -> Option<ArchiveMember> {
     })
 }
 
+/// Members a listing may keep before the archive is refused: a listing
+/// feeds picks and walks, and keeping millions of junk entries costs more
+/// than any conversion it could enable.
+const MAX_LISTED_MEMBERS: usize = 100_000;
+/// Total member-name bytes a listing may keep.
+const MAX_LISTED_NAME_BYTES: usize = 64 << 20;
+
+/// Appends a listed member, refusing the listing once it holds more members
+/// or name bytes than the caps.
+fn push_member(
+    out: &mut Vec<ArchiveMember>,
+    name_bytes: &mut usize,
+    member: ArchiveMember,
+    path: &Path,
+) -> anyhow::Result<()> {
+    if out.len() == MAX_LISTED_MEMBERS {
+        bail!(
+            "{} holds more than {MAX_LISTED_MEMBERS} members",
+            path.display()
+        );
+    }
+    let total = name_bytes.saturating_add(member.name.len());
+    if total > MAX_LISTED_NAME_BYTES {
+        bail!(
+            "{} member names add up to more than {MAX_LISTED_NAME_BYTES} bytes",
+            path.display()
+        );
+    }
+    *name_bytes = total;
+    out.push(member);
+    Ok(())
+}
+
 /// List the convertible members of an archive in archive order: regular files
 /// only, with OS junk and nested archives filtered out. Bare gzip returns a
 /// clear unsupported error.
@@ -167,6 +200,7 @@ fn list_members_with(path: &Path, cancel: &crate::util::CancelToken) -> Result<V
 fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
     let mut zip = zip::ZipArchive::new(File::open(path)?)?;
     let mut out = Vec::new();
+    let mut name_bytes = 0;
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         // enclosed_name is None for absolute or parent-traversing paths.
@@ -174,7 +208,7 @@ fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
             continue;
         }
         if let Some(m) = keep_member(entry.name(), entry.size(), entry.is_dir()) {
-            out.push(m);
+            push_member(&mut out, &mut name_bytes, m, path)?;
         }
     }
     Ok(out)
@@ -333,9 +367,10 @@ fn read_member<T>(
 fn list_7z(path: &Path) -> Result<Vec<ArchiveMember>> {
     let (archive, _) = crate::util::sevenz_guard::open(path)?;
     let mut out = Vec::new();
+    let mut name_bytes = 0;
     for entry in &archive.files {
         if let Some(m) = keep_member(entry.name(), entry.size(), entry.is_directory()) {
-            out.push(m);
+            push_member(&mut out, &mut name_bytes, m, path)?;
         }
     }
     Ok(out)
@@ -344,11 +379,12 @@ fn list_7z(path: &Path) -> Result<Vec<ArchiveMember>> {
 fn list_rar(path: &Path) -> Result<Vec<ArchiveMember>> {
     let archive = unrar::Archive::new(path).open_for_listing()?;
     let mut out = Vec::new();
+    let mut name_bytes = 0;
     for entry in archive {
         let entry = entry?;
         let name = entry.filename.to_string_lossy().replace('\\', "/");
         if let Some(m) = keep_member(&name, entry.unpacked_size, entry.is_directory()) {
-            out.push(m);
+            push_member(&mut out, &mut name_bytes, m, path)?;
         }
     }
     Ok(out)
@@ -371,6 +407,7 @@ fn list_tar(
 ) -> Result<Vec<ArchiveMember>> {
     let mut archive = open_tar(path, gz)?;
     let mut out = Vec::new();
+    let mut name_bytes = 0;
     for entry in archive.entries()? {
         if cancel.is_cancelled() {
             return Err(crate::util::Cancelled.into());
@@ -379,7 +416,7 @@ fn list_tar(
         let is_file = entry.header().entry_type().is_file();
         let name = entry.path()?.to_string_lossy().replace('\\', "/");
         if let Some(m) = keep_member(&name, entry.size(), !is_file) {
-            out.push(m);
+            push_member(&mut out, &mut name_bytes, m, path)?;
         }
     }
     Ok(out)
@@ -1219,6 +1256,47 @@ mod tests {
         writer.finish().unwrap();
     }
 
+    /// A listing stops keeping members at the caps: one more member is
+    /// refused, and so are names that add up past the byte budget.
+    #[test]
+    fn push_member_refuses_more_members_or_name_bytes_than_the_caps() {
+        let path = Path::new("many.zip");
+        let mut out: Vec<ArchiveMember> = (0..MAX_LISTED_MEMBERS)
+            .map(|index| ArchiveMember {
+                name: format!("f/{index}.bin"),
+                size: 0,
+            })
+            .collect();
+        let mut name_bytes = 0;
+        let err = push_member(
+            &mut out,
+            &mut name_bytes,
+            ArchiveMember {
+                name: "one.bin".into(),
+                size: 0,
+            },
+            path,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("100000"), "{err}");
+
+        let mut out = Vec::new();
+        let mut name_bytes = MAX_LISTED_NAME_BYTES - 4;
+        let err = push_member(
+            &mut out,
+            &mut name_bytes,
+            ArchiveMember {
+                name: "toolongname.bin".into(),
+                size: 0,
+            },
+            path,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(&MAX_LISTED_NAME_BYTES.to_string()), "{err}");
+        assert!(out.is_empty());
+    }
     #[test]
     fn lists_members_filtering_junk_and_nested_archives() {
         let dir = tempfile::tempdir().unwrap();
