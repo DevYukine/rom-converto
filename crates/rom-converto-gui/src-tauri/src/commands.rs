@@ -372,7 +372,8 @@ pub async fn cmd_save_icon(info_json: String, dest: PathBuf) -> Result<String, S
 /// every file; an empty `exts` matches nothing. When archive extensions are
 /// selected, the scan also lists archives containing matching files, and
 /// with `skip_twins` leaves out an archive whose member also sits unpacked
-/// beside it. A non-directory path surfaces as an error so the caller can
+/// beside it, in a folder named after the archive, or at the member's own
+/// path. A non-directory path surfaces as an error so the caller can
 /// fall back to treating it as a single file.
 #[tauri::command]
 pub async fn cmd_scan_dir(

@@ -12,6 +12,7 @@ use crate::util::{
 };
 use anyhow::{Result, anyhow, bail};
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -101,6 +102,28 @@ fn kind_of(path: &Path) -> Option<ArchiveKind> {
 
 fn basename(name: &str) -> &str {
     name.rsplit(['/', '\\']).next().unwrap_or(name)
+}
+
+/// Archive suffixes [`strip_archive_ext`] removes, `.tar.gz` first so the
+/// pair counts as one extension. A bare `.gz` is no container and stays.
+const STRIPPED_ARCHIVE_SUFFIXES: &[&str] = &[".tar.gz", ".tgz", ".zip", ".7z", ".tar", ".rar"];
+
+/// The file name without one archive extension, matched case-insensitively
+/// while keeping the original case of the rest, so `Game.ISO.zip` becomes
+/// `Game.ISO`.
+fn strip_archive_ext(name: &OsStr) -> String {
+    let name = name.to_string_lossy();
+    let raw = name.as_bytes();
+    for suffix in STRIPPED_ARCHIVE_SUFFIXES {
+        // Compare bytes: slicing the string could land inside a multi-byte
+        // character. A match is ASCII, so the cut is a character boundary.
+        if raw.len() >= suffix.len()
+            && raw[raw.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+        {
+            return name[..name.len() - suffix.len()].to_string();
+        }
+    }
+    name.into_owned()
 }
 
 /// Basename of a member path, rejecting names that would escape the extraction
@@ -788,7 +811,9 @@ pub struct InputScan<'a> {
     pub member_exts: Option<&'a [&'a str]>,
     /// How deep the walk descends; `None` for unlimited.
     pub max_depth: Option<usize>,
-    /// Leave out an archive whose member also sits unpacked beside it (both would write the same output).
+    /// Leave out an archive whose member also sits unpacked beside it, in
+    /// a folder named after the archive, or at the member's own path below
+    /// it (both would write the same output).
     pub skip_unpacked_twins: bool,
 }
 
@@ -827,7 +852,8 @@ pub fn collect_inputs(
 /// under `dir` whose picked member (picked with `scan.member_exts`, or
 /// `scan.exts` when that is `None`) carries one of `scan.exts`, in one
 /// sorted walk up to `scan.max_depth`. An archive without such a member is
-/// left out, as is one whose member also sits unpacked beside it when
+/// left out, as is one whose member also sits unpacked beside it, in a
+/// folder named after the archive, or at the member's own path when
 /// `scan.skip_unpacked_twins`. One that cannot be listed stays in, so the
 /// run reports it as a failed item rather than silently passing over it.
 ///
@@ -877,15 +903,36 @@ pub fn collect_input_entries(
                 let basis = selection
                     .output_basis(path)
                     .unwrap_or_else(|_| path.clone());
-                if scan.skip_unpacked_twins
-                    && plain.contains(&basis.to_string_lossy().to_lowercase())
-                {
-                    log::warn!(
-                        "skipping {}: its member is also present unpacked as {}",
-                        path.display(),
-                        basis.display()
-                    );
-                    continue;
+                if scan.skip_unpacked_twins {
+                    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+                    // The member may sit beside the archive, in a folder
+                    // named after it, with or without the member's own
+                    // directories, or at the member's own path. Paths build
+                    // by component, never by joining a separator string.
+                    let folder =
+                        parent.join(strip_archive_ext(path.file_name().unwrap_or_default()));
+                    let member_path = |root: &Path| {
+                        selection
+                            .member_name()
+                            .split(['/', '\\'])
+                            .fold(root.to_path_buf(), |built, part| built.join(part))
+                    };
+                    let twins = [
+                        basis.clone(),
+                        folder.join(basename(selection.member_name())),
+                        member_path(&folder),
+                        member_path(parent),
+                    ];
+                    if let Some(twin) = twins.iter().find(|candidate| {
+                        plain.contains(&candidate.to_string_lossy().to_lowercase())
+                    }) {
+                        log::warn!(
+                            "skipping {}: its member is also present unpacked as {}",
+                            path.display(),
+                            twin.display()
+                        );
+                        continue;
+                    }
                 }
                 selection.warn_if_ambiguous(path);
                 inputs.push(CollectedInput {
@@ -1365,6 +1412,22 @@ mod tests {
             zip::CompressionMethod::Stored,
             &[("plain.iso", b"iso")],
         );
+        // A member unpacked into a folder named after the archive, and a
+        // member that unpacks to its own stored path, are twins too.
+        write_zip(
+            &dir.path().join("Game.zip"),
+            zip::CompressionMethod::Stored,
+            &[("game.iso", b"iso")],
+        );
+        std::fs::create_dir(dir.path().join("Game")).unwrap();
+        std::fs::write(dir.path().join("Game/game.iso"), b"iso").unwrap();
+        write_zip(
+            &dir.path().join("extraction.zip"),
+            zip::CompressionMethod::Stored,
+            &[("disc/game.iso", b"iso")],
+        );
+        std::fs::create_dir(dir.path().join("disc")).unwrap();
+        std::fs::write(dir.path().join("disc/game.iso"), b"iso").unwrap();
 
         let scan = InputScan {
             exts: &["iso", "cue"],
@@ -1376,7 +1439,9 @@ mod tests {
         assert_eq!(
             collected_paths(found),
             vec![
+                dir.path().join("Game/game.iso"),
                 dir.path().join("broken.7z"),
+                dir.path().join("disc/game.iso"),
                 dir.path().join("disc.tar"),
                 dir.path().join("plain.iso"),
                 nested.join("packed.zip"),
@@ -1396,7 +1461,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             collected_paths(shallow),
-            vec![dir.path().join("broken.7z"), dir.path().join("plain.iso")]
+            vec![
+                dir.path().join("Game.zip"),
+                dir.path().join("broken.7z"),
+                dir.path().join("extraction.zip"),
+                dir.path().join("plain.iso")
+            ]
         );
 
         // `Game.Part2.rar` is a continuation volume in any letter case, and
@@ -1415,7 +1485,11 @@ mod tests {
         assert_eq!(
             collected_paths(keep_twin),
             vec![
+                dir.path().join("Game/game.iso"),
+                dir.path().join("Game.zip"),
                 dir.path().join("broken.7z"),
+                dir.path().join("disc/game.iso"),
+                dir.path().join("extraction.zip"),
                 dir.path().join("plain.iso"),
                 dir.path().join("plain.zip"),
                 nested.join("packed.zip"),
@@ -1588,6 +1662,36 @@ mod tests {
 
         let passthrough = resolve_for_hash(&plain, &["iso"]).unwrap();
         assert!(passthrough.is_none());
+    }
+
+    #[test]
+    fn strip_archive_ext_keeps_case_and_survives_multibyte_names() {
+        for (name, expected) in [
+            ("Game.ISO.zip", "Game.ISO"),
+            ("Game.TAR.GZ", "Game"),
+            ("Game.tgz", "Game"),
+            ("Pok\u{e9}mon.7z", "Pok\u{e9}mon"),
+            (
+                "\u{30dd}\u{30b1}\u{30e2}\u{30f3}.7z",
+                "\u{30dd}\u{30b1}\u{30e2}\u{30f3}",
+            ),
+            (
+                "\u{30dd}\u{30b1}\u{30e2}\u{30f3}",
+                "\u{30dd}\u{30b1}\u{30e2}\u{30f3}",
+            ),
+            ("log.gz", "log.gz"),
+            ("game.iso", "game.iso"),
+        ] {
+            assert_eq!(strip_archive_ext(OsStr::new(name)), expected, "{name}");
+        }
+        // Every archive extension the walker recognizes strips, bar a bare `.gz`.
+        for ext in ARCHIVE_EXTS.iter().filter(|ext| **ext != "gz") {
+            assert_eq!(
+                strip_archive_ext(OsStr::new(&format!("a.{ext}"))),
+                "a",
+                "{ext}"
+            );
+        }
     }
 
     #[test]
