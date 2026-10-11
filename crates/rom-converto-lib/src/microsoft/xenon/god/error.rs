@@ -1,5 +1,7 @@
 //! Error type for the Xbox 360 Games on Demand writer.
 
+use std::path::PathBuf;
+
 use thiserror::Error;
 
 use crate::microsoft::xdvdfs::XdvdfsError;
@@ -27,6 +29,9 @@ pub enum GodError {
 
     #[error("invalid XEX2 executable: {reason}")]
     InvalidXex { reason: &'static str },
+
+    #[error("{} is a symlink; refusing to write through it", .0.display())]
+    SymlinkInOutput(PathBuf),
 
     #[error("{0}")]
     Cancelled(#[from] crate::util::Cancelled),

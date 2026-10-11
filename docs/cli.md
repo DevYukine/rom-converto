@@ -876,7 +876,8 @@ The header is unsigned and intended for modified consoles.
 An existing non-empty directory fails by default. `skip` and `overwrite-invalid`
 skip existing directories because GoD has no integrity probe. CLI `rename` is
 unsupported. Overwrite replaces the matching title/media files, preserving other
-titles in the tree.
+titles in the tree. The run refuses to write when the `<TITLEID>` or `00007000`
+folder in the output tree is a symlink.
 
 ```sh
 rom-converto xenon convert game.iso
