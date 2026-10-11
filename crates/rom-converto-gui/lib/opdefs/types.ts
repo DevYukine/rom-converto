@@ -269,6 +269,10 @@ export function commonOptions(store: OpStore): Partial<RunOptions> {
 		on_conflict: store.onConflict,
 		skip_space_check: store.skipSpaceCheck,
 		output_template: store.outputTemplate || null,
+		// A template alone leaves the output name to the runner, which places
+		// the file inside output_dir; without this a chosen Directory would be
+		// ignored and the echo would lack --output-dir.
+		...(templateIsActive(store) ? { output_dir: store.outputDir || null } : {}),
 		...("verifyAfter" in store ? { verify_after: store.verifyAfter } : {}),
 	};
 }

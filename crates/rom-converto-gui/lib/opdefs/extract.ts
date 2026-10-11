@@ -286,8 +286,11 @@ const chd: OpDef = {
 			null,
 			{
 				parent: store.parent || null,
-				output_dir: store.outputDir || dirName(item.path) || null,
 				...commonOptions(store),
+				// Spread before output_dir so a template keeps the input folder
+				// instead of the template's null wiping the echoed --output-dir
+				// the CLI requires here.
+				output_dir: store.outputDir || dirName(item.path) || null,
 			},
 			false,
 			taskId,

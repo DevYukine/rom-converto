@@ -35,6 +35,12 @@ describe("op registry", () => {
 		const { request } = def.buildArgs(def.useStore(), item, "task-1");
 		expect(request.output).toBeNull();
 		expect(request.options.output_dir).toBe("/roms");
+		// A template leaves the name to the runner, but the input folder must
+		// still reach the echo as --output-dir.
+		const store = def.useStore();
+		store.outputTemplate = "{basename}.cue";
+		const templated = def.buildArgs(store, item, "task-1");
+		expect(templated.request.options.output_dir).toBe("/roms");
 	});
 
 	it("never sends rename for pages whose output is a directory", () => {
@@ -176,5 +182,35 @@ describe("archive outputs on runner-derived pages", () => {
 		const directed = def.buildArgs(def.useStore(), archive, "task-1").request;
 		expect(directed.output, storeId).toBeNull();
 		expect(directed.options.output_dir, storeId).toBe("/out");
+	});
+});
+
+describe("templated jobs carry the output directory", () => {
+	beforeEach(() => setActivePinia(createPinia()));
+
+	// cso-to-chd nulls its output under a template and adds nothing else, so
+	// the directory can only arrive through commonOptions.
+	function csoToChdRequest(mutate: (store: OpStore) => void) {
+		const def = defs.find((def) => def.storeId === "cso-to-chd")!;
+		const store = def.useStore();
+		mutate(store);
+		return def.buildArgs(store, ITEM, "task-1").request;
+	}
+
+	it("sends the chosen directory for a templated output", () => {
+		const directed = csoToChdRequest((store) => {
+			store.outputTemplate = "{title}.{ext}";
+			store.outputDir = "/out";
+		});
+		expect(directed.output).toBeNull();
+		expect(directed.options.output_dir).toBe("/out");
+	});
+
+	it("sends a null directory for a templated output without one", () => {
+		const bare = csoToChdRequest((store) => {
+			store.outputTemplate = "{title}.{ext}";
+		});
+		expect(bare.output).toBeNull();
+		expect(bare.options.output_dir ?? null).toBeNull();
 	});
 });
