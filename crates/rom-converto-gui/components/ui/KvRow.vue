@@ -32,7 +32,7 @@ const emit = defineEmits<{
 			:aria-label="`${label}: ${value || placeholder}`"
 			@click="emit('click')"
 		>
-			<span v-if="value" class="rc-picker__value rc-kv__value" :class="[`rc-kv__value--${color ?? 'blue'}`, { 'rc-picker__value--path': path }]"><bdi>{{ value }}</bdi></span>
+			<span v-if="value" class="rc-picker__value rc-kv__value" :class="[`rc-kv__value--${color ?? 'blue'}`, { 'rc-picker__value--path': path }]"><bdi dir="ltr">{{ value }}</bdi></span>
 			<span v-else class="rc-picker__value rc-kv__value rc-kv__value--empty">{{ placeholder }}</span>
 			<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 				<path v-if="icon === 'folder'" d="M3 7h6l2 2h10v10H3z" />

@@ -36,9 +36,9 @@ function copied() {
 			<VirtualList :items="lines" :row-height="ROW_HEIGHT" :key-of="(line, index) => `${index}:${line.source}`">
 				<template #default="{ item: line }">
 					<div class="rc-row" :class="{ 'rc-row--source-only': !line.output }">
-						<div class="rc-source rc-picker__value--path" :title="line.source"><bdi>{{ line.source }}</bdi></div>
+						<div class="rc-source rc-picker__value--path" :title="line.source"><bdi dir="ltr">{{ line.source }}</bdi></div>
 						<span v-if="line.output" class="rc-arrow" aria-hidden="true">→</span>
-						<div v-if="line.output" class="rc-output rc-picker__value--path" :title="line.output"><bdi>{{ line.output }}</bdi></div>
+						<div v-if="line.output" class="rc-output rc-picker__value--path" :title="line.output"><bdi dir="ltr">{{ line.output }}</bdi></div>
 						<div class="rc-note" :class="{ conflict: line.conflict, muted: line.muted }" :title="line.note">{{ line.note }}</div>
 					</div>
 				</template>

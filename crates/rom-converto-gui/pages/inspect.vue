@@ -152,7 +152,7 @@ function runQuick(kind: "compress" | "verify") {
 				:aria-label="`Keys: ${keysPath || 'Not set'}`"
 				@click="browseKeys"
 			>
-				<span v-if="keysPath" class="rc-picker__value rc-picker__value--path rc-inspect__keys-path"><bdi>{{ keysPath }}</bdi></span>
+				<span v-if="keysPath" class="rc-picker__value rc-picker__value--path rc-inspect__keys-path"><bdi dir="ltr">{{ keysPath }}</bdi></span>
 				<span v-else class="rc-picker__value rc-inspect__keys-placeholder">Not set</span>
 				<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
 					<path d="M3 7h6l2 2h10v10H3z" />

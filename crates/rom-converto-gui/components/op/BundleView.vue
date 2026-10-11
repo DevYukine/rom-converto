@@ -346,7 +346,7 @@ function copied() {
 			<div v-if="b.complete" class="rc-output-row">
 				<FieldLabel label="Output" />
 				<button type="button" class="rc-picker rc-bundle__output" :title="bundleOutput(b)" :aria-label="`Output: ${bundleOutput(b)}`" @click="pickOutput(b)">
-					<span class="rc-picker__value rc-picker__value--path"><bdi>{{ bundleOutput(b) }}</bdi></span>
+					<span class="rc-picker__value rc-picker__value--path"><bdi dir="ltr">{{ bundleOutput(b) }}</bdi></span>
 					<svg class="rc-picker__icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
 						<path d="M3 7h6l2 2h10v10H3z" />
 					</svg>

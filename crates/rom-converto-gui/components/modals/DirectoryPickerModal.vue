@@ -50,7 +50,7 @@ async function chooseFolder() {
 				@click="select(row.value)"
 			>
 				<span class="rc-path" :class="{ 'rc-path--mono': row.value, 'rc-picker__value--path': !!row.value }">
-					<bdi v-if="row.value">{{ row.label }}</bdi>
+					<bdi dir="ltr" v-if="row.value">{{ row.label }}</bdi>
 					<template v-else>{{ row.label }}</template>
 				</span>
 				<span class="rc-check" aria-hidden="true">

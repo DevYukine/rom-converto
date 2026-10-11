@@ -108,8 +108,9 @@ textarea.rc-input {
 
 /* Path values truncate at the start so the file name, extension and disc
    number stay visible: the right-to-left direction moves the ellipsis onto
-   the leading directories. Callers wrap the text in <bdi> so a leading root
-   slash or a trailing mark keeps its place. */
+   the leading directories. Callers wrap the text in <bdi dir="ltr"> so the
+   path itself still reads left to right, even when its first letters are
+   right-to-left script or it has no letters at all. */
 .rc-picker__value--path {
 	direction: rtl;
 	text-align: left;
