@@ -34,7 +34,7 @@ pub fn split_container(
     cancel: &CancelToken,
 ) -> NxResult<Vec<PathBuf>> {
     let plan = settle_plan(plan_split(input, keys)?, input, progress)?;
-    write_split(&plan, output_dir, progress, cancel)
+    publish(write_split(&plan, output_dir, progress, cancel)?)
 }
 
 /// The per-title source ranges a split will copy, plus the naming inputs
@@ -217,25 +217,29 @@ fn write_split(
     output_dir: &Path,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
-) -> NxResult<Vec<PathBuf>> {
+) -> NxResult<(Vec<tempfile::TempPath>, Vec<PathBuf>)> {
     std::fs::create_dir_all(output_dir)?;
     let paths = plan.output_paths(output_dir);
-    let mut written = Vec::with_capacity(paths.len());
-    for (sources, out_path) in plan.groups.values().zip(paths) {
-        if let Err(err) = std::fs::File::create(&out_path)
-            .map_err(crate::nintendo::nx::error::NxError::from)
-            .and_then(|file| write_pfs0_from_sources(file, sources, progress, cancel))
-        {
-            let _ = std::fs::remove_file(&out_path);
-            for path in &written {
-                let _ = std::fs::remove_file(path);
-            }
-            return Err(err);
-        }
-        written.push(out_path);
+    let mut temps = Vec::with_capacity(paths.len());
+    for (sources, out_path) in plan.groups.values().zip(&paths) {
+        let (file, temp) = crate::util::scratch_output_file(out_path)?.into_parts();
+        write_pfs0_from_sources(file, sources, progress, cancel)?;
+        temps.push(temp);
     }
 
-    Ok(written)
+    Ok((temps, paths))
+}
+
+/// Publishes every staged output as one set, overwriting whatever sits at
+/// the planned names: the conflict policy was settled by the caller before
+/// the writer ran.
+fn publish((temps, paths): (Vec<tempfile::TempPath>, Vec<PathBuf>)) -> NxResult<Vec<PathBuf>> {
+    let members: Vec<(tempfile::TempPath, &Path)> = temps
+        .into_iter()
+        .zip(paths.iter().map(PathBuf::as_path))
+        .collect();
+    crate::util::publish_set(members, true)?;
+    Ok(paths)
 }
 
 /// Splits `input` off the async runtime, reporting progress and honoring
@@ -262,22 +266,10 @@ pub async fn split_container_async(
     let proxy = AtomicProgress {
         counter: bytes_done.clone(),
     };
-    // write_split only cleans up what it managed to start; a cancel race
-    // or a panicked worker leaves whichever per-title files exist behind.
-    let outputs = plan.output_paths(&output_dir);
     let cancel_bg = cancel.clone();
-    let handle = tokio::task::spawn_blocking(move || -> NxResult<Vec<PathBuf>> {
-        write_split(&plan, &output_dir, &proxy, &cancel_bg)
-    });
-    match await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await {
-        Ok(written) => Ok(written),
-        Err(err) => {
-            for path in &outputs {
-                let _ = std::fs::remove_file(path);
-            }
-            Err(err)
-        }
-    }
+    let handle =
+        tokio::task::spawn_blocking(move || write_split(&plan, &output_dir, &proxy, &cancel_bg));
+    publish(await_with_progress_cancel(progress, &bytes_done, handle, &cancel).await?)
 }
 
 #[derive(Clone, Copy)]
@@ -793,5 +785,123 @@ mod tests {
         let mut want = vec![base_set, update_set];
         want.sort();
         assert_eq!(sets, want);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn split_replaces_planted_symlink_without_touching_target() {
+        let nsp = write_nsp(&[
+            meta_file(
+                id(0x01),
+                0x0100_AAAA_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x11)],
+            ),
+            prog(id(0x11), 0x800),
+            meta_file(
+                id(0x02),
+                0x0100_BBBB_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x22)],
+            ),
+            prog(id(0x22), 0x800),
+        ]);
+        let dir = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let target = outside.path().join("outside.bin");
+        std::fs::write(&target, b"outside").unwrap();
+        let stem = nsp
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let planted = dir
+            .path()
+            .join(format!("{stem} [0100AAAA00000000] [v0].nsp"));
+        std::os::unix::fs::symlink(&target, &planted).unwrap();
+
+        let out = split_container(
+            nsp.path(),
+            dir.path(),
+            &synthetic_keyset(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+
+        let metadata = std::fs::symlink_metadata(&planted).unwrap();
+        assert!(!metadata.file_type().is_symlink());
+        let names = nsp_names(&planted);
+        assert_eq!(
+            names,
+            vec![
+                format!("{}.cnmt.nca", hex::encode(id(0x01))),
+                format!("{}.nca", hex::encode(id(0x11))),
+            ]
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"outside");
+    }
+
+    #[test]
+    fn failed_split_leaves_existing_outputs_and_no_scratch_files() {
+        let files = [
+            meta_file(
+                id(0x01),
+                0x0100_AAAA_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x11)],
+            ),
+            prog(id(0x11), 0x800),
+            meta_file(
+                id(0x02),
+                0x0100_BBBB_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[id(0x22)],
+            ),
+            prog(id(0x22), 0x800),
+        ];
+        let blob = build_test_nsp(&files);
+        let mut input = Builder::new().suffix(".nsp").tempfile().unwrap();
+        input.write_all(&blob).unwrap();
+        input.flush().unwrap();
+        // Cut into the last copy source so the second group's write fails
+        // after the first group was fully staged.
+        input.as_file().set_len(blob.len() as u64 - 0x100).unwrap();
+        let dir = tempdir().unwrap();
+        let stem = input
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let existing_a = dir
+            .path()
+            .join(format!("{stem} [0100AAAA00000000] [v0].nsp"));
+        let existing_b = dir
+            .path()
+            .join(format!("{stem} [0100BBBB00000000] [v0].nsp"));
+        std::fs::write(&existing_a, b"old-a").unwrap();
+        std::fs::write(&existing_b, b"old-b").unwrap();
+
+        let err = split_container(
+            input.path(),
+            dir.path(),
+            &synthetic_keyset(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, NxError::IoError(_)));
+
+        assert_eq!(std::fs::read(&existing_a).unwrap(), b"old-a");
+        assert_eq!(std::fs::read(&existing_b).unwrap(), b"old-b");
+        assert!(!crate::util::scratch_output_exists(&existing_a).unwrap());
+        assert!(!crate::util::scratch_output_exists(&existing_b).unwrap());
     }
 }
