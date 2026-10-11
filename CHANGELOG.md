@@ -1,3 +1,72 @@
+# [0.24.0](https://github.com/DevYukine/rom-converto/compare/v0.23.2...v0.24.0) (2026-10-11)
+
+
+### Bug Fixes
+
+* **archive:** cap the members an archive listing keeps ([34b2b37](https://github.com/DevYukine/rom-converto/commit/34b2b37ba8c0d1bc2dd6b2bcc2c4eda6f166857f))
+* **archive:** extract tar and rar members by index ([2369156](https://github.com/DevYukine/rom-converto/commit/2369156f1c5e8543e92608752a67ac83b1a41040))
+* **archive:** read a member that is not first in a solid 7z ([d32ac1e](https://github.com/DevYukine/rom-converto/commit/d32ac1e0a9845f1fc9c0b9164fa9138d9dbc9c4b))
+* **archive:** refuse 7z archives whose decoder would need more than 1536 MiB ([3f82b1f](https://github.com/DevYukine/rom-converto/commit/3f82b1fd5a1a83dbe7c0815e069b40d70fd769a4))
+* **archive:** report an unreadable archive in a recursive walk as skipped unless its name claims an image ([2829862](https://github.com/DevYukine/rom-converto/commit/28298621b263928acbb04e25554caa0767b60215))
+* **archive:** skip an archive whose member also sits unpacked beside or under it ([99c3961](https://github.com/DevYukine/rom-converto/commit/99c396169c36dfe985aa2db789ffe7932ab44e72))
+* **archive:** stop staging a member past its declared size ([916f70c](https://github.com/DevYukine/rom-converto/commit/916f70c4d3fa14067faa6e63def15da3daff01e0))
+* **chd:** exit non-zero when a recursive verify or in-place migrate fails a file ([4dd7cdf](https://github.com/DevYukine/rom-converto/commit/4dd7cdfc9ebe55aaeb309f26d62cd886a3ba950d))
+* **chd:** honor gd-rom pad frames when extracting, hashing and inspecting chds ([dc4020d](https://github.com/DevYukine/rom-converto/commit/dc4020d7b8f344cdfb89abbae8c6206c374899b9))
+* **chd:** validate unit size and reject oversubscribed map trees ([f3b3c0c](https://github.com/DevYukine/rom-converto/commit/f3b3c0cad65394db7c2820125c65ddf57b4166a1))
+* **ctr:** copy twl content with the full 64-bit size ([2a7fdeb](https://github.com/DevYukine/rom-converto/commit/2a7fdeba5b9cadf4a50c9d2dc666ec7efea59803))
+* **ctr:** flag title-key encrypted cias and boot a cxi only from a bcxi in bundle info ([df9199a](https://github.com/DevYukine/rom-converto/commit/df9199aa524a852dc30a13ac68b6eb7e6272deef))
+* **ctr:** stage in-place rewrites under a temp name and accept read-only inputs ([69bee99](https://github.com/DevYukine/rom-converto/commit/69bee990526452afaa4ca99d6e4814987c0197fa))
+* **ctr:** validate tmd content info ranges before rebuilding hashes ([f205046](https://github.com/DevYukine/rom-converto/commit/f205046ea5290ff75f79f062c3584d57e1867d11))
+* **cue:** write the extracted iso through a scratch file and honor cancel ([30a08fa](https://github.com/DevYukine/rom-converto/commit/30a08fa4d1e20b68e49abe2662c9acbef008c721))
+* **gui:** accept iso on the psp and ps2 convert page and compress it to chd ([fe8ae77](https://github.com/DevYukine/rom-converto/commit/fe8ae776ea67796947bf4cb6cc85dc36dabc5e2e))
+* **gui:** carry the output directory into templated jobs ([3fbabdf](https://github.com/DevYukine/rom-converto/commit/3fbabdf7ea3a99da738a67a472f7d4d18aa9ba7e))
+* **gui:** drop per-member output hints on the bundle page ([3e1dca1](https://github.com/DevYukine/rom-converto/commit/3e1dca11e001a2dbac2535f59f1d62fac7d791a6))
+* **gui:** echo every staged input on the merge and bundle pages ([d49c591](https://github.com/DevYukine/rom-converto/commit/d49c591a6b168f0a3bc5739b3037090ef3571088))
+* **gui:** echo the conflict policy the job sends ([c31369c](https://github.com/DevYukine/rom-converto/commit/c31369c97918644dbedf61d7c806b5c9fc46731b))
+* **gui:** keep modal text in the theme color ([a8d0c72](https://github.com/DevYukine/rom-converto/commit/a8d0c72540cb26769c5b6f6eb1971d744d792be9))
+* **gui:** keep preset list fields editable while typing ([8ad5429](https://github.com/DevYukine/rom-converto/commit/8ad5429aeb80c4925074780d15e4eb9f570296ad))
+* **gui:** keep truncated paths reading left to right ([94ce606](https://github.com/DevYukine/rom-converto/commit/94ce606f223fc751fc6d26e434add5f66761a1f6))
+* **gui:** let the runner name archive outputs on the ctr, ntr and nx pages ([128c25c](https://github.com/DevYukine/rom-converto/commit/128c25c07f05b598c5610d846c9c37d7fbc1fb06))
+* **gui:** let the runner name nxemu outputs of archived and templated inputs ([108dd12](https://github.com/DevYukine/rom-converto/commit/108dd126d3ad464f8313555e8e9b9e631e00ae36))
+* **gui:** show the real default folder on the nx split and ctr unbundle pages ([7b301f0](https://github.com/DevYukine/rom-converto/commit/7b301f0e37f33796ef2b3c2a4f072380e27596e3))
+* **gui:** stop offering rename on directory output pages ([8d0f570](https://github.com/DevYukine/rom-converto/commit/8d0f5703baad1b945d24c7b78206924b61cd130b))
+* **nx:** bound pfs0 and hfs0 name offsets and decoded name size ([66846e2](https://github.com/DevYukine/rom-converto/commit/66846e24a205051f64bcc7b45790bb6e88a4fa00))
+* **nx:** cap and deduplicate xci root partitions when walking containers ([0534f22](https://github.com/DevYukine/rom-converto/commit/0534f22a6d0f582863e485a2b360355be719b534))
+* **nx:** hash rewritten nca prefixes in chunks and refuse entries past the end of the file when decrypting ([7cfb46f](https://github.com/DevYukine/rom-converto/commit/7cfb46f90b47d16ed743064b47ba3244c7e13b57))
+* **nx:** reject overflowing romfs extents and cyclic hash chains ([4b2a99e](https://github.com/DevYukine/rom-converto/commit/4b2a99e78933e9b0b532a85b618da5ec412470ba))
+* **nx:** stage split outputs and publish them together ([8805ba4](https://github.com/DevYukine/rom-converto/commit/8805ba48d5486f99d18ece0c73eee1a528e74480))
+* **nx:** strip compound suffixes without splitting utf-8 names ([7ee7146](https://github.com/DevYukine/rom-converto/commit/7ee7146d97367c7034fc68db946c0b6d98d54223))
+* **organize:** anchor clean deletions and backups to directory handles ([66ee418](https://github.com/DevYukine/rom-converto/commit/66ee418a4ceec8a267f7e50fd8afbe1423003e00))
+* **organize:** use a plain rename for backups on platforms without no-replace rename ([ec10217](https://github.com/DevYukine/rom-converto/commit/ec102170587410ea82ac42dba500d1de44aba133))
+* **psp:** write the extracted iso through a scratch file and honor cancel ([5eac564](https://github.com/DevYukine/rom-converto/commit/5eac5641a38b4209b0573f33f4853f6d38817cd6))
+* **runner:** let overwrite reruns regenerate walked outputs once their source was read ([0ebe48b](https://github.com/DevYukine/rom-converto/commit/0ebe48b5f3ff65c0d61b84e089f5cd21438c07eb))
+* **runner:** refuse a directory output path inside a directory input ([d6a0102](https://github.com/DevYukine/rom-converto/commit/d6a01026f6513612c7bd59a068340bfb17015129))
+* **runner:** refuse a directory output that is its own input instead of deleting it ([3a2cd5a](https://github.com/DevYukine/rom-converto/commit/3a2cd5a0eb3ffbbdfa4d3363b938291dbdb74b56))
+* **runner:** run hash and fixdat writes on the blocking pool ([7f181db](https://github.com/DevYukine/rom-converto/commit/7f181db9f19b185497239d5f6f7a231479657fe4))
+* **rvl:** bound u8 directory ends and listed path size ([3e10514](https://github.com/DevYukine/rom-converto/commit/3e105146a63e42373bdf05d1f5ac6d6695f8ad73))
+* **rvl:** clamp banner texture coordinates before sampling ([f63c521](https://github.com/DevYukine/rom-converto/commit/f63c5210265a12a25749612d76e594eb90d89976))
+* **util:** keep a panicked worker pool from hanging its readers ([8394481](https://github.com/DevYukine/rom-converto/commit/839448196e1b91a65be6a6e07f733599410eac54))
+* **util:** write scratch outputs through the reserved file handle ([91dad2a](https://github.com/DevYukine/rom-converto/commit/91dad2abc98414a7f249a55a72c4d1d8d8e84c24))
+* **vita:** reject invalid utf-8 and duplicate pkg item paths ([4133824](https://github.com/DevYukine/rom-converto/commit/413382436d8b4a9162ccfb3e92b0fee782d14bde))
+* **wup:** cap decoded wua block size on the multi-frame path ([0ff93ac](https://github.com/DevYukine/rom-converto/commit/0ff93aca6974775154bf25ca0a251edb5a3dd874))
+* **wup:** read the company code prefix on a char boundary ([2e51991](https://github.com/DevYukine/rom-converto/commit/2e519917437cf6bf7c5232e53a06f4e9119e4587))
+* **xbox:** cap directory nesting depth ([5bb90a9](https://github.com/DevYukine/rom-converto/commit/5bb90a955a88039583238959ea4277747b874dbd))
+* **xenon:** refuse symlinked folders in the games on demand output tree ([a175704](https://github.com/DevYukine/rom-converto/commit/a175704e3a5444faacd4b749f8163fe427c8e153))
+* **zar:** reject case-insensitive duplicate entries when writing ([4c17fe5](https://github.com/DevYukine/rom-converto/commit/4c17fe5269882eb5c0ad5d0bc3b7d89e471809a8))
+* **zar:** reject invalid utf-8 entry names and duplicate extraction paths ([9935929](https://github.com/DevYukine/rom-converto/commit/993592923e215f4385fa8d4d4ac679a213040968))
+
+
+### Features
+
+* **chd:** compress dreamcast gdi sets into gd-rom chds across lib, cli and gui ([cedb26b](https://github.com/DevYukine/rom-converto/commit/cedb26b7104614033312594d159a83af27bf3b67))
+* **ctr:** bundle and unbundle Azahar .bcia/.bcci/.bcxi roms and inspect bundled titles across lib, cli and gui ([33dcce4](https://github.com/DevYukine/rom-converto/commit/33dcce476a0824cca25e946859e5e99d4a5d4a0a))
+* **gui:** polish layouts, pickers and result views across every page and window size ([519125a](https://github.com/DevYukine/rom-converto/commit/519125a94cbfe82489ddb137fdcbb255f97d4d69))
+* **nx:** decrypt nsp and xci into nxemu dnsp and dxci across lib, cli and gui ([4c26447](https://github.com/DevYukine/rom-converto/commit/4c264475a8098bd44c3a333a1dd31db188d99dba))
+* open archives in recursive batch runs and add -R to nx split and xenon convert ([d4fdc75](https://github.com/DevYukine/rom-converto/commit/d4fdc75c750ec3c461277f07ef18b65093cda6b9))
+* **organize:** place multi-disc sets in per-game folders with --multi-disc-dirs ([25411a6](https://github.com/DevYukine/rom-converto/commit/25411a63a6a8ec1a7a16ac64888ab7a2e3a9b786))
+
+
+
 ## [0.23.2](https://github.com/DevYukine/rom-converto/compare/v0.23.1...v0.23.2) (2026-10-02)
 
 
@@ -89,40 +158,6 @@
 * **runner:** route the cli and gui through the lib runner, add the missing ops and consolidated dat logic, generate gui types from rust and fold dat pages plus verify-after results into the gui registry ([c1ccd2e](https://github.com/DevYukine/rom-converto/commit/c1ccd2e711facef1abc096c350e1885113d574c1))
 * **sony:** inspect ps4 and ps5 pkg files without keys and label ps3 pkg content types across lib, cli and gui ([1e78d0e](https://github.com/DevYukine/rom-converto/commit/1e78d0eb617461ed8a1f2aaf5052ce8de7fcf37c))
 * **xenon:** convert xbox 360 disc images to games on demand containers ([ea2d52f](https://github.com/DevYukine/rom-converto/commit/ea2d52f30e70ae11ab2aacef9a650e9f0f719595))
-
-
-
-# [0.21.0](https://github.com/DevYukine/rom-converto/compare/v0.20.0...v0.21.0) (2026-09-03)
-
-
-### Bug Fixes
-
-* **gui:** size cue and folder inputs by content so queue savings are correct ([c06f019](https://github.com/DevYukine/rom-converto/commit/c06f01932856db349581faca146725c9214f55d8))
-* **nx:** emit NCZBLOCK version 2 type 1 to match nsz and cover keep-style xcz decompress ([aebeeef](https://github.com/DevYukine/rom-converto/commit/aebeeef164b7d7ed0701a0fbcdfc9557b9891f1a))
-
-
-### Features
-
-* **chd:** create laserdisc chds from avi with auto-detect and ld info ([61c7e7a](https://github.com/DevYukine/rom-converto/commit/61c7e7ab805dc7c5e08a0e14afce909df1277eb8))
-* **cli:** add batch info mode and capabilities manifest ([9be637e](https://github.com/DevYukine/rom-converto/commit/9be637ebbc6c4ce04a892c4a283b7f43ae693836))
-* **info:** normalize content type across consoles, route dax/3dsx/gcz/wia and inspect PSP/PS3/Vita pkg with icons ([0f303e2](https://github.com/DevYukine/rom-converto/commit/0f303e2770f25a2daff70e346e7f1ec12273d11f))
-* **info:** split disc console/media with a media chip across consoles and decrypt vita pkg artwork through pfs with a neighboring license ([ddf7608](https://github.com/DevYukine/rom-converto/commit/ddf7608a379d9419cf2fddfc2cc807dfd284617d))
-* **nds:** add DS cartridge info across lib, CLI and GUI ([8b90185](https://github.com/DevYukine/rom-converto/commit/8b90185cc813b5a913e30a8b13f4996e1d2ebb88))
-* **nds:** add DS secure area encryption and decryption across lib, CLI and GUI ([7f85d21](https://github.com/DevYukine/rom-converto/commit/7f85d214c59224ad167cddb79be41dea7382e267))
-* **progress:** report cumulative completion fraction on advance events ([d39af46](https://github.com/DevYukine/rom-converto/commit/d39af46a1e1b4151d66c921e0bda7a398409bf3a))
-* **psp:** accept PSN pkg input for to-iso via a seekable decrypted package item reader ([885a958](https://github.com/DevYukine/rom-converto/commit/885a9587e92f93aec6ab2981e4486e49ce48f572))
-* **psp:** add PBP EBOOT info and segment extraction across lib, CLI and GUI ([6bd4cd5](https://github.com/DevYukine/rom-converto/commit/6bd4cd5a9a6fe0eedc7e96d1588ddc0d0f99fa12))
-* **psp:** convert NPUMDIMG EBOOT.PBP to ISO with kirk and amctrl decryption across lib, CLI and GUI ([a0aaba4](https://github.com/DevYukine/rom-converto/commit/a0aaba4f27625628a80354e9f202c51a048d43a3))
-* **psp:** read psp/ps3 pkg title from the item param.sfo and extract pic1/pic0 as background ([c20d1b8](https://github.com/DevYukine/rom-converto/commit/c20d1b8e5bbe552a0de5ff362bf4b9792f8fb928))
-* **retro:** add cartridge-era console inspection across lib, CLI and GUI ([427fb40](https://github.com/DevYukine/rom-converto/commit/427fb40c9e595ddf55f7cc470ddbe496e17171a9))
-* **retro:** add Sega Saturn, Sega CD, Dreamcast, 32X and FDS inspection with Sega-aware cue and iso routing ([62ee28f](https://github.com/DevYukine/rom-converto/commit/62ee28f2349143e0abebab4fe46619a77b16abc6))
-* **rvl:** render the opening.bnr channel banner from brlyt layout, brlan animation and tpl textures for the inspect image ([7f4c4c1](https://github.com/DevYukine/rom-converto/commit/7f4c4c109b8ec3f3d9eafedf7cec8be4b35067ca))
-* **vita:** add VPK, PKG and NoNpDrm support across lib, CLI and GUI ([04e7a4b](https://github.com/DevYukine/rom-converto/commit/04e7a4b4139759f58df3899e08f75ab9aa972e1e))
-
-
-### Performance Improvements
-
-* **nx:** peek nca content type before opening ncz in info control scan ([5183d4f](https://github.com/DevYukine/rom-converto/commit/5183d4f070f6f65e55d1aa55a132c3c26e300989))
 
 
 
