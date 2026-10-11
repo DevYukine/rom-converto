@@ -31,10 +31,10 @@ describe("buildCliCommand", () => {
     expect(buildCliCommand(payload)).toBe("rom-converto wup compress a.wud --output out.wua --level 6");
   });
 
-  it("drops on_conflict when it's the overwrite default, keeps other values", () => {
+  it("emits on_conflict for overwrite and rename alike", () => {
     const overwrite = runArgs("chd.compress", "a.iso", "a.chd", { on_conflict: "overwrite" }, false, "t4");
     const rename = runArgs("chd.compress", "a.iso", "a.chd", { on_conflict: "rename" }, false, "t5");
-    expect(buildCliCommand(overwrite)).toBe("rom-converto chd compress a.iso a.chd");
+    expect(buildCliCommand(overwrite)).toBe("rom-converto chd compress a.iso a.chd --on-conflict overwrite");
     expect(buildCliCommand(rename)).toBe("rom-converto chd compress a.iso a.chd --on-conflict rename");
   });
 
@@ -88,11 +88,6 @@ describe("buildCliCommand", () => {
       "t13b",
     );
     expect(buildCliCommand(listed)).toBe("rom-converto organize ./library --output-dir ./sorted --remove-headers=nes,fds");
-  });
-
-  it("echoes organize's explicit on-conflict even when it is overwrite", () => {
-    const payload = runArgs("organize", "./library", null, { output_dir: "./sorted", on_conflict: "overwrite" }, false, "t14");
-    expect(buildCliCommand(payload)).toBe("rom-converto organize ./library --on-conflict overwrite --output-dir ./sorted");
   });
 
   it("emits the = form for values that start with a dash", () => {

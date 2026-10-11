@@ -129,10 +129,6 @@ export function buildCliCommand(payload: Record<string, unknown>): string {
 	}
 
 	for (const field of opFlags) {
-		// Other ops get the same policy from the global default, so echoing
-		// it would be noise; organize resolves an unset policy itself and
-		// must always show the flag.
-		if (field === "on_conflict" && options.on_conflict === "overwrite" && operation !== "organize") continue;
 		const def = manifest.flags[field];
 		if (!def) continue;
 		const token = flagToken(def, options[field]);

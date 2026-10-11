@@ -165,6 +165,9 @@ Write pages provide `On conflict`: Overwrite, Skip, Rename, Error, and Overwrite
 if invalid. Skip and Error leave an existing target unchanged. The last option
 verifies supported outputs before choosing whether to retain or replace them.
 Organize always starts at Error, regardless of the default policy setting.
+The GUI default is Overwrite, changeable in Settings, while the CLI default is
+Error. The command shown on each page carries `--on-conflict`, so it reproduces
+the job as configured.
 
 Most write pages provide Dry run. It uses the same planning logic as CLI
 `--dry-run`, writes no conversion output, and lists every planned row in a
