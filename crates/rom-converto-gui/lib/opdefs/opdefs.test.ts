@@ -194,7 +194,7 @@ describe("templated jobs carry the output directory", () => {
 		const def = defs.find((def) => def.storeId === "cso-to-chd")!;
 		const store = def.useStore();
 		mutate(store);
-		return def.buildArgs(store, ITEM, "task-1").request;
+		return def.buildArgs(store, { ...ITEM, path: "/roms/sample.cso" }, "task-1").request;
 	}
 
 	it("sends the chosen directory for a templated output", () => {
@@ -212,5 +212,27 @@ describe("templated jobs carry the output directory", () => {
 		});
 		expect(bare.output).toBeNull();
 		expect(bare.options.output_dir ?? null).toBeNull();
+	});
+});
+
+describe("the PSP / PS2 convert page routes by extension", () => {
+	beforeEach(() => setActivePinia(createPinia()));
+
+	const cases: [string, string, string, string][] = [
+		["/roms/game.iso", "chd.compress", "/roms/game.chd", "rom-converto chd compress"],
+		["/roms/GAME.ISO", "chd.compress", "/roms/GAME.chd", "rom-converto chd compress"],
+		["/roms/game.cso", "cso.to_chd", "/roms/game.chd", "rom-converto cso to-chd"],
+		["/roms/game.zso", "cso.to_chd", "/roms/game.chd", "rom-converto cso to-chd"],
+		["/roms/game.dax", "cso.to_chd", "/roms/game.chd", "rom-converto cso to-chd"],
+		["/roms/game.zip", "cso.to_chd", "/roms/game.chd", "rom-converto cso to-chd"],
+		["/roms/game.iso.zip", "cso.to_chd", "/roms/game.chd", "rom-converto cso to-chd"],
+	];
+
+	it.each(cases)("runs %s through %s", (path, operation, output, echo) => {
+		const def = defs.find((def) => def.storeId === "cso-to-chd")!;
+		const payload = def.buildArgs(def.useStore(), { ...ITEM, path }, "task-1");
+		expect(payload.request.operation).toBe(operation);
+		expect(payload.request.output).toBe(output);
+		expect(buildCliCommand(payload)).toMatch(new RegExp(`^${echo}\\b`));
 	});
 });

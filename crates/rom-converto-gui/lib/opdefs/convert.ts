@@ -182,11 +182,11 @@ const cso: OpDef = {
 	useStore: useCsoToChdStore,
 	command: "cmd_run",
 	resultKind: "convert",
-	title: "Convert CSO → CHD",
-	subtitle: "Decodes a CSO/ZSO/DAX disc image and rebuilds it as a CHD.",
-	dropText: "Drop .cso, .zso or .dax files or folders",
-	acceptedExts: ["cso", "zso", "dax", ...ARCHIVE_EXTS],
-	browseFilters: [{ name: "CSO/ZSO/DAX", extensions: ["cso", "zso", "dax"] }],
+	title: "Convert CSO/ISO → CHD",
+	subtitle: "Decodes a CSO/ZSO/DAX disc image, or takes a plain ISO, and builds a CHD from it.",
+	dropText: "Drop .cso, .zso, .dax or .iso files or folders",
+	acceptedExts: ["cso", "zso", "dax", "iso", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "CSO/ZSO/DAX/ISO", extensions: ["cso", "zso", "dax", "iso"] }],
 	fields: [
 		{
 			kind: "segmented",
@@ -242,15 +242,16 @@ const cso: OpDef = {
 		},
 		...recursiveFields(),
 	],
-	note: "Decodes to a temporary ISO next to the output, builds the CHD, and always removes the temp ISO on success, failure or cancel.",
+	note: "A CSO, ZSO or DAX is decoded to a temporary ISO next to the output; the temporary ISO is always removed on success, failure or cancel. A plain ISO is compressed directly. For .cue/.bin dumps and archives that hold an ISO, use CD / DVD under Compress.",
 	outputRows: templateOutputRowsWithReport(),
 	showVerify: true,
 	verifyLabel: "Verify after conversion",
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
 	deriveOutput: deriveChdPath,
+	// An archive is decoded as CSO/ZSO/DAX; the page cannot see its member.
 	buildArgs: (store, item, taskId) =>
 		runArgs(
-			"cso.to_chd",
+			item.path.toLowerCase().endsWith(".iso") ? "chd.compress" : "cso.to_chd",
 			item.path,
 			templateIsActive(store) ? null : withOutputDir(deriveChdPath(item.path), store.outputDir || ""),
 			{

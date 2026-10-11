@@ -25,6 +25,11 @@ queues an archive only when it holds a matching member, picked with the
 extensions the page accepts, which match what the job later extracts with. Wii U
 conversion scans both `.wud` and `.wux` whichever direction is set, so an archive
 holding only the other kind is queued and then fails with "no matching image".
+**PSP / PS2** under Convert takes `.iso` as well as `.cso`, `.zso`, and `.dax`:
+a plain `.iso` runs `chd compress`, everything else runs `cso to-chd`, and the CLI
+echo and the Dry run command show the first queued file's command. An archive on
+that page is decoded as CSO/ZSO/DAX, so one holding only an `.iso` fails with
+"no matching image"; queue it on **CD / DVD** under Compress instead.
 On pages that write output, an archive whose member also sits unpacked beside it,
 in a folder named after the archive, or at the member's own path is left out in
 favor of the plain file; verify pages queue both. CLI conversions report an unlistable
@@ -32,7 +37,8 @@ archive as a skipped row, while the GUI queues it and the job fails with the rea
 
 The GUI does not compare the outputs of queued files. With On conflict set to
 Overwrite, two files that name the same output (the same game as `.zip` and `.7z`,
-or a `.cue` and an archive holding its `.iso`) replace each other, and so does a
+a `.cso` and an `.iso` of the same game, or a `.cue` and an archive holding its
+`.iso`) replace each other, and so does a
 file whose output is another queued input (converting `game.3ds` replaces a queued
 `game.cia`). Use Skip, Rename, or Error for such folders. The CLI's `-R` skips duplicates.
 Same-extension outputs only replace inputs already read; cross-format outputs that
