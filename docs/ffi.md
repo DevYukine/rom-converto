@@ -161,7 +161,12 @@ and applies the same rule to each archive; an archive that cannot be listed
 is hashed as raw bytes. Rows carry the walked path, not the member name.
 
 A write operation leaves out an archive whose member also sits unpacked beside
-it, in favor of the plain file; this is logged and produces no record.
+it, in a folder named after the archive, or at the member's own path, in favor
+of the plain file; this is logged and produces no record. A recursive run
+reports an archive it cannot read as a `skipped` record for write operations
+and a `failed` record for verify operations, with the reason in `error`.
+An archive whose own name carries one of the walked extensions (for example
+`game.iso.zip`) is a `failed` record in every run.
 
 When two other children of a recursive run would write the same output (two
 archives holding the same member name, a plain file and an archive member

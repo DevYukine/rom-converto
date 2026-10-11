@@ -73,6 +73,10 @@ exact set it accepts.
 | `-f, --force` | Overwrite an existing output. Conflicts with `--on-conflict` |
 | `--report <FILE>` | Write a CSV, HTML, or JSON run report |
 
+The `chd`, `cso`, `ctr`, `dol`, `rvl`, `nx`, and `wup` verify commands also accept `-R`
+to check supported files under the input directory.
+An unreadable archive counts as a failed file.
+
 ### Conflict policy
 
 Most commands that write files take `--on-conflict <POLICY>`:
@@ -169,11 +173,15 @@ the member picked by name order carries one of the extensions the command scans,
 report row names the archive. A member with an extension the command does not scan can win
 that pick, so an archive holding `a.avi` and `b.iso` is left out of `chd compress -R`.
 Archives without such a member and `.part2.rar` and later volumes of a split set are
-skipped, except under `hash -R`, which hashes them as raw bytes. An archive that cannot be
-read fails as its own row, except under `hash -R` for the same reason.
+skipped, except under `hash -R`, which hashes them as raw bytes. A conversion reports an
+archive it cannot read as a skipped row with the reason. A verify run and `info --batch`
+list it as a failed entry. An archive whose own name carries one of the scanned
+extensions (for example `game.iso.zip`) fails as its own row in every run.
+Under `hash -R` an unreadable archive is hashed as raw bytes.
 
-A conversion leaves out an archive whose member also sits unpacked beside it, in favor of
-the plain file. This is logged but has no report row, and it also applies under
+A conversion leaves out an archive whose member also sits unpacked beside it, in a folder
+named after the archive, or at the member's own path below it, in favor of the plain
+file. This is logged but has no report row, and it also applies under
 `--on-conflict rename` and `--output-template`. Verification, `hash`, and `info` keep both
 the archive and its unpacked twin.
 

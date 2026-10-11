@@ -16,10 +16,10 @@ use rom_converto_lib::runner::models::{
 use rom_converto_lib::runner::{VERIFIED_VALID, run_request};
 use rom_converto_lib::util::fs::{collect_all_files, is_os_junk_dir};
 use rom_converto_lib::util::{
-    CancelToken, Cancelled, FileDigests, FileStatus, HASH_MEMBER_EXTS, HashAlgo, HashCache,
-    HashReportRecord, InputScan, ProgressReporter, ReportFormat, ReportRecord, ReportTotals,
-    ResolvedInput, Tally, TallyDirection, collect_inputs, hash_file, resolve_for_hash,
-    write_hash_report,
+    CancelToken, Cancelled, CollectedInput, FileDigests, FileStatus, HASH_MEMBER_EXTS, HashAlgo,
+    HashCache, HashReportRecord, InputScan, ProgressReporter, ReportFormat, ReportRecord,
+    ReportTotals, ResolvedInput, Tally, TallyDirection, collect_input_entries, hash_file,
+    resolve_for_hash, write_hash_report,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -357,8 +357,8 @@ struct VerifyTally {
 }
 
 /// Sum of on-disk sizes for the aggregate progress bar's total byte length.
-fn files_bytes(files: &[PathBuf]) -> u64 {
-    files.iter().map(|p| file_len(p)).sum()
+fn files_bytes(files: &[CollectedInput]) -> u64 {
+    files.iter().map(|p| file_len(&p.path)).sum()
 }
 
 async fn collect_or_warn(
@@ -366,11 +366,11 @@ async fn collect_or_warn(
     exts: &'static [&'static str],
     max_depth: Option<usize>,
     cancel: &CancelToken,
-) -> Result<Vec<PathBuf>> {
+) -> Result<Vec<CollectedInput>> {
     let dir = input_dir.to_path_buf();
     let cancel = cancel.clone();
     let files = tokio::task::spawn_blocking(move || {
-        collect_inputs(
+        collect_input_entries(
             &dir,
             &InputScan {
                 exts,
@@ -401,6 +401,11 @@ fn finish_verify(tally: VerifyTally) -> Result<()> {
         anyhow::bail!("verification failed");
     }
     Ok(())
+}
+
+fn fail_unreadable(path: &Path, reason: &str, failed: &mut usize) {
+    *failed += 1;
+    warn!("[FAIL] {}: {reason}", path.display());
 }
 
 /// Stages one walked input off the async runtime. A staging failure counts
@@ -438,11 +443,17 @@ pub async fn cso_verify(
     total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for path in files {
+    for collected in files {
+        let path = collected.path;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
         let bytes = file_len(&path);
+        if let Some(reason) = collected.unreadable {
+            fail_unreadable(&path, &reason, &mut failed);
+            total_progress.advance(bytes);
+            continue;
+        }
         let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
             total_progress.advance(bytes);
             continue;
@@ -492,11 +503,17 @@ pub async fn dol_verify(
     total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for path in files {
+    for collected in files {
+        let path = collected.path;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
         let bytes = file_len(&path);
+        if let Some(reason) = collected.unreadable {
+            fail_unreadable(&path, &reason, &mut failed);
+            total_progress.advance(bytes);
+            continue;
+        }
         let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
             total_progress.advance(bytes);
             continue;
@@ -547,11 +564,17 @@ pub async fn rvl_verify(
     total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for path in files {
+    for collected in files {
+        let path = collected.path;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
         let bytes = file_len(&path);
+        if let Some(reason) = collected.unreadable {
+            fail_unreadable(&path, &reason, &mut failed);
+            total_progress.advance(bytes);
+            continue;
+        }
         let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
             total_progress.advance(bytes);
             continue;
@@ -600,11 +623,17 @@ pub async fn nx_verify(
     total_progress.begin(total as u64, files_bytes(&files));
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for path in files {
+    for collected in files {
+        let path = collected.path;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
         let bytes = file_len(&path);
+        if let Some(reason) = collected.unreadable {
+            fail_unreadable(&path, &reason, &mut failed);
+            total_progress.advance(bytes);
+            continue;
+        }
         let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
             total_progress.advance(bytes);
             continue;
@@ -676,7 +705,7 @@ pub async fn wup_verify(
     let mut inputs = {
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
-            collect_inputs(
+            collect_input_entries(
                 &dir,
                 &InputScan {
                     exts: FILE_EXTS,
@@ -690,7 +719,7 @@ pub async fn wup_verify(
         .await??
     };
     if let Ok(entries) = std::fs::read_dir(input_dir) {
-        let mut dirs: Vec<PathBuf> = entries
+        let mut dirs: Vec<CollectedInput> = entries
             .flatten()
             .map(|e| e.path())
             .filter(|p| {
@@ -700,11 +729,12 @@ pub async fn wup_verify(
                         .is_none_or(|n| !is_os_junk_dir(n))
                     && is_nus_title_dir(p)
             })
+            .map(CollectedInput::plain)
             .collect();
-        dirs.sort();
-        inputs.extend(dirs);
+        dirs.sort_by(|a, b| a.path.cmp(&b.path));
+        inputs.append(&mut dirs);
     }
-    inputs.sort();
+    inputs.sort_by(|a, b| a.path.cmp(&b.path));
 
     if inputs.is_empty() {
         warn!(
@@ -718,11 +748,17 @@ pub async fn wup_verify(
     total_progress.begin(total as u64, files_bytes(&inputs));
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for path in inputs {
+    for collected in inputs {
+        let path = collected.path;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
         }
         let bytes = file_len(&path);
+        if let Some(reason) = collected.unreadable {
+            fail_unreadable(&path, &reason, &mut failed);
+            total_progress.advance(bytes);
+            continue;
+        }
         // A NUS title directory is verified in place; disc files resolve
         // through an archive when one holds the .wud/.wux member. The
         // staging stays alive until the verify below has finished.
@@ -830,7 +866,7 @@ pub async fn hash_batch(
         return Ok(());
     }
     let total = files.len();
-    total_progress.begin(total as u64, files_bytes(&files));
+    total_progress.begin(total as u64, files.iter().map(|p| file_len(p)).sum());
     let mut tally = Tally::new();
     let mut records: Vec<HashReportRecord> = Vec::new();
     for path in files {
@@ -885,4 +921,29 @@ pub async fn hash_batch(
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn recursive_verify_fails_on_an_unreadable_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("docs.zip"), b"not an archive").unwrap();
+        let mp =
+            indicatif::MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden());
+        let progress = crate::util::IndicatifProgress::new(mp.clone());
+        let total = crate::util::TotalProgress::new(mp);
+        let result = cso_verify(
+            &progress,
+            &total,
+            dir.path(),
+            false,
+            None,
+            &CancelToken::new(),
+        )
+        .await;
+        assert!(result.is_err(), "{result:?}");
+    }
 }

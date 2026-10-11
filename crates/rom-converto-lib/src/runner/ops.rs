@@ -964,11 +964,7 @@ pub(crate) async fn run_batch_request(
     let (files, wanted) = if op.name == "ctr.cdn_to_cia" {
         let files = cdn_content_dirs(&root)?
             .into_iter()
-            .map(|path| crate::util::CollectedInput {
-                output_basis: path.clone(),
-                path,
-                selection: None,
-            })
+            .map(crate::util::CollectedInput::plain)
             .collect::<Vec<_>>();
         (files, "title directories".to_string())
     } else if op.name == "hash" {
@@ -984,11 +980,7 @@ pub(crate) async fn run_batch_request(
         .with_context(|| format!("scanning {}", root.display()))?;
         let files = files
             .into_iter()
-            .map(|path| crate::util::CollectedInput {
-                output_basis: path.clone(),
-                path,
-                selection: None,
-            })
+            .map(crate::util::CollectedInput::plain)
             .collect::<Vec<_>>();
         (files, "files".to_string())
     } else {
@@ -1009,11 +1001,7 @@ pub(crate) async fn run_batch_request(
                 .map(|files| {
                     files
                         .into_iter()
-                        .map(|path| crate::util::CollectedInput {
-                            path: path.clone(),
-                            output_basis: path,
-                            selection: None,
-                        })
+                        .map(crate::util::CollectedInput::plain)
                         .collect::<Vec<_>>()
                 })
             } else {
@@ -1040,8 +1028,9 @@ pub(crate) async fn run_batch_request(
         )));
     }
 
-    // Directory-output children preflight their own output directory, and a
-    // skipped single-title container must not count against the free space.
+    // Directory-output children preflight their own output directory, a
+    // skipped single-title container must not count against the free space,
+    // and neither does an unreadable archive, which is never processed.
     if op.writes_output
         && op.batch_output_dir.is_none()
         && !req.dry_run
@@ -1049,6 +1038,7 @@ pub(crate) async fn run_batch_request(
     {
         let required = files
             .iter()
+            .filter(|p| p.unreadable.is_none())
             .map(|p| {
                 op.required_bytes
                     .map_or_else(|| file_len(&p.path), |estimate| estimate(&req, &p.path))
@@ -1202,11 +1192,38 @@ pub(crate) async fn run_batch_request(
     // Walked inputs whose child finished (planned, converted, or failed):
     // once read, a later same-format child may write over them.
     let mut consumed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut unreadable_skips = 0usize;
     for collected in files {
         let input = collected.path;
         let selection = collected.selection;
         if cancel.is_cancelled() {
             return Err(Cancelled.into());
+        }
+        // An archive the walk could not list, and whose name claims no
+        // scanned extension, is a skipped row for an operation that writes
+        // output, so one corrupt file does not fail the run, and a failed
+        // row for a verify operation, which exists to catch exactly that.
+        if let Some(reason) = collected.unreadable {
+            let status = if op.writes_output {
+                FileStatus::Skipped
+            } else {
+                FileStatus::Failed
+            };
+            unreadable_skips += usize::from(status == FileStatus::Skipped);
+            let record = ReportRecord::new(ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: String::new(),
+                operation: planned_verb(&req.operation, req.dry_run),
+                status,
+                input_bytes: file_len(&input),
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: Some(reason),
+            });
+            progress.row(&RunRow::Record(record.clone()));
+            records.push(record);
+            progress.batch_advance(file_len(&input));
+            continue;
         }
         let mut new_records = Vec::new();
         let guard_input = guarded(&input);
@@ -1373,7 +1390,7 @@ pub(crate) async fn run_batch_request(
     let totals = totals_for_records(&records, elapsed_ms(started));
     let status = if totals.failed == 0 {
         RunStatus::Ok
-    } else if totals.ok == 0 && totals.skipped == 0 {
+    } else if totals.ok == 0 && totals.skipped == unreadable_skips {
         RunStatus::Failed
     } else {
         RunStatus::PartialFailure
@@ -5421,6 +5438,97 @@ mod tests {
         assert_eq!(
             plans[1]["output"].as_str(),
             dir.path().join("sub/b.cso").to_str()
+        );
+    }
+
+    /// An archive the walk could not list, and whose name claims no
+    /// scanned extension, comes back as a skipped row so it stays in the
+    /// tally instead of failing the run.
+    #[tokio::test]
+    async fn batch_reports_an_unreadable_archive_as_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        write_iso(dir.path(), "a.iso");
+        std::fs::write(dir.path().join("docs.zip"), b"not an archive").unwrap();
+        let req = json!({
+            "operation": "cso.compress",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{:?}", res.records);
+        let skipped = res
+            .records
+            .iter()
+            .find(|record| record.status == FileStatus::Skipped)
+            .expect("the unreadable archive gets a skipped row");
+        assert_eq!(
+            skipped.input_path,
+            dir.path().join("docs.zip").to_str().unwrap()
+        );
+        assert!(skipped.error.is_some());
+        let planned = res
+            .records
+            .iter()
+            .find(|record| record.status != FileStatus::Skipped)
+            .expect("the plain image plans");
+        assert_eq!(
+            planned.input_path,
+            dir.path().join("a.iso").to_str().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_reports_an_unreadable_archive_as_failed_for_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        let (chd, _) = write_cd_chd(dir.path()).await;
+        std::fs::write(dir.path().join("docs.zip"), b"not an archive").unwrap();
+        let req = json!({
+            "operation": "chd.verify",
+            "input": dir.path(),
+            "options": { "recursive": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let failed = res
+            .records
+            .iter()
+            .find(|record| record.input_path == dir.path().join("docs.zip").display().to_string())
+            .unwrap();
+        assert_eq!(failed.status, FileStatus::Failed, "{res:?}");
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .is_some_and(|error| !error.is_empty())
+        );
+        assert!(
+            res.records.iter().any(|record| {
+                record.input_path == chd.display().to_string() && record.status == FileStatus::Ok
+            }),
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_skip_does_not_make_failed_conversions_partial() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bad.cso"), b"not a container").unwrap();
+        std::fs::write(dir.path().join("docs.zip"), b"not an archive").unwrap();
+        let req = json!({
+            "operation": "cso.decompress",
+            "input": dir.path(),
+            "options": { "recursive": true, "skip_space_check": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert_eq!(
+            res.totals
+                .as_ref()
+                .map(|totals| (totals.failed, totals.skipped)),
+            Some((1, 1))
         );
     }
 

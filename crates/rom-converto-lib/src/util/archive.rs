@@ -823,17 +823,34 @@ pub struct CollectedInput {
     /// The walked path: a plain file, or an archive the run opens.
     pub path: PathBuf,
     /// Default-output basis for the run: the file itself, or for an archive
-    /// the picked member's name placed beside the archive. An archive kept
-    /// despite a failed listing has no member to name and reports its own
-    /// path.
+    /// the picked member's name placed beside the archive. An archive that
+    /// cannot be listed has no member to name and reports its own path.
     pub output_basis: PathBuf,
     /// The listing and pick the walk already made for an archive, so the
     /// child run does not list it again (a `.tar.gz` listing is a full
     /// decompression).
     pub selection: Option<ArchiveSelection>,
+    /// The listing error of an archive the walk kept only so the run can
+    /// report it; `None` for every other input.
+    pub unreadable: Option<String>,
 }
 
-/// [`collect_input_entries`] reduced to the walked paths.
+impl CollectedInput {
+    /// A plain walked file: its own path is the output basis and there is
+    /// no listing to carry.
+    pub fn plain(path: PathBuf) -> Self {
+        Self {
+            output_basis: path.clone(),
+            path,
+            selection: None,
+            unreadable: None,
+        }
+    }
+}
+
+/// [`collect_input_entries`] reduced to the walked paths, for callers that
+/// report their own rows: an archive that cannot be read stays in, so those
+/// callers fail it as a row like any other input they cannot open.
 ///
 /// # Errors
 /// Same as [`collect_input_entries`].
@@ -854,8 +871,10 @@ pub fn collect_inputs(
 /// sorted walk up to `scan.max_depth`. An archive without such a member is
 /// left out, as is one whose member also sits unpacked beside it, in a
 /// folder named after the archive, or at the member's own path when
-/// `scan.skip_unpacked_twins`. One that cannot be listed stays in, so the
-/// run reports it as a failed item rather than silently passing over it.
+/// `scan.skip_unpacked_twins`. One that cannot be listed stays in: the run
+/// reports it with the listing error as its row, skipped for an operation
+/// that writes output and failed for a read-only one, and failed in every
+/// run when its own name carries one of the scanned extensions.
 ///
 /// # Errors
 /// Cancellation stops the walk, or stops before the next archive is listed,
@@ -880,11 +899,7 @@ pub fn collect_input_entries(
     let mut inputs = Vec::with_capacity(candidates.len());
     for path in &candidates {
         if !is_archive_path(path) {
-            inputs.push(CollectedInput {
-                path: path.clone(),
-                output_basis: path.clone(),
-                selection: None,
-            });
+            inputs.push(CollectedInput::plain(path.clone()));
             continue;
         }
         // A bare gzip is no container the batch could open.
@@ -939,6 +954,7 @@ pub fn collect_input_entries(
                     path: path.clone(),
                     output_basis: basis,
                     selection: Some(selection),
+                    unreadable: None,
                 });
             }
             Ok(_) => {
@@ -954,21 +970,32 @@ pub fn collect_input_entries(
                     path.display()
                 );
             }
-            // A damaged archive stays in the batch: the item fails on
-            // staging and is reported, instead of vanishing from the tally.
-            Err(_) if cancel.is_cancelled() => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    crate::util::Cancelled,
-                ));
-            }
+            // A name that claims a scanned extension fails on staging.
+            // Other unreadable archives carry the listing error so the
+            // operation can report a skipped write or a failed verify.
             Err(err) => {
-                log::debug!("keeping {} for the run to report: {err:#}", path.display());
-                inputs.push(CollectedInput {
-                    path: path.clone(),
-                    output_basis: path.clone(),
-                    selection: None,
-                });
+                if cancel.is_cancelled() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        crate::util::Cancelled,
+                    ));
+                }
+                let claims_image = path
+                    .file_name()
+                    .map(strip_archive_ext)
+                    .is_some_and(|stem| name_has_ext(&stem, scan.exts));
+                if claims_image {
+                    log::debug!("keeping {} for the run to report: {err:#}", path.display());
+                    inputs.push(CollectedInput::plain(path.clone()));
+                } else {
+                    log::debug!("keeping {}: {err:#}", path.display());
+                    inputs.push(CollectedInput {
+                        path: path.clone(),
+                        output_basis: path.clone(),
+                        selection: None,
+                        unreadable: Some(format!("{err:#}")),
+                    });
+                }
             }
         }
     }
@@ -1402,6 +1429,7 @@ mod tests {
             &[("readme.txt", b"x")],
         );
         std::fs::write(dir.path().join("broken.7z"), b"not an archive").unwrap();
+        std::fs::write(dir.path().join("broken.iso.7z"), b"not an archive").unwrap();
         std::fs::write(dir.path().join("log.gz"), b"gz").unwrap();
         std::fs::write(dir.path().join("set.part2.rar"), b"rar").unwrap();
         std::fs::write(dir.path().join("Game.Part2.rar"), b"rar").unwrap();
@@ -1436,17 +1464,31 @@ mod tests {
             skip_unpacked_twins: true,
         };
         let found = collect_input_entries(dir.path(), &scan, &CancelToken::new()).unwrap();
+        // A corrupt archive whose name claims no scanned extension stays in
+        // flagged so the run reports it; one that claims one (`broken.iso.7z`)
+        // stays in to fail on staging.
         assert_eq!(
-            collected_paths(found),
+            collected_paths(&found),
             vec![
                 dir.path().join("Game/game.iso"),
                 dir.path().join("broken.7z"),
+                dir.path().join("broken.iso.7z"),
                 dir.path().join("disc/game.iso"),
                 dir.path().join("disc.tar"),
                 dir.path().join("plain.iso"),
                 nested.join("packed.zip"),
             ]
         );
+        let broken = found
+            .iter()
+            .find(|input| input.path == dir.path().join("broken.7z"))
+            .unwrap();
+        assert!(broken.unreadable.is_some());
+        let claimed = found
+            .iter()
+            .find(|input| input.path == dir.path().join("broken.iso.7z"))
+            .unwrap();
+        assert!(claimed.unreadable.is_none());
 
         let shallow = collect_input_entries(
             dir.path(),
@@ -1460,10 +1502,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            collected_paths(shallow),
+            collected_paths(&shallow),
             vec![
                 dir.path().join("Game.zip"),
                 dir.path().join("broken.7z"),
+                dir.path().join("broken.iso.7z"),
                 dir.path().join("extraction.zip"),
                 dir.path().join("plain.iso")
             ]
@@ -1483,11 +1526,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            collected_paths(keep_twin),
+            collected_paths(&keep_twin),
             vec![
                 dir.path().join("Game/game.iso"),
                 dir.path().join("Game.zip"),
                 dir.path().join("broken.7z"),
+                dir.path().join("broken.iso.7z"),
                 dir.path().join("disc/game.iso"),
                 dir.path().join("extraction.zip"),
                 dir.path().join("plain.iso"),
@@ -1527,7 +1571,7 @@ mod tests {
             &CancelToken::new(),
         )
         .unwrap();
-        assert_eq!(collected_paths(found), vec![dir.path().join("both.zip")]);
+        assert_eq!(collected_paths(&found), vec![dir.path().join("both.zip")]);
 
         // With `member_exts: None` the pick considers the plain `exts` only,
         // so the keep rule never rejects what the pick chose.
@@ -1542,7 +1586,7 @@ mod tests {
             &CancelToken::new(),
         )
         .unwrap();
-        assert_eq!(collected_paths(none), vec![dir.path().join("both.zip")]);
+        assert_eq!(collected_paths(&none), vec![dir.path().join("both.zip")]);
     }
 
     #[test]
@@ -1558,8 +1602,8 @@ mod tests {
     }
 
     /// The walked paths of a [`collect_inputs`] result.
-    fn collected_paths(inputs: Vec<CollectedInput>) -> Vec<PathBuf> {
-        inputs.into_iter().map(|input| input.path).collect()
+    fn collected_paths(inputs: &[CollectedInput]) -> Vec<PathBuf> {
+        inputs.iter().map(|input| input.path.clone()).collect()
     }
 
     #[test]

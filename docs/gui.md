@@ -25,8 +25,10 @@ queues an archive only when it holds a matching member, picked with the
 extensions the page accepts, which match what the job later extracts with. Wii U
 conversion scans both `.wud` and `.wux` whichever direction is set, so an archive
 holding only the other kind is queued and then fails with "no matching image".
-On pages that write output, an archive whose member also sits unpacked beside it
-is left out in favor of the plain file; verify pages queue both.
+On pages that write output, an archive whose member also sits unpacked beside it,
+in a folder named after the archive, or at the member's own path is left out in
+favor of the plain file; verify pages queue both. CLI conversions report an unlistable
+archive as a skipped row, while the GUI queues it and the job fails with the reason.
 
 The GUI does not compare the outputs of queued files. With On conflict set to
 Overwrite, two files that name the same output (the same game as `.zip` and `.7z`,
