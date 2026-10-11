@@ -4762,7 +4762,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb967eb8b29410e61e8c9005058fcfd5889d0b827856beb25529c73dfc86a98a"
 dependencies = [
  "aes",
- "brotli",
  "bzip2",
  "cbc",
  "crc32fast",

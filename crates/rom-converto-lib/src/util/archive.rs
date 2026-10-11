@@ -276,8 +276,18 @@ fn read_member<T>(
             Ok(read(&mut entry)?)
         }
         ArchiveKind::SevenZ => {
-            let mut reader =
-                sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
+            let (archive, file) = crate::util::sevenz_guard::open(path)?;
+            for block in 0..archive.blocks.len() {
+                crate::util::sevenz_guard::check_block(&archive, block, path)?;
+            }
+            // One thread: the multithreaded LZMA2 reader allocates one
+            // dictionary per worker and buffers whole work units.
+            let mut reader = sevenz_rust2::ArchiveReader::from_archive(
+                archive,
+                file,
+                sevenz_rust2::Password::empty(),
+            );
+            reader.set_thread_count(1);
             let mut read = Some(read);
             let mut result: Option<std::io::Result<T>> = None;
             reader.for_each_entries(|entry, rd| {
@@ -321,9 +331,9 @@ fn read_member<T>(
 }
 
 fn list_7z(path: &Path) -> Result<Vec<ArchiveMember>> {
-    let reader = sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?;
+    let (archive, _) = crate::util::sevenz_guard::open(path)?;
     let mut out = Vec::new();
-    for entry in &reader.archive().files {
+    for entry in &archive.files {
         if let Some(m) = keep_member(entry.name(), entry.size(), entry.is_directory()) {
             out.push(m);
         }
@@ -554,14 +564,12 @@ pub fn entry_count(path: &Path) -> Result<usize> {
                 })
                 .count()
         }
-        ArchiveKind::SevenZ => {
-            sevenz_rust2::ArchiveReader::open(path, sevenz_rust2::Password::empty())?
-                .archive()
-                .files
-                .iter()
-                .filter(|entry| !entry.is_directory())
-                .count()
-        }
+        ArchiveKind::SevenZ => crate::util::sevenz_guard::open(path)?
+            .0
+            .files
+            .iter()
+            .filter(|entry| !entry.is_directory())
+            .count(),
         ArchiveKind::Rar => {
             let mut count = 0;
             for entry in unrar::Archive::new(path).open_for_listing()? {

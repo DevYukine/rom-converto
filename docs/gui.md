@@ -39,6 +39,7 @@ would replace a walked input are always skipped.
 The app extracts the first matching member to a temporary directory and removes it
 after the job. CHD verify with **Fix SHA-1** needs a plain `.chd`: an archive job
 fails with that message, while the CLI `-R --fix` walks plain files only.
+The same [7z decoder limits](cli.md#archive-input) apply to GUI jobs.
 
 The Hash page hashes the file inside an archive that holds a known image, and the
 archive's own bytes otherwise, like `rom-converto hash`. With Recursive on, dropping a

@@ -27,6 +27,7 @@ pub mod plan;
 pub mod positional_reader;
 pub mod pread;
 pub mod report;
+pub(crate) mod sevenz_guard;
 pub mod sfo;
 pub mod tally;
 pub mod template;

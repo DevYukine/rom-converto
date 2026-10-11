@@ -157,7 +157,12 @@ their sheet. Output is named after the member and written next to the archive un
 output path is set; directory outputs (`nx split`, `xenon convert`, `ctr unbundle`) and
 `nx merge` are named after the archive. An archive holding several matching members
 converts only the first and logs a warning, also for the archives a recursive run keeps. Encrypted archives and plain `.gz` files are unsupported. RAR input is read
-only. The temp filesystem needs room for the unpacked input.
+only. The temp filesystem needs room for the unpacked input. A 7z is refused when its
+decoders would need more than 1536 MiB, its header exceeds 4 MiB (roughly 30,000
+members), its start header is blank or points past the end of the file, or it chains more
+than 4 coders. BCJ2 (multiple packed streams per block), Brotli, Deflate64, and AES
+encryption are refused too, as are unsupported coder layouts. 7z members decode on
+one thread, which is slower than multithreaded decoding on archives written with multithreaded LZMA2.
 
 Recursive runs (`-R`, `info --batch`) open archives too: an archive counts as an input when
 the member picked by name order carries one of the extensions the command scans, and the
