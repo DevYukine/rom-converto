@@ -158,6 +158,11 @@ const FORMAT_LABELS: Record<PresetFormat, string> = {
 	organize: "Organize",
 };
 
+// Raw in-progress text for list/lines fields, keyed `${format}.${key}`; keeps
+// unparsed input (trailing commas, spaces, newlines) on screen while typing.
+// Fresh per modal open, like the draft below.
+const rawText = reactive<Record<string, string>>({});
+
 // props.preset is a reactive store proxy (and so are its nested objects);
 // a JSON round-trip deep-clones it to a plain, editable draft.
 const draft = reactive<Preset>(JSON.parse(JSON.stringify(props.preset)) as Preset);
@@ -181,6 +186,8 @@ function onTextInput(format: PresetFormat, key: string, raw: string) {
 }
 
 function listText(format: PresetFormat, key: string): string {
+	const typed = rawText[`${format}.${key}`];
+	if (typed !== undefined) return typed;
 	const value = cell(format, key);
 	if (!Array.isArray(value)) return "";
 	// An empty strip-header list is the bare-flag form: strip everything.
@@ -188,6 +195,7 @@ function listText(format: PresetFormat, key: string): string {
 }
 
 function onListInput(format: PresetFormat, key: string, raw: string) {
+	rawText[`${format}.${key}`] = raw;
 	if (key === "remove_headers" && raw.trim().toLowerCase() === "all") {
 		setCell(format, key, []);
 		return;
@@ -201,11 +209,14 @@ function onListInput(format: PresetFormat, key: string, raw: string) {
 
 // Regex and path values may contain commas, so they are one entry per line.
 function linesText(format: PresetFormat, key: string): string {
+	const typed = rawText[`${format}.${key}`];
+	if (typed !== undefined) return typed;
 	const value = cell(format, key);
 	return Array.isArray(value) ? value.join("\n") : "";
 }
 
 function onLinesInput(format: PresetFormat, key: string, raw: string) {
+	rawText[`${format}.${key}`] = raw;
 	const values = raw
 		.split(/\r?\n/)
 		.map((v) => v.trim())
