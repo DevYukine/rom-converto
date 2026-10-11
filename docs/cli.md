@@ -174,10 +174,16 @@ the archive and its unpacked twin.
 
 A conversion also skips an input that would write the same output as another one, with a
 report row that names that input: the first one that succeeds keeps the output, and a plain
-file is decided before an archive. With `--on-conflict overwrite`, it also skips an input
-whose output is another input of the run, such as the `game.cia` that converting `game.3ds`
-would produce while `game.cia` is itself an input; with `--output-dir`, that is checked
-against the mirrored output path. Other policies keep or verify an existing output
+file is decided before an archive. With `--on-conflict overwrite`, an input whose output is
+another input of the run waits until that input was processed before replacing it.
+A walked input is only replaced by an output with the same extension (`ctr decrypt -R -f`
+regenerating `game.decrypted.cia` from `game.cia`); a conversion into another format
+never overwrites a walked input and is skipped. A same-extension writer whose
+destination input was never read is skipped too. `ctr convert -R` over `game.3ds` and
+`game.cia` skips both, since each would produce the other, and it also skips a
+`game.cci` whose output is that `game.cia`. An input counts as read once its own
+conversion ran, even if it failed or was skipped as already done. With `--output-dir`, the
+comparison uses the mirrored output path. Other policies keep or verify an existing output
 themselves. Output names compare without regard to case, but not to Unicode normalization.
 `--on-conflict rename` turns both checks off, since each input gets its own name, and so
 does an `--output-template`: the rendered paths are not known in advance, and a collision

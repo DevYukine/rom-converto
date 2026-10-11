@@ -32,7 +32,9 @@ The GUI does not compare the outputs of queued files. With On conflict set to
 Overwrite, two files that name the same output (the same game as `.zip` and `.7z`,
 or a `.cue` and an archive holding its `.iso`) replace each other, and so does a
 file whose output is another queued input (converting `game.3ds` replaces a queued
-`game.cia`). Use Skip, Rename, or Error for such folders. The CLI's `-R` skips them.
+`game.cia`). Use Skip, Rename, or Error for such folders. The CLI's `-R` skips duplicates.
+Same-extension outputs only replace inputs already read; cross-format outputs that
+would replace a walked input are always skipped.
 
 The app extracts the first matching member to a temporary directory and removes it
 after the job. CHD verify with **Fix SHA-1** needs a plain `.chd`: an archive job

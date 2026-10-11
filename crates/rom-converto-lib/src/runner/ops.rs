@@ -71,6 +71,20 @@ fn batch_dir_output(
     }
 }
 
+/// Where a batch child really writes: the claim key's file name under the
+/// child's mirrored output directory when one is set, else the claim key
+/// itself, which already sits next to its source. Case-folded, like the
+/// walked paths it is compared against.
+fn batch_destination(key: &str, dir: Option<&Path>) -> String {
+    match dir {
+        Some(dir) => Path::new(key).file_name().map_or_else(
+            || key.to_string(),
+            |name| dir.join(name).to_string_lossy().to_lowercase(),
+        ),
+        None => key.to_string(),
+    }
+}
+
 pub(crate) type OpFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<RunResponse>> + 'a>>;
 
@@ -1065,7 +1079,7 @@ pub(crate) async fn run_batch_request(
     // An archive whose output a plain file also derives runs after every
     // plain file, so the plain file's outcome decides: a plain file that
     // fails or writes nothing leaves the output free for the archive.
-    let files = if claims {
+    let mut files = if claims {
         let plain_keys: std::collections::HashSet<String> = files
             .iter()
             .filter(|collected| !crate::util::is_archive_path(&collected.path))
@@ -1081,22 +1095,113 @@ pub(crate) async fn run_batch_request(
     } else {
         files
     };
-    // Under `overwrite`, a child must never replace a file the run walks:
-    // `ctr.convert` maps game.3ds to game.cia and game.cia to game.3ds, and
-    // the second input would be gone before it is read. Other policies keep
-    // or verify an existing output themselves (`overwrite-invalid` may
-    // repair one), so they are left alone.
+    // Under `overwrite` a walked input must be read before a same-format
+    // output replaces it. Cross-format conversions must keep the original
+    // even after reading it: converting back cannot restore every field.
+    // Other policies keep or verify an existing output themselves
+    // (`overwrite-invalid` may repair one), so they are left alone.
     let guard_walked =
         claims && conflict_policy(&req).is_ok_and(|p| p == ConflictPolicy::Overwrite);
-    let walked: std::collections::HashSet<String> = if guard_walked {
+    let canonical_root = guard_walked.then(|| root.canonicalize()).transpose()?;
+    let guarded = |path: &Path| {
+        canonical_root.as_ref().map(|canonical| {
+            canonical.join(
+                path.strip_prefix(&root)
+                    .expect("walked inputs and output bases sit under the root"),
+            )
+        })
+    };
+    let walked: HashMap<String, PathBuf> = if guard_walked {
         files
             .iter()
-            .map(|collected| collected.path.to_string_lossy().to_lowercase())
+            .map(|collected| {
+                (
+                    guarded(&collected.path)
+                        .expect("walked inputs are guarded")
+                        .to_string_lossy()
+                        .to_lowercase(),
+                    collected.path.clone(),
+                )
+            })
             .collect()
     } else {
-        std::collections::HashSet::new()
+        HashMap::new()
     };
+    // Compare canonical paths, but keep the user's spelling in child requests
+    // and reports. A directory that does not exist contains no walked inputs.
+    let guard_dir = guard_walked
+        .then(|| {
+            req.options
+                .output_dir
+                .as_ref()
+                .map(|dir| dir.canonicalize().unwrap_or_else(|_| dir.clone()))
+        })
+        .flatten();
+    if guard_walked {
+        let dest_of: Vec<Option<String>> = files
+            .iter()
+            .map(|collected| {
+                let input = guarded(&collected.path).expect("walked inputs are guarded");
+                let basis = guarded(&collected.output_basis).expect("output bases are guarded");
+                let own = basis.to_string_lossy().to_lowercase();
+                batch_output_key(op, &input, &basis)
+                    .map(|key| {
+                        batch_destination(
+                            &key,
+                            mirrored_output_dir(
+                                &req.options,
+                                guard_dir.as_deref(),
+                                &root,
+                                &collected.path,
+                            )
+                            .as_deref(),
+                        )
+                    })
+                    .filter(|dest| Path::new(dest).extension() == Path::new(&own).extension())
+            })
+            .collect();
+        let index: HashMap<String, usize> = files
+            .iter()
+            .enumerate()
+            .map(|(i, collected)| {
+                (
+                    guarded(&collected.path)
+                        .expect("walked inputs are guarded")
+                        .to_string_lossy()
+                        .to_lowercase(),
+                    i,
+                )
+            })
+            .collect();
+        fn readers_first(
+            i: usize,
+            dest_of: &[Option<String>],
+            index: &HashMap<String, usize>,
+            slots: &mut [Option<crate::util::CollectedInput>],
+            out: &mut Vec<crate::util::CollectedInput>,
+        ) {
+            let Some(collected) = slots[i].take() else {
+                return;
+            };
+            if let Some(dest) = dest_of[i].as_deref()
+                && let Some(&j) = index.get(dest)
+                && j != i
+            {
+                readers_first(j, dest_of, index, slots, out);
+            }
+            out.push(collected);
+        }
+        let mut ordered = Vec::with_capacity(files.len());
+        let mut slots: Vec<_> = files.into_iter().map(Some).collect();
+        for i in 0..slots.len() {
+            readers_first(i, &dest_of, &index, &mut slots, &mut ordered);
+        }
+        files = ordered;
+    }
     let mut claimed: HashMap<String, String> = HashMap::new();
+    // Walked inputs whose child finished (planned, converted, or failed):
+    // once read, a later same-format child may write over them.
+    let mut consumed: std::collections::HashSet<String> = std::collections::HashSet::new();
     for collected in files {
         let input = collected.path;
         let selection = collected.selection;
@@ -1104,22 +1209,28 @@ pub(crate) async fn run_batch_request(
             return Err(Cancelled.into());
         }
         let mut new_records = Vec::new();
+        let guard_input = guarded(&input);
+        let guard_basis = guarded(&collected.output_basis);
         let key = claims
-            .then(|| batch_output_key(op, &input, &collected.output_basis))
+            .then(|| {
+                batch_output_key(
+                    op,
+                    guard_input.as_deref().unwrap_or(&input),
+                    guard_basis.as_deref().unwrap_or(&collected.output_basis),
+                )
+            })
             .flatten();
-        let own_path = input.to_string_lossy().to_lowercase();
-        // Where the child really writes: under the mirrored output directory
-        // when one is set, else next to its source like the claim key.
-        let destination =
-            key.as_ref().map(
-                |key| match mirrored_output_dir(&req.options, &root, &input) {
-                    Some(dir) => Path::new(key).file_name().map_or_else(
-                        || key.clone(),
-                        |name| dir.join(name).to_string_lossy().to_lowercase(),
-                    ),
-                    None => key.clone(),
-                },
-            );
+        // A destination equal to the child's own basis is not another input
+        // (an archive's basis is its member's name beside the archive).
+        let own = guard_basis
+            .as_ref()
+            .map(|basis| basis.to_string_lossy().to_lowercase());
+        let destination = key.as_ref().filter(|_| guard_walked).map(|key| {
+            batch_destination(
+                key,
+                mirrored_output_dir(&req.options, guard_dir.as_deref(), &root, &input).as_deref(),
+            )
+        });
         let duplicate = key.as_ref().and_then(|key| {
             claimed
                 .get(key)
@@ -1128,10 +1239,18 @@ pub(crate) async fn run_batch_request(
                 .or_else(|| {
                     destination
                         .as_ref()
-                        .filter(|dest| walked.contains(*dest) && **dest != own_path)
-                        .map(|_| {
-                            "its output is another input of this run, which it would overwrite"
-                                .to_string()
+                        .filter(|dest| {
+                            walked.contains_key(*dest)
+                                && own.as_ref() != Some(*dest)
+                                && (!consumed.contains(*dest)
+                                    || Path::new(dest).extension()
+                                        != own.as_deref().and_then(|own| Path::new(own).extension()))
+                        })
+                        .map(|dest| {
+                            format!(
+                                "its output is another input of this run that cannot be replaced: {}",
+                                walked[dest].display()
+                            )
                         })
                 })
         });
@@ -1155,7 +1274,12 @@ pub(crate) async fn run_batch_request(
                 child.ctx.archive_selection = selection;
                 child.output = None;
                 child.options = child_options.clone();
-                child.options.output_dir = mirrored_output_dir(&req.options, &root, &input);
+                child.options.output_dir = mirrored_output_dir(
+                    &req.options,
+                    req.options.output_dir.as_deref(),
+                    &root,
+                    &input,
+                );
                 if let Some(derive) = op.batch_output_dir {
                     child.output = Some(batch_dir_output(
                         derive,
@@ -1230,6 +1354,9 @@ pub(crate) async fn run_batch_request(
                         elapsed_ms: 0,
                         error: Some(err.to_string()),
                     })),
+                }
+                if let Some(input) = guard_input {
+                    consumed.insert(input.to_string_lossy().to_lowercase());
                 }
             }
         }
@@ -3585,8 +3712,13 @@ pub(crate) fn batch_message(totals: &ReportTotals) -> String {
 /// file's subpath under `root` appended, so the run mirrors the source tree
 /// instead of flattening it into one directory. An `output_template` already
 /// carries its own layout, so it keeps the plain output directory as its base.
-fn mirrored_output_dir(options: &RunOptions, root: &Path, input: &Path) -> Option<PathBuf> {
-    let dir = options.output_dir.as_deref()?;
+fn mirrored_output_dir(
+    options: &RunOptions,
+    output_dir: Option<&Path>,
+    root: &Path,
+    input: &Path,
+) -> Option<PathBuf> {
+    let dir = output_dir?;
     if options.output_template.is_some() {
         return Some(dir.to_path_buf());
     }
@@ -5598,6 +5730,21 @@ mod tests {
                         .is_some_and(|error| error.contains("another input"))),
             "{res:?}"
         );
+        for record in &res.records {
+            let blocking = if record.input_path.ends_with("game.3ds") {
+                "game.cia"
+            } else {
+                "game.3ds"
+            };
+            assert!(
+                record
+                    .error
+                    .as_deref()
+                    .unwrap()
+                    .contains(dir.path().join(blocking).to_str().unwrap()),
+                "{record:?}"
+            );
+        }
 
         // With an output directory the outputs land elsewhere, so both convert.
         let out = tempfile::tempdir().unwrap();
@@ -5635,6 +5782,316 @@ mod tests {
                 .as_deref()
                 .is_some_and(|error| error.contains("another input"))),
             "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_guards_an_output_dir_spelled_differently_from_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("x")).unwrap();
+        std::fs::write(root.join("game.3ds"), b"3ds").unwrap();
+        std::fs::write(root.join("game.cia"), b"cia").unwrap();
+        for output_dir in [root.join("./"), dir.path().join("x/..")] {
+            let req = json!({
+                "operation": "ctr.convert",
+                "input": root,
+                "dry_run": true,
+                "options": {
+                    "recursive": true, "on_conflict": "overwrite", "output_dir": output_dir
+                }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            assert!(res.ok, "{res:?}");
+            assert_eq!(res.records.len(), 2, "{res:?}");
+            assert!(
+                res.records
+                    .iter()
+                    .all(|record| record.status == FileStatus::Skipped),
+                "{res:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_guards_a_differently_spelled_output_dir_inside_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("x")).unwrap();
+        std::fs::create_dir(root.join("out")).unwrap();
+        std::fs::write(root.join("game.3ds"), b"3ds").unwrap();
+        std::fs::write(root.join("out/game.cia"), b"cia").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": root,
+            "dry_run": true,
+            "options": {
+                "recursive": true, "on_conflict": "overwrite", "output_dir": dir.path().join("x/../out")
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let writer = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("game.3ds"))
+            .unwrap();
+        assert_eq!(writer.status, FileStatus::Skipped, "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{data:?}");
+        assert_eq!(
+            plans[0]["output"].as_str(),
+            dir.path().join("x/../out/out/game.3ds").to_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_guards_an_output_dir_that_is_an_ancestor_of_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("x")).unwrap();
+        let root = dir.path().join("x/../a");
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        let writer = root.join("a/game.cia");
+        let blocking = root.join("game.3ds");
+        std::fs::write(&writer, b"cia").unwrap();
+        std::fs::write(&blocking, b"3ds").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": root,
+            "dry_run": true,
+            "options": {
+                "recursive": true, "on_conflict": "overwrite", "output_dir": dir.path()
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let record = res
+            .records
+            .iter()
+            .find(|record| record.input_path == writer.to_str().unwrap())
+            .unwrap();
+        assert_eq!(record.status, FileStatus::Skipped, "{res:?}");
+        assert!(
+            record
+                .error
+                .as_deref()
+                .unwrap()
+                .contains(blocking.to_str().unwrap()),
+            "{record:?}"
+        );
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{data:?}");
+        assert_eq!(plans[0]["input"].as_str(), blocking.to_str());
+        assert_eq!(
+            plans[0]["output"].as_str(),
+            dir.path().join("game.cia").to_str()
+        );
+        assert_eq!(std::fs::read(&blocking).unwrap(), b"3ds");
+    }
+
+    /// A rerun under `overwrite` regenerates a walked output: the child that
+    /// reads game.decrypted.cia plans first, so game.cia may then write over
+    /// it.
+    #[tokio::test]
+    async fn batch_orders_a_writer_after_the_child_reading_its_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"cia").unwrap();
+        std::fs::write(dir.path().join("game.decrypted.cia"), b"cia").unwrap();
+        let req = json!({
+            "operation": "ctr.decrypt",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|record| record.status == FileStatus::Ok),
+            "{res:?}"
+        );
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 2, "{data:?}");
+        assert!(
+            plans[0]["input"]
+                .as_str()
+                .is_some_and(|input| input.ends_with("game.decrypted.cia")),
+            "{data:?}"
+        );
+        assert_eq!(
+            plans[1]["input"].as_str(),
+            Some(dir.path().join("game.cia").to_str().unwrap()),
+            "{data:?}"
+        );
+        assert_eq!(plans[1]["decision"], "Overwrite", "{data:?}");
+    }
+
+    /// `ctr.convert` on game.cci, game.cia and game.3ds: the cia/3ds pair is
+    /// a cycle, so game.cia is never read and game.cci, which would write
+    /// over it, is skipped too.
+    #[tokio::test]
+    async fn batch_skips_a_writer_whose_destination_child_was_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cci"), b"cci").unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"cia").unwrap();
+        std::fs::write(dir.path().join("game.3ds"), b"3ds").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 3, "{res:?}");
+        assert_eq!(res.totals.as_ref().map(|t| t.skipped), Some(3));
+        assert_eq!(
+            res.records
+                .iter()
+                .map(|record| {
+                    Path::new(&record.input_path)
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                })
+                .collect::<Vec<_>>(),
+            ["game.3ds", "game.cci", "game.cia"],
+            "{res:?}"
+        );
+        assert!(
+            res.records
+                .iter()
+                .all(|record| record.status == FileStatus::Skipped
+                    && record.output_path.is_empty()
+                    && record
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| !error.is_empty())),
+            "{res:?}"
+        );
+    }
+
+    /// A cross-format writer must not replace an original even when the
+    /// destination's own child already tried to read it and failed.
+    #[tokio::test]
+    async fn batch_skips_a_cross_format_writer_whose_destination_child_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"garbage").unwrap();
+        std::fs::write(dir.path().join("game.cci"), b"garbage").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let cia = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("game.cia"));
+        let cci = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("game.cci"));
+        let (Some(cia), Some(cci)) = (cia, cci) else {
+            panic!("expected one record per input: {res:?}");
+        };
+        assert_eq!(cia.status, FileStatus::Failed, "{res:?}");
+        assert_eq!(cci.status, FileStatus::Skipped, "{res:?}");
+        assert_eq!(
+            std::fs::read(dir.path().join("game.cia")).unwrap(),
+            b"garbage",
+            "the original input must stay intact"
+        );
+    }
+
+    /// An archive member's conversion must not overwrite a plain input
+    /// of another format, even after that plain input was read.
+    #[tokio::test]
+    async fn batch_skips_an_archive_child_that_would_overwrite_a_plain_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.3ds"), b"3ds").unwrap();
+        write_zip(&dir.path().join("a.zip"), &[("game.cia", b"cia")]);
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let archive = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("a.zip"))
+            .unwrap();
+        assert_eq!(archive.status, FileStatus::Skipped, "{res:?}");
+        assert_eq!(res.totals.as_ref().map(|t| t.skipped), Some(1), "{res:?}");
+        let data = serde_json::to_value(res.data.unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{data:?}");
+        assert_eq!(
+            plans[0]["input"].as_str(),
+            Some(dir.path().join("game.3ds").to_str().unwrap()),
+            "{data:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_keeps_a_cross_format_original_after_planning_its_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cci"), b"cci").unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"signed cia").unwrap();
+        let req = json!({
+            "operation": "ctr.convert",
+            "input": dir.path(),
+            "dry_run": true,
+            "options": { "recursive": true, "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let status = |name: &str| {
+            res.records
+                .iter()
+                .find(|record| record.input_path.ends_with(name))
+                .map(|record| record.status)
+        };
+        assert_eq!(status("game.cia"), Some(FileStatus::Ok), "{res:?}");
+        assert_eq!(status("game.cci"), Some(FileStatus::Skipped), "{res:?}");
+        assert_eq!(
+            std::fs::read(dir.path().join("game.cia")).unwrap(),
+            b"signed cia"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_runs_a_same_format_writer_whose_destination_child_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.cia"), b"garbage").unwrap();
+        std::fs::write(dir.path().join("game.decrypted.cia"), b"garbage").unwrap();
+        let req = json!({
+            "operation": "ctr.decrypt",
+            "input": dir.path(),
+            "options": { "recursive": true, "on_conflict": "overwrite", "skip_space_check": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|record| record.status == FileStatus::Failed),
+            "{res:?}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("game.decrypted.cia")).unwrap(),
+            b"garbage"
         );
     }
 

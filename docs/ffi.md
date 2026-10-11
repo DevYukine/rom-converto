@@ -168,9 +168,14 @@ archives holding the same member name, a plain file and an archive member
 that share an output, or names that differ only in case), the first one that
 succeeds keeps the output and each later one is a `skipped` record naming it;
 a plain file is decided before an archive. With `on_conflict: "overwrite"`, a
-child whose output is another input of the run is a `skipped` record too (the
-check uses the mirrored path when `output_dir` is set); other policies keep or
-verify an existing output themselves. Names compare without regard to case, but
+child whose output is another input of the run waits until that input's own
+child has finished before replacing it; records follow that order. A walked input
+is only replaced by an output with the same extension (`ctr decrypt -R -f`
+regenerating `game.decrypted.cia` from `game.cia`); a conversion into another format
+never overwrites a walked input and is skipped. A same-extension writer whose
+destination input was never read is skipped too.
+The check uses the mirrored path when `output_dir` is set. Other policies keep or verify an
+existing output themselves. Names compare without regard to case, but
 not to Unicode normalization. `on_conflict: "rename"` turns both checks off,
 since each child gets its own output, and so does an `output_template`: the
 rendered paths are not known in advance, and a collision between them follows
