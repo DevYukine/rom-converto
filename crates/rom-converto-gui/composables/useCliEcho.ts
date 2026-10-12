@@ -120,6 +120,9 @@ export function buildCliCommand(payload: Record<string, unknown>): string {
 		tokens.push(quote(request.input));
 	}
 
+	// Like inputs, patch_file is rendered by name: the second positional of patch apply.
+	if (typeof options.patch_file === "string" && options.patch_file) tokens.push(quote(options.patch_file));
+
 	const output = request.output;
 	if (output && !options.output_template) {
 		const kind = manifest.output[operation];

@@ -80,6 +80,9 @@ rom-converto nx compress game.nsp --keys prod.keys
 # Inspect a file
 rom-converto info game.iso
 
+# Apply a patch to a ROM
+rom-converto patch apply game.sfc hack.ips
+
 # Hash a folder and save the results
 rom-converto hash -R ./games --report hashes.csv
 

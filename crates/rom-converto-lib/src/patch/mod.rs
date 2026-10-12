@@ -1,6 +1,6 @@
-//! ROM patch application for the organize pass: detect a patch file's
-//! format, index it by the source ROM it targets, and apply it to a source
-//! ROM through a scratch sibling of the output path that is published by
+//! ROM patch application: detect a patch file's format, index it by the
+//! source ROM it targets during organize, and apply it to a source ROM
+//! through a scratch sibling of the output path that is published by
 //! rename only on success.
 //!
 //! Detection is by extension (case insensitive) plus the format's magic
@@ -28,6 +28,27 @@ use std::path::{Path, PathBuf};
 pub const PATCH_EXTENSIONS: &[&str] = &[
     "aps", "bps", "ebp", "ips", "ips32", "ppf", "rup", "ups", "vcdiff", "xdelta",
 ];
+
+/// Derives a patched ROM path beside `source`, preserving the patch stem
+/// and ROM extension without replacing the source's own file name.
+pub(crate) fn patched_output_path(source: &Path, patch: &Path) -> PathBuf {
+    let stem = patch.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = source.extension().unwrap_or_default().to_string_lossy();
+    let suffix = if ext.is_empty() {
+        String::new()
+    } else {
+        format!(".{ext}")
+    };
+    let mut name = format!("{stem}{suffix}");
+    // A soft patch is named like its ROM; the comparison ignores case so a
+    // case-insensitive filesystem never resolves the default onto the ROM.
+    if source.file_name().is_some_and(|source_name| {
+        source_name.to_string_lossy().to_lowercase() == name.to_lowercase()
+    }) {
+        name = format!("{stem} (patched){suffix}");
+    }
+    source.with_file_name(name)
+}
 
 /// The parsed format family driving [`Patch::apply`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,7 +339,8 @@ fn footer_crcs(path: &Path, ups: bool, cancel: &CancelToken) -> Result<Option<u3
 /// shorter file yields the bytes it has.
 fn read_head(path: &Path) -> Result<Vec<u8>> {
     let mut head = [0u8; 16];
-    let mut file = File::open(path).context("opening the patch")?;
+    let mut file =
+        File::open(path).with_context(|| format!("opening the patch {}", path.display()))?;
     let mut n = 0;
     loop {
         let read = file.read(&mut head[n..])?;
@@ -451,6 +473,22 @@ mod tests {
 
     fn crc32(data: &[u8]) -> u32 {
         Crc::<u32>::new(&CRC_32_ISO_HDLC).checksum(data)
+    }
+
+    #[test]
+    fn patched_output_paths() {
+        for (source, patch, expected) in [
+            ("Game.sfc", "Hack v1.2.bps", "Hack v1.2.sfc"),
+            ("rom", "fix.ips", "fix"),
+            ("game.sfc", "GAME.ips", "GAME (patched).sfc"),
+            ("roms/Game.sfc", "patches/Hack.ips", "roms/Hack.sfc"),
+            ("Éclair.sfc", "éclair.ips", "éclair (patched).sfc"),
+        ] {
+            assert_eq!(
+                patched_output_path(Path::new(source), Path::new(patch)),
+                PathBuf::from(expected)
+            );
+        }
     }
 
     #[test]

@@ -166,6 +166,50 @@ describe("tool output rows", () => {
 	});
 });
 
+describe("patch apply page", () => {
+	it("sends the selected patch and names the copy beside the ROM", () => {
+		const payload = argsFor("patch-apply", "/roms/Game.sfc", (store) => {
+			store.patchFile = "/patches/Hack v1.2.bps";
+			store.onConflict = "overwrite";
+		});
+		expect(payload.request.operation).toBe("patch.apply");
+		expect(payload.request.input).toBe("/roms/Game.sfc");
+		expect(payload.request.output).toBe("/roms/Hack v1.2.sfc");
+		expect(payload.request.options.patch_file).toBe("/patches/Hack v1.2.bps");
+		expect(payload.request.options.on_conflict).toBe("overwrite");
+	});
+
+	it("keeps the patch name inside the selected output directory", () => {
+		const payload = argsFor("patch-apply", "/roms/Game.sfc", (store) => {
+			store.patchFile = "/patches/Hack v1.2.bps";
+			store.outputDir = "/out";
+		});
+		expect(payload.request.output).toBe("/out/Hack v1.2.sfc");
+		const def = defByStoreId["patch-apply"]!;
+		expect(def.deriveOutput!("/roms/Game.sfc", def.useStore())).toBe("/out/Hack v1.2.sfc");
+	});
+
+	it("leaves the output unset until a patch is selected", () => {
+		const payload = argsFor("patch-apply", "/roms/Game.sfc", (store) => {
+			store.patchFile = "";
+		});
+		expect(payload.request.output).toBeNull();
+	});
+
+	// An explicit output beside a template is rejected by the runner, so a
+	// templated job must leave the name to it.
+	it("hands a templated name to the runner instead of sending an output", () => {
+		const payload = argsFor("patch-apply", "/roms/Game.sfc", (store) => {
+			store.patchFile = "/patches/Hack v1.2.bps";
+			store.outputDir = "/out";
+			store.outputTemplate = "{basename}.{ext}";
+		});
+		expect(payload.request.output).toBeNull();
+		expect(payload.request.options.output_template).toBe("{basename}.{ext}");
+		expect(payload.request.options.output_dir).toBe("/out");
+	});
+});
+
 describe("ctr bundle pages", () => {
 	const items = [item("/roms/update.cia"), { ...item("/roms/game.cci"), id: "t2" }];
 

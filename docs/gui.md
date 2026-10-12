@@ -80,6 +80,23 @@ and offers ISO or WBFS output. Both pages offer **Skip verify** for the input
 integrity pass. Use Convert for NKit ISO input. Restoring WBFS or NKit GCZ rebuilds
 omitted data rather than preserving the original container's bytes.
 
+### Apply patch
+
+Under Tools, **Apply patch** takes one ROM. Drop the ROM and use the Patch file picker
+to choose one patch:
+`.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`, `.vcdiff`, or `.xdelta`
+(VCDIFF). Archives are not accepted; extract the ROM first.
+
+The Directory and Template rows choose the output location and name. Template tokens
+describe the ROM, not the patch, so pair a template with a different Directory. The default
+output is `<patch stem>.<ROM extension>` beside the ROM. Dots in the patch stem stay
+unchanged. If that name equals the ROM's file name (ignoring case), it becomes
+`<patch stem> (patched).<ROM extension>`. A ROM with no extension uses the bare patch
+stem.
+
+The page supports On conflict and Dry run. It never writes over the ROM or the patch.
+The CLI equivalent is `rom-converto patch apply`.
+
 ### CHD migration
 
 Choose **CHD (old)** in Convert to migrate a v1 to v4 file to v5. The default output

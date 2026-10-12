@@ -27,6 +27,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `info` | Auto-detect the console and inspect any supported ROM or disc image |
 | `capabilities` | Print the supported operations and info extensions as JSON |
 | `dat` | Identify, verify, and rename ROMs against the Playmatch database |
+| `patch` | Apply a ROM patch to a ROM |
 | `organize` | Sort a ROM library into per-console folders and convert each file to its best format |
 | `hash` | Compute CRC32, SHA-1, MD5, and SHA-256 digests |
 | `playlist` | Generate `.m3u` files for multi-disc sets |
@@ -155,7 +156,8 @@ and `.tgz` archives: conversion, extraction, verification, and info under `ctr`,
 `rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `vita`, `xbox`, and `xenon`,
 including `nx merge`, `nx split`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
 and `dat identify`. Commands that take a directory, such as `wup decrypt` and
-`ctr cdn-to-cia`, cannot. `ctr bundle` opens none either: its members must be plain files.
+`ctr cdn-to-cia`, cannot. `ctr bundle` and `patch apply` require plain files and do not
+open archives.
 
 The first matching member in name order is extracted to a temporary directory, with a cue
 or gdi sheet first and a `.md` member last. Cue and GDI track files are extracted with
@@ -1050,6 +1052,46 @@ is rejected at startup instead of silently skipping the digest.
 the run with each candidate listed. `--api-base` points every subcommand at a different
 Playmatch instance and defaults to the public one at
 `https://playmatch.retrorealm.dev/api/v2`.
+
+## patch
+
+```
+rom-converto patch apply <ROM> <PATCH> [OUTPUT]
+```
+
+| Subcommand | Description |
+|---|---|
+| `apply <ROM> <PATCH> [OUTPUT]` | Apply one patch file to one ROM and write the patched copy |
+
+`apply` takes the shared output and conflict flags (`-o/--output`, `--output-dir`,
+`--output-template`, `--on-conflict`, `-f/--force`; see
+[Common output and batch flags](#common-output-and-batch-flags)). It has no `-R`.
+
+Supported patches are `.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`,
+and `.vcdiff` / `.xdelta` (VCDIFF). Format detection uses the extension and magic.
+
+The default output is `<patch stem>.<ROM extension>` beside the ROM. Dots in the patch
+stem stay unchanged, so `Hack v1.2.bps` applied to `Game.sfc` produces `Hack v1.2.sfc`.
+If that name equals the ROM's file name (ignoring case), the output becomes
+`<patch stem> (patched).<ROM extension>`. A ROM with no extension produces the bare
+patch stem. `--output-template` tokens describe the source ROM, so `{basename}` is the
+ROM's name: pair a template with a different `--output-dir`, because a name that lands
+on the ROM itself is refused.
+
+BPS and UPS verify the source CRC32 before writing and the target CRC32 after.
+`.rup` verifies the source and target MD5. APS and PPF 2.0 check the source size, and
+N64 APS also checks the cartridge id. IPS has no source check. The output is written
+through a temporary sibling and renamed into place.
+
+The command reads plain files only. An archive is rejected; extract the ROM first.
+It never writes over the ROM or the patch. `--dry-run` opens the patch (checking its
+format and, for BPS and UPS, its checksum) and prints the planned output without
+writing it.
+
+```sh
+rom-converto patch apply game.sfc hack.ips
+rom-converto patch apply game.sfc hack.bps patched.sfc
+```
 
 ## organize
 

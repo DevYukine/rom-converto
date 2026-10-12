@@ -93,7 +93,7 @@ set through the C ABI.
 ### Operations
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
-`dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `ps3.decrypt`, `psp.to_iso`,
+`dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `patch.apply`, `ps3.decrypt`, `psp.to_iso`,
 `psp.extract`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
@@ -136,6 +136,14 @@ next to the input. Directory-output operations (`nx.split`, `ctr.unbundle`,
 existing file at the path and writes into a non-empty directory as it is, but refuses an
 output path that is the input itself, or an existing file inside a directory input, with
 `invalid_argument`; `overwrite_invalid` acts as `skip`.
+
+`patch.apply` takes the ROM in `input` and the patch in `options.patch_file`;
+`output`, `options.output_dir` and `options.output_template` are optional;
+template tokens describe the ROM. The default output is
+`<patch stem>.<ROM extension>` beside the ROM, or
+`<patch stem> (patched).<ROM extension>` when that name equals the ROM's file
+name ignoring case. An archive input and an output path that is the ROM or the
+patch file are refused with `invalid_argument`. `on_conflict` applies.
 
 `xenon.convert` writes a Games on Demand container and returns `data` with
 `title_id`, `media_id`, `part_count`, and `total_bytes`. `options.title`

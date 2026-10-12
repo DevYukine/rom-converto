@@ -2,6 +2,7 @@ import { watch } from "vue";
 import { useHashStore } from "~/stores/hash";
 import { usePlaylistStore } from "~/stores/playlist";
 import { useCueMergeStore } from "~/stores/cue-merge";
+import { usePatchApplyStore } from "~/stores/patch-apply";
 import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useNxMergeStore } from "~/stores/nx-merge";
@@ -15,11 +16,12 @@ import {
 	deriveMergedCuePath,
 	deriveNxMergedPath,
 	deriveNxSplitDir,
+	derivePatchedPath,
 	dirName,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
-import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, directoryConflict, directoryOutputRows, runArgs, type OpDef, type OpStore, type RunPayload } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, directoryOutputRows, runArgs, runnerDerivedOutput, type OpDef, type OpStore, type RunPayload } from "./types";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -289,6 +291,80 @@ const merge: OpDef = {
 			taskId,
 		),
 	chips: (store) => `onConflict:${store.onConflict}`,
+};
+
+// Empty until a patch is chosen (and for archives, which the runner refuses),
+// so neither the staged row nor the echo shows a bogus output.
+function patchedOutput(input: string, store: OpStore): string {
+	const name = derivePatchedPath(input, store.patchFile);
+	return name ? withOutputDir(name, store.outputDir) : "";
+}
+
+const patchApply: OpDef = {
+	op: "tools",
+	console: "patch",
+	opLabel: "Tools",
+	storeId: "patch-apply",
+	useStore: () => usePatchApplyStore(),
+	command: "cmd_run",
+	resultKind: "convert",
+
+	title: "Apply patch",
+	subtitle: "Applies an IPS, BPS, UPS, PPF, APS, RUP or xdelta patch to a ROM.",
+	dropText: "Drop the ROM to patch",
+	acceptedExts: [],
+	singleInput: true,
+	fields: [
+		{
+			kind: "file",
+			key: "patchFile",
+			label: "Patch file",
+			filters: [{ name: "Patch files", extensions: ["aps", "bps", "ebp", "ips", "ips32", "ppf", "rup", "ups", "vcdiff", "xdelta"] }],
+			placeholder: "Choose a patch file",
+			display: (store) => store.patchFile ? basename(store.patchFile) : "",
+			tooltip: "The patch to apply. BPS, UPS and RUP patches carry a source checksum and refuse a ROM that does not match; APS and PPF 2.0 check the source size; IPS has no source check.",
+		},
+	],
+	note: "The patched copy is named after the patch with the ROM's extension (with a (patched) suffix when the names match) and goes into the chosen directory, or beside the ROM. The ROM itself is never modified. Archives are not accepted. Extract the ROM first.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Directory",
+			display: (store) => store.outputDir || "",
+			placeholder: "Same as source",
+			value: (store) => store.outputDir,
+			set: (store, value) => {
+				store.outputDir = value;
+			},
+			tooltip: "Where the patched file is written. Leave empty to write it next to the source file.",
+		},
+		{
+			kind: "template",
+			label: "Template",
+			display: (store) => store.outputTemplate || "",
+			placeholder: "None",
+			set: (store, value) => { store.outputTemplate = value; },
+			tooltip:
+				"Optional filename pattern built from tokens like {title}, {titleId}, {region}, {console}, {serial}, {ext}, and {basename}. The tokens describe the ROM, not the patch, so pair a template with a different Directory: a name that lands on the ROM itself is refused.",
+		},
+	],
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "Runs in the global queue like everything else.",
+
+	deriveOutput: (input, store) => patchedOutput(input, store),
+	buildArgs: (store, item, taskId) => {
+		const derived = runnerDerivedOutput(store, item.path, (input) => derivePatchedPath(input, store.patchFile));
+		return runArgs(
+			"patch.apply",
+			item.path,
+			store.patchFile ? derived.output : null,
+			{ ...derived.options, ...commonOptions(store), patch_file: store.patchFile || null },
+			false,
+			taskId,
+		);
+	},
+	chips: (store) => `${store.patchFile ? basename(store.patchFile) : "no patch"} · onConflict:${store.onConflict}`,
 };
 
 const cdn2cia: OpDef = {
@@ -743,6 +819,7 @@ export const toolOps: OpDef[] = [
 	hash,
 	playlist,
 	merge,
+	patchApply,
 	cdn2cia,
 	ticket,
 	nxMerge,

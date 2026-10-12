@@ -205,6 +205,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("remove_headers", FlagKind::EqualsList),
     ("trim_add_padding", FlagKind::Bool),
     ("patch", FlagKind::Repeated),
+    ("patch_file", FlagKind::Positional),
     ("patch_only", FlagKind::Bool),
     ("clean", FlagKind::Bool),
     ("clean_exclude", FlagKind::Repeated),
@@ -621,6 +622,10 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "zip_exclude",
             "zip_format",
         ],
+    ),
+    (
+        "patch apply",
+        &["on_conflict", "output_dir", "output_template"],
     ),
     (
         "playlist",

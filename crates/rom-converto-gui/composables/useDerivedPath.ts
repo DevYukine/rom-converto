@@ -143,6 +143,20 @@ export function deriveMergedCuePath(input: string): string {
   return `${stem} (merged).cue`;
 }
 
+export function derivePatchedPath(input: string, patchFile: string): string {
+  if (!patchFile || hasArchiveExt(input)) return "";
+  const inputName = basename(input);
+  const patchName = basename(patchFile);
+  const patchDot = patchName.lastIndexOf(".");
+  const stem = patchDot > 0 ? patchName.slice(0, patchDot) : patchName;
+  const inputDot = inputName.lastIndexOf(".");
+  const ext = inputDot > 0 ? inputName.slice(inputDot + 1) : "";
+  const suffix = ext ? `.${ext}` : "";
+  let name = `${stem}${suffix}`;
+  if (name.toLowerCase() === inputName.toLowerCase()) name = `${stem} (patched)${suffix}`;
+  return withOutputDir(name, dirName(input));
+}
+
 export function deriveCsoPath(input: string, format: "cso" | "zso"): string {
   return replaceExt(stripArchiveExt(input), format);
 }

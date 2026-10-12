@@ -204,6 +204,10 @@
     "organize": [
       "organize"
     ],
+    "patch.apply": [
+      "patch",
+      "apply"
+    ],
     "playlist": [
       "playlist"
     ],
@@ -656,6 +660,12 @@
       "flag": "--patch",
       "global": false,
       "kind": "repeated",
+      "explicit_off": false
+    },
+    "patch_file": {
+      "flag": "--patch-file",
+      "global": false,
+      "kind": "positional",
       "explicit_off": false
     },
     "patch_only": {
@@ -1266,6 +1276,11 @@
       "zip_exclude",
       "zip_format"
     ],
+    "patch.apply": [
+      "on_conflict",
+      "output_dir",
+      "output_template"
+    ],
     "playlist": [
       "extensions",
       "max_depth",
@@ -1488,6 +1503,7 @@
     "nx.split": "output_dir",
     "nx.verify": "none",
     "organize": "output_dir",
+    "patch.apply": "positional",
     "playlist": "output_dir",
     "playlist.write": "output_dir",
     "ps3.decrypt": "positional",

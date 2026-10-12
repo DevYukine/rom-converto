@@ -1,11 +1,12 @@
-//! Cue, NTR, NX and CTR merge, split and bundle handlers.
+//! Cue, NTR, NX, CTR and ROM patch handlers.
 
 use super::invalid_arg;
 use super::models::{RunData, RunRequest, RunResponse, WupTitleInputOption};
 use super::ops::{
-    ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, preflight_space,
+    ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, output_or, preflight_space,
     required_input, skipped_already_done,
 };
+use super::organize::FileIdentity;
 use crate::nintendo::ntr::NtrError;
 use crate::nintendo::nx::{NxError, NxMergeFormat};
 use crate::util::fs::file_len;
@@ -116,6 +117,59 @@ pub(crate) async fn ntr_decrypt(
     )
     .await;
     ntr_already_done(result, &input, "ntr.decrypt", "already decrypted")
+}
+
+/// Applies one patch to a ROM while keeping both inputs untouched.
+pub(crate) async fn patch_apply(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    let patch_path = req
+        .options
+        .patch_file
+        .clone()
+        .ok_or_else(|| invalid_arg("patch file is required"))?;
+    if crate::util::is_archive_path(&input) {
+        return Err(invalid_arg(
+            "archive inputs are not supported, extract the ROM first",
+        ));
+    }
+    let open_path = patch_path.clone();
+    let open_cancel = cancel.clone();
+    let patch =
+        tokio::task::spawn_blocking(move || crate::patch::Patch::open(&open_path, &open_cancel))
+            .await??;
+    let desired = output_or(&req, &input, || {
+        crate::patch::patched_output_path(&input, &patch_path)
+    })?;
+    if let Ok(identity) = FileIdentity::probe(&desired) {
+        for (path, kind) in [(&input, "input ROM"), (&patch_path, "patch file")] {
+            if FileIdentity::probe(path).is_ok_and(|source_identity| source_identity == identity) {
+                return Err(invalid_arg(format!(
+                    "{} is the {kind}; writing the output there would destroy it",
+                    desired.display()
+                )));
+            }
+        }
+    }
+    convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            skip_if_already: None,
+            input: &input,
+            derive: &|basis, _| crate::patch::patched_output_path(basis, &patch_path),
+            operation: "patch.apply",
+            verify: OutputVerify::None,
+        },
+        cancel,
+        |source, output, cancel| async move {
+            tokio::task::spawn_blocking(move || patch.apply(&source, &output, &cancel)).await?
+        },
+    )
+    .await
 }
 
 /// A ROM that is already in the target state, or has no secure area to work
@@ -593,8 +647,15 @@ mod tests {
             std::fs::write(path, b"x").unwrap();
         }
         let missing_keys = dir.path().join("missing.keys");
+        let (rom, ips) = write_patch_fixture(dir.path());
         let cases = [
             ("cue.to_iso", &cue, json!({}), dir.path().join("game.iso")),
+            (
+                "patch.apply",
+                &rom,
+                json!({ "patch_file": ips }),
+                dir.path().join("hack.sfc"),
+            ),
             (
                 "cue.to_cso",
                 &cue,
@@ -737,6 +798,179 @@ mod tests {
             data["output"].as_str(),
             dir.path().join("game.bcci").to_str()
         );
+    }
+
+    fn write_patch_fixture(dir: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        let rom = dir.join("game.sfc");
+        let patch = dir.join("hack.ips");
+        std::fs::write(&rom, [0u8; 16]).unwrap();
+        std::fs::write(&patch, b"PATCH\0\0\x04\0\x02\xaa\xbbEOF").unwrap();
+        (rom, patch)
+    }
+
+    #[tokio::test]
+    async fn patch_apply_writes_patched_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        let req = json!({
+            "operation": "patch.apply",
+            "input": rom,
+            "options": { "patch_file": patch }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let mut expected = [0u8; 16];
+        expected[4..6].copy_from_slice(&[0xaa, 0xbb]);
+        assert_eq!(
+            std::fs::read(dir.path().join("hack.sfc")).unwrap(),
+            expected
+        );
+        assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+    }
+
+    #[tokio::test]
+    async fn patch_apply_places_the_copy_in_the_output_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        let out = dir.path().join("patched");
+        let req = json!({
+            "operation": "patch.apply",
+            "input": rom,
+            "options": { "patch_file": patch, "output_dir": out }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(out.join("hack.sfc").is_file());
+        assert!(!dir.path().join("hack.sfc").exists());
+    }
+
+    /// Template tokens describe the ROM, so a plain template resolves onto
+    /// the ROM itself and is refused; the same template with another
+    /// output directory writes the copy there.
+    #[tokio::test]
+    async fn patch_apply_template_refuses_the_rom_but_works_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        let req = json!({
+            "operation": "patch.apply",
+            "input": rom,
+            "options": {
+                "patch_file": patch,
+                "output_template": "{basename}.{ext}",
+                "on_conflict": "overwrite"
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, 2, "{res:?}");
+        assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+
+        let out = dir.path().join("patched");
+        let req = json!({
+            "operation": "patch.apply",
+            "input": rom,
+            "options": {
+                "patch_file": patch,
+                "output_template": "{basename}.{ext}",
+                "output_dir": out
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(out.join("game.sfc").is_file());
+    }
+
+    #[tokio::test]
+    async fn patch_apply_without_patch_file_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, _) = write_patch_fixture(dir.path());
+        let req = json!({ "operation": "patch.apply", "input": rom });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, 2);
+        assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+        assert!(!dir.path().join("hack.sfc").exists());
+    }
+
+    #[tokio::test]
+    async fn patch_apply_refuses_output_on_the_rom() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        for dry_run in [false, true] {
+            let req = json!({
+                "operation": "patch.apply",
+                "input": rom,
+                "output": rom,
+                "dry_run": dry_run,
+                "options": { "patch_file": patch, "on_conflict": "overwrite" }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            assert!(!res.ok, "{res:?}");
+            assert_eq!(res.status, 2);
+            assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+            assert!(!dir.path().join("hack.sfc").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_apply_refuses_output_on_the_patch() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        let original = std::fs::read(&patch).unwrap();
+        for dry_run in [false, true] {
+            let req = json!({
+                "operation": "patch.apply",
+                "input": rom,
+                "output": patch,
+                "dry_run": dry_run,
+                "options": { "patch_file": patch, "on_conflict": "overwrite" }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            assert!(!res.ok, "{res:?}");
+            assert_eq!(res.status, 2);
+            assert_eq!(std::fs::read(&patch).unwrap(), original);
+            assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+            assert!(!dir.path().join("hack.sfc").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_apply_refuses_archive_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, patch) = write_patch_fixture(dir.path());
+        let archive = dir.path().join("rom.zip");
+        std::fs::write(&archive, b"archive").unwrap();
+        let req = json!({
+            "operation": "patch.apply",
+            "input": archive,
+            "options": { "patch_file": patch }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, 2);
+        assert_eq!(std::fs::read(&archive).unwrap(), b"archive");
+        assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+        assert!(!dir.path().join("hack.zip").exists());
+    }
+
+    #[tokio::test]
+    async fn patch_apply_opens_the_patch_even_on_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rom, _) = write_patch_fixture(dir.path());
+        let unsupported = dir.path().join("hack.txt");
+        std::fs::write(&unsupported, b"PATCH\0\0\x04\0\x02\xaa\xbbEOF").unwrap();
+        for patch in [dir.path().join("missing.ips"), unsupported] {
+            let req = json!({
+                "operation": "patch.apply",
+                "input": rom,
+                "dry_run": true,
+                "options": { "patch_file": patch }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            assert!(!res.ok, "{res:?}");
+            assert_eq!(std::fs::read(&rom).unwrap(), [0u8; 16]);
+            assert!(!dir.path().join("missing.sfc").exists());
+        }
+        assert!(!dir.path().join("hack.sfc").exists());
     }
 
     #[tokio::test]

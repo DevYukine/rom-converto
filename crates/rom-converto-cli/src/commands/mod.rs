@@ -11,6 +11,7 @@ use crate::commands::misc::{CapabilitiesCommand, SelfUpdateCommand};
 use crate::commands::ntr::NtrCommands;
 use crate::commands::nx::NxCommands;
 use crate::commands::organize::OrganizeCommand;
+use crate::commands::patch::PatchCommands;
 use crate::commands::playlist::PlaylistCommand;
 use crate::commands::ps3::Ps3Commands;
 use crate::commands::psp::PspCommands;
@@ -36,6 +37,7 @@ pub mod misc;
 pub mod ntr;
 pub mod nx;
 pub mod organize;
+pub mod patch;
 pub mod playlist;
 pub mod ps3;
 pub mod psp;
@@ -53,7 +55,7 @@ pub mod xenon;
 	author,                   // pulls env!("CARGO_PKG_AUTHORS")
 	version = env!("ROM_CONVERTO_DISPLAY_VERSION"),
 	about,                    // doc-comment or Cargo.toml description
-	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, ps3, psp, vita, ntr, xbox, xenon); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
+	long_about = "Encrypt, decrypt, compress, convert, and verify ROMs and disc images\n\nEach top-level command is a console/format family (ctr, dol, rvl, wup, nx, chd, cso, cue, ps3, psp, vita, ntr, xbox, xenon, patch); each has operations like compress, decompress, verify and info. Output is auto-derived from the input unless you pass an explicit OUTPUT, -o/--output, or --output-dir. Pass -R/--recursive to process every matching file in a directory.",
 	help_template = "\
 {before-help}{name} {version}\n\
 {about-with-newline}\n\
@@ -153,6 +155,9 @@ pub enum Commands {
 
     #[command(subcommand)]
     Dat(DatCommands),
+
+    #[command(subcommand)]
+    Patch(PatchCommands),
 
     /// Sort a ROM library into per-console folders and compress every file into its best format
     Organize(Box<OrganizeCommand>),
@@ -285,6 +290,8 @@ mod tests {
                 &["--output", "out", "--dat-id", "d"],
             ],
         ),
+        // PATCH is a required positional.
+        ("patch apply", &[&["p"]]),
         // patch_only requires --patch at the clap level.
         ("organize", &[&["--patch", "p"]]),
     ];
@@ -373,18 +380,23 @@ mod tests {
                 "{op}: base invocation does not parse: {bases:?}"
             );
 
-            // A second positional is the output; failing that, --output-dir
-            // then --output.
+            // Positional output goes after the required arguments; a command
+            // whose required arguments already supply the output (cue merge)
+            // is probed in the plain form instead.
             let output = if cmd.get_positionals().count() > 1 {
+                let out = "out".to_string();
+                let supplied = extras.iter().any(|extra| extra.contains(&"out"));
                 assert!(
-                    Cli::try_parse_from(
-                        ["bin"]
-                            .iter()
-                            .map(|s| (*s).to_string())
-                            .chain(path.iter().cloned())
-                            .chain(["input".to_string(), "out".to_string()])
-                    )
-                    .is_ok(),
+                    parses(&bases, std::slice::from_ref(&out))
+                        || (supplied
+                            && Cli::try_parse_from(
+                                ["bin"]
+                                    .iter()
+                                    .map(|s| (*s).to_string())
+                                    .chain(path.iter().cloned())
+                                    .chain(["input".to_string(), out])
+                            )
+                            .is_ok()),
                     "{op}: positional output does not parse"
                 );
                 OutputKind::Positional

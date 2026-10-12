@@ -735,6 +735,8 @@ pub struct RunOptions {
     pub remove_headers: Option<Vec<String>>,
     pub trim_add_padding: Option<bool>,
     pub patch: Option<Vec<PathBuf>>,
+    /// The single patch file `patch.apply` applies.
+    pub patch_file: Option<PathBuf>,
     pub patch_only: Option<bool>,
     pub clean: Option<bool>,
     pub clean_exclude: Option<Vec<String>>,

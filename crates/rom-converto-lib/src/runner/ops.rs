@@ -10,6 +10,7 @@ use super::models::{
 };
 use super::ops_misc::{
     ctr_bundle, ctr_unbundle, cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split,
+    patch_apply,
 };
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
@@ -830,6 +831,17 @@ pub(crate) static OPS: &[OpSpec] = &[
         derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(xenon_verify(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "patch.apply",
+        aliases: &[],
+        batch_exts: None,
+        input_exts: None,
+        batch_output_dir: None,
+        writes_output: true,
+        derive_output: None,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(patch_apply(req, progress, cancel)),
     },
     OpSpec {
         name: "playlist.write",

@@ -22,10 +22,13 @@ and `info` extensions in the installed build.
 | Nintendo DS (`ntr`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
 | PSP (`psp`) | `EBOOT.PBP` or PSN `.pkg` | extracted files or `.iso` | extract, to-iso |
 | PS Vita (`vita`) | `.pkg` | extracted files | extract |
+| ROM patches (`patch`) | A plain ROM file plus a `.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`, `.vcdiff`, or `.xdelta` patch | Patched copy of the ROM | apply; also `organize --patch` |
 
 `.dax` is a legacy, decode-only input for CSO commands. It cannot be created.
 CHD extraction recreates a `.cue` plus one `.bin` per track for CD media and an `.iso`
 for DVD media, so its reverse operation is named `extract`.
+BPS and UPS patches check the source CRC32 before writing, `.rup` checks the MD5, and
+APS and PPF 2.0 check the source size. IPS has no source check.
 
 ## Large files and memory
 

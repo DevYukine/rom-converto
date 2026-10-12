@@ -17,6 +17,7 @@ import {
   deriveNszPath,
   deriveNxMergedPath,
   deriveNxSplitDir,
+  derivePatchedPath,
   deriveRvzPath,
   deriveWuaPath,
   deriveWupDiscPath,
@@ -141,6 +142,20 @@ describe("merged cue derivation", () => {
     expect(deriveMergedCuePath("10.000 Bullets (Track 1).cue")).toBe(
       "10.000 Bullets (merged).cue",
     );
+  });
+});
+
+describe("patched ROM derivation", () => {
+  it.each([
+    ["Game.sfc", "Hack v1.2.bps", "Hack v1.2.sfc"],
+    ["game.sfc", "GAME.ips", "GAME (patched).sfc"],
+    ["rom", "fix.ips", "fix"],
+    ["/roms/Game.sfc", "", ""],
+    ["/roms/Game.zip", "/patches/fix.ips", ""],
+    ["D:\\roms\\Game.sfc", "E:\\patches\\Hack v1.2.bps", "D:\\roms\\Hack v1.2.sfc"],
+    ["/roms/Game.SFC", "/patches/fix.ips", "/roms/fix.SFC"],
+  ])("derives the patched path for %s and %s", (input, patchFile, expected) => {
+    expect(derivePatchedPath(input, patchFile)).toBe(expected);
   });
 });
 

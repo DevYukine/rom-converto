@@ -21,6 +21,20 @@ describe("buildCliCommand", () => {
     expect(buildCliCommand(payload)).toBe("rom-converto nx merge a.nsp b.nsp --output merged.nsp");
   });
 
+  it("echoes the patch file between the ROM and output positionals", () => {
+    const payload = runArgs(
+      "patch.apply",
+      "/r/Game.sfc",
+      "/r/Hack v1.2.sfc",
+      { patch_file: "/p/Hack v1.2.bps", on_conflict: "overwrite" },
+      false,
+      "t3patch",
+    );
+    expect(buildCliCommand(payload)).toBe(
+      "rom-converto patch apply /r/Game.sfc '/p/Hack v1.2.bps' '/r/Hack v1.2.sfc' --on-conflict overwrite",
+    );
+  });
+
   it("routes an output_dir-kind op's output through --output-dir", () => {
     const payload = runArgs("nx.split", "merged.nsp", "out", {}, false, "t3b");
     expect(buildCliCommand(payload)).toBe("rom-converto nx split merged.nsp --output-dir out");

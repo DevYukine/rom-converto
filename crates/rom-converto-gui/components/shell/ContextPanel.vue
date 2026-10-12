@@ -106,6 +106,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "playlist", name: "Playlist (.m3u)", hint: "" },
 		{ id: "hash", name: "Hash", hint: "" },
 		{ id: "merge", name: "Merge multi-bin", hint: "" },
+		{ id: "patch", name: "Apply patch", hint: "IPS/BPS/UPS/xdelta" },
 		{ id: "cdn2cia", name: "CDN → CIA", hint: "" },
 		{ id: "ticket", name: "Generate ticket", hint: "" },
 		{ id: "nx-merge", name: "Merge Switch NSP/XCI", hint: "→ super NSP/XCI" },
