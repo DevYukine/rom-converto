@@ -1,4 +1,4 @@
-//! RVZ decompression entry point.
+//! Disc decompression with a parallel RVZ pipeline and streaming container conversion.
 //!
 //! # Pipeline
 //!
@@ -25,6 +25,7 @@ pub mod sink;
 
 pub use disc_reader::RvzDiscReader;
 
+use crate::nintendo::disc::input::{disc_size_of, open_disc_input};
 use crate::nintendo::disc::rvz::constants::RVZ_MAGIC;
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::disc::rvz::format::sha1::{compute_disc_hash, compute_file_head_hash};
@@ -35,6 +36,7 @@ use crate::nintendo::disc::wbfs::build_disc_usage;
 use crate::nintendo::disc::wbfs::format::{
     DEFAULT_HD_SECTOR_SHIFT, DEFAULT_WBFS_SECTOR_SHIFT, WII_SECTOR_SIZE,
 };
+use crate::nintendo::{dol::is_gamecube, rvl::is_wii};
 use crate::util::{CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 use binrw::{BinRead, Endian};
 use log::info;
@@ -43,16 +45,23 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Decompress the RVZ at `input` back to a plain ISO at `output`; on
-/// cancel the partial ISO is removed.
+/// Converts a supported disc container at `input` to a plain ISO at `output`;
+/// cancellation removes the partial output.
+///
+/// # Errors
+/// Returns an error for an unrecognized or corrupt disc, I/O failure, or cancellation.
 pub async fn decompress_disc(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> RvzResult<()> {
+    if !is_rvz(input).await? {
+        return decompress_generic(input, output, progress, cancel, false).await;
+    }
+
     let iso_size_guess = tokio::fs::metadata(input).await?.len();
     progress.start(iso_size_guess, "Decompressing RVZ");
 
@@ -77,14 +86,21 @@ pub async fn decompress_disc(
     Ok(())
 }
 
-/// Decompress the RVZ at `input` into a WBFS image at `output`; on
-/// cancel the partial WBFS is removed.
+/// Converts a supported disc container at `input` to a scrubbed WBFS at `output`;
+/// cancellation removes the partial output.
+///
+/// # Errors
+/// Returns an error for an unrecognized or corrupt disc, I/O failure, or cancellation.
 pub async fn decompress_disc_to_wbfs(
     input: &Path,
     output: &Path,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> RvzResult<()> {
+    if !is_rvz(input).await? {
+        return decompress_generic(input, output, progress, cancel, true).await;
+    }
+
     let rvz_size = tokio::fs::metadata(input).await?.len();
     progress.start(rvz_size, "Decompressing RVZ to WBFS");
 
@@ -106,6 +122,140 @@ pub async fn decompress_disc_to_wbfs(
         output.display(),
         disc_size
     );
+    Ok(())
+}
+
+async fn is_rvz(input: &Path) -> std::io::Result<bool> {
+    use tokio::io::AsyncReadExt;
+
+    let mut file = tokio::fs::File::open(input).await?;
+    let mut head = [0u8; 4];
+    match file.read_exact(&mut head).await {
+        Ok(_) => Ok(head == RVZ_MAGIC),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+async fn decompress_generic(
+    input: &Path,
+    output: &Path,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+    wbfs: bool,
+) -> RvzResult<()> {
+    let input = input.to_path_buf();
+    let disc_size = {
+        let input = input.clone();
+        tokio::task::spawn_blocking(move || disc_size_of(&input)).await??
+    };
+    progress.start(
+        disc_size,
+        if wbfs {
+            "Converting disc to WBFS"
+        } else {
+            "Converting disc to ISO"
+        },
+    );
+    run_scratch_write(
+        output,
+        true,
+        progress,
+        &cancel,
+        move |file, bytes_done, cancel| {
+            let mut reader = open_disc_input(&input)?;
+            let disc_size = reader.logical_size();
+            let mut dhead = [0u8; 0x80];
+            match reader.read_exact(&mut dhead) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    return Err(RvzError::UnrecognizedDisc);
+                }
+                Err(e) => return Err(e.into()),
+            }
+            if !is_gamecube(&dhead) && !is_wii(&dhead) {
+                return Err(RvzError::UnrecognizedDisc);
+            }
+            let mut buffer = vec![0u8; 4 * 1024 * 1024];
+            if !wbfs {
+                let mut sink = IsoSink::create(file, disc_size)?;
+                reader.seek(SeekFrom::Start(0))?;
+                copy_disc_range(
+                    &mut reader,
+                    &mut sink,
+                    0,
+                    disc_size,
+                    &mut buffer,
+                    &bytes_done,
+                    &cancel,
+                )?;
+                return sink.finish();
+            }
+
+            let usage = build_disc_usage(&mut reader, disc_size)?;
+            let wbfs_sec_sz = 1u64 << DEFAULT_WBFS_SECTOR_SHIFT;
+            let filter = UsageFilter {
+                usage: &usage,
+                wbfs_sec_sz,
+                sectors_per_block: wbfs_sec_sz / WII_SECTOR_SIZE,
+            };
+            let mut sink = WbfsSink::create(
+                file,
+                &usage,
+                disc_size,
+                DEFAULT_HD_SECTOR_SHIFT,
+                DEFAULT_WBFS_SECTOR_SHIFT,
+            )?;
+            let mut position = reader.stream_position()?;
+            for offset in (0..disc_size).step_by(wbfs_sec_sz as usize) {
+                if cancel.is_cancelled() {
+                    return Err(Cancelled.into());
+                }
+                let len = wbfs_sec_sz.min(disc_size - offset);
+                if filter.keeps(offset, len) {
+                    if position != offset {
+                        reader.seek(SeekFrom::Start(offset))?;
+                    }
+                    copy_disc_range(
+                        &mut reader,
+                        &mut sink,
+                        offset,
+                        len,
+                        &mut buffer,
+                        &bytes_done,
+                        &cancel,
+                    )?;
+                    position = offset + len;
+                } else {
+                    bytes_done.fetch_add(len, Ordering::Relaxed);
+                }
+            }
+            sink.finish()
+        },
+    )
+    .await
+}
+
+fn copy_disc_range(
+    reader: &mut impl Read,
+    sink: &mut impl DiscSink,
+    offset: u64,
+    len: u64,
+    buffer: &mut [u8],
+    bytes_done: &AtomicU64,
+    cancel: &CancelToken,
+) -> RvzResult<()> {
+    let mut done = 0;
+    while done < len {
+        if cancel.is_cancelled() {
+            return Err(Cancelled.into());
+        }
+        let take = (len - done).min(buffer.len() as u64) as usize;
+        reader.read_exact(&mut buffer[..take])?;
+        sink.write_at(offset + done, &buffer[..take])?;
+        done += take as u64;
+        bytes_done.fetch_add(take as u64, Ordering::Relaxed);
+    }
     Ok(())
 }
 
@@ -1453,5 +1603,154 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn generic_gcz_and_wia_decompress_to_iso() {
+        use crate::nintendo::disc::{gcz, wia};
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso;
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut iso = make_fake_wii_iso(0x80000 + 13);
+        iso[0x40000..0x40020].fill(0);
+        for (name, container) in [
+            ("game.gcz", gcz::test_fixtures::make_gcz(&iso, 0x8000, 1)),
+            ("game.wia", wia::test_fixtures::make_wia(&iso, 0, 0x20_0000)),
+        ] {
+            let input = dir.path().join(name);
+            let output = dir.path().join(format!("{name}.iso"));
+            std::fs::write(&input, container).unwrap();
+            decompress_disc(&input, &output, &NoProgress, CancelToken::new())
+                .await
+                .unwrap();
+            assert_eq!(std::fs::read(&output).unwrap(), iso, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_wbfs_decompress_matches_logical_disc() {
+        use crate::nintendo::disc::wbfs::usage::DiscUsage;
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso;
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.wbfs");
+        let output = dir.path().join("game.iso");
+        let iso = make_fake_wii_iso(1 << DEFAULT_WBFS_SECTOR_SHIFT);
+        let mut usage = DiscUsage::new(iso.len() as u64);
+        usage.mark_all();
+        let mut sink = WbfsSink::create(
+            File::create(&input).unwrap(),
+            &usage,
+            iso.len() as u64,
+            DEFAULT_HD_SECTOR_SHIFT,
+            DEFAULT_WBFS_SECTOR_SHIFT,
+        )
+        .unwrap();
+        sink.write_at(0, &iso).unwrap();
+        sink.finish().unwrap();
+        decompress_disc(&input, &output, &NoProgress, CancelToken::new())
+            .await
+            .unwrap();
+        let mut reader = open_disc_input(&input).unwrap();
+        assert_eq!(
+            std::fs::metadata(&output).unwrap().len(),
+            reader.logical_size()
+        );
+        let mut restored = File::open(&output).unwrap();
+        let mut expected = vec![0u8; 4 * 1024 * 1024];
+        let mut actual = vec![0u8; expected.len()];
+        let mut remaining = reader.logical_size();
+        while remaining > 0 {
+            let take = remaining.min(expected.len() as u64) as usize;
+            reader.read_exact(&mut expected[..take]).unwrap();
+            restored.read_exact(&mut actual[..take]).unwrap();
+            assert!(expected[..take] == actual[..take]);
+            remaining -= take as u64;
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_gcz_to_wbfs_matches_rvz_pipeline() {
+        use crate::nintendo::disc::gcz;
+        use crate::nintendo::disc::rvz::compress::{RvzCompressOptions, compress_iso};
+        use crate::nintendo::rvl::test_fixtures::{
+            make_fake_wii_iso, make_fake_wii_iso_with_partition,
+        };
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        for iso in [
+            make_fake_wii_iso(0x40_0000),
+            make_fake_wii_iso_with_partition(2),
+        ] {
+            let input = dir.path().join("game.iso");
+            let gcz = dir.path().join("game.gcz");
+            let rvz = dir.path().join("game.rvz");
+            let generic_output = dir.path().join("generic.wbfs");
+            let rvz_output = dir.path().join("rvz.wbfs");
+            std::fs::write(&input, &iso).unwrap();
+            std::fs::write(&gcz, gcz::test_fixtures::make_gcz(&iso, 0x20000, 1)).unwrap();
+            compress_iso(
+                &input,
+                &rvz,
+                RvzCompressOptions::default(),
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+            decompress_disc_to_wbfs(&gcz, &generic_output, &NoProgress, CancelToken::new())
+                .await
+                .unwrap();
+            decompress_disc_to_wbfs(&rvz, &rvz_output, &NoProgress, CancelToken::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read(&generic_output).unwrap(),
+                std::fs::read(&rvz_output).unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_non_disc_is_rejected_and_partial_output_removed() {
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        for data in [vec![0u8; 16], vec![0u8; 0x8000]] {
+            let input = dir.path().join("not-disc.bin");
+            std::fs::write(&input, data).unwrap();
+            for wbfs in [false, true] {
+                let output = dir.path().join(if wbfs { "out.wbfs" } else { "out.iso" });
+                let error = if wbfs {
+                    decompress_disc_to_wbfs(&input, &output, &NoProgress, CancelToken::new()).await
+                } else {
+                    decompress_disc(&input, &output, &NoProgress, CancelToken::new()).await
+                }
+                .unwrap_err();
+                assert!(matches!(error, RvzError::UnrecognizedDisc), "{error}");
+                assert!(!output.exists());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_cancellation_removes_partial_output() {
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso;
+        use crate::util::NoProgress;
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("out.iso");
+        std::fs::write(&input, make_fake_wii_iso(0x8000)).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let error = decompress_disc(&input, &output, &NoProgress, cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RvzError::Cancelled(_)), "{error}");
+        assert!(!output.exists());
     }
 }

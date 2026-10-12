@@ -26,6 +26,7 @@ pub(crate) async fn xbox_convert(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("xiso"),
             operation: "xbox.convert",
@@ -82,6 +83,7 @@ pub(crate) async fn xenon_compress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("zar"),
             operation: "xenon.compress",

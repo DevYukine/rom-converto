@@ -463,6 +463,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disc_convert_plans_target_and_rejects_extension_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, vec![0u8; 4096]).unwrap();
+        let mut req = json!({
+            "operation": "rvl.convert",
+            "input": input,
+            "dry_run": true,
+            "options": { "format": "wbfs" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let Some(models::RunData::Plan(line)) = res.data else {
+            panic!("expected plan");
+        };
+        assert_eq!(line.output, input.with_extension("wbfs"));
+        req["output"] = json!(dir.path().join("output.iso"));
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32());
+    }
+
+    #[tokio::test]
+    async fn disc_convert_skips_already_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let bytes = crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000);
+        std::fs::write(&input, &bytes).unwrap();
+        let req = json!({
+            "operation": "dol.convert", "input": input,
+            "options": { "format": "iso", "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped);
+        assert!(res.records[0].output_path.is_empty());
+        assert_eq!(std::fs::read(&input).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn disc_convert_explicit_same_format_output_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let output = dir.path().join("copy.iso");
+        let bytes = crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000);
+        std::fs::write(&input, &bytes).unwrap();
+        let req = json!({
+            "operation": "dol.convert", "input": input, "output": output,
+            "options": { "skip_space_check": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Ok);
+        assert_eq!(std::fs::read(output).unwrap(), bytes);
+        assert_eq!(std::fs::read(input).unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn disc_convert_self_output_respects_non_overwriting_policies() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        let bytes = crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000);
+        std::fs::write(&input, &bytes).unwrap();
+        for policy in ["overwrite", "overwrite-invalid", "skip", "rename"] {
+            let req = json!({
+                "operation": "dol.convert", "input": input, "output": input, "dry_run": true,
+                "options": { "on_conflict": policy }
+            });
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            if policy.starts_with("overwrite") {
+                assert!(!res.ok, "{res:?}");
+                assert_eq!(res.status, RunStatus::InvalidArgument.as_i32());
+            } else {
+                assert!(res.ok, "{res:?}");
+                assert_eq!(
+                    res.records[0].status,
+                    if policy == "skip" {
+                        FileStatus::Skipped
+                    } else {
+                        FileStatus::Ok
+                    }
+                );
+            }
+            assert_eq!(std::fs::read(&input).unwrap(), bytes);
+        }
+    }
+
+    #[tokio::test]
+    async fn disc_convert_validates_block_size_before_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, b"dry run input").unwrap();
+        let req = json!({
+            "operation": "dol.convert", "input": input, "dry_run": true,
+            "options": { "format": "gcz", "block_size": 12345 }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32());
+        assert!(!input.with_extension("gcz").exists());
+    }
+
+    #[tokio::test]
+    async fn dol_decompress_respects_wbfs_output_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let input = dir.path().join("game.rvz");
+        let output = dir.path().join("game.wbfs");
+        let bytes = crate::nintendo::rvl::test_fixtures::make_fake_wii_iso(0x40_0000);
+        std::fs::write(&iso, &bytes).unwrap();
+        crate::nintendo::disc::rvz::compress_disc(
+            &iso,
+            &input,
+            crate::nintendo::disc::rvz::RvzCompressOptions::default(),
+            &crate::util::NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let req = json!({
+            "operation": "dol.decompress", "input": input, "output": output,
+            "options": { "skip_space_check": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Ok);
+        let mut reader = crate::nintendo::disc::wbfs::reader::WbfsReader::open(&output).unwrap();
+        let mut header = vec![0; 0x80];
+        std::io::Read::read_exact(&mut reader, &mut header).unwrap();
+        assert_eq!(header, bytes[..0x80]);
+    }
+
+    #[tokio::test]
     async fn cdn_output_dir_alias_falls_back_and_canonical_wins() {
         let dir = tempfile::tempdir().unwrap();
         let input = dir.path().join("cdn");
@@ -630,6 +763,33 @@ mod tests {
         assert!(!res.ok);
         assert_eq!(res.status, 2);
         assert!(res.message.contains("dat.scan input"));
+    }
+
+    #[test]
+    fn disc_convert_config_level_only_fills_rvz_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("rom-converto.toml");
+        std::fs::write(&config, "[dol]\nlevel = 22\n[rvl]\nlevel = 22\n").unwrap();
+        for operation in ["dol.convert", "rvl.convert"] {
+            for (options, output, expected) in [
+                (json!({}), None, None),
+                (json!({ "format": "gcz" }), None, None),
+                (json!({ "format": "rvz" }), None, Some(22)),
+                (json!({}), Some("game.rvz"), Some(22)),
+                (json!({ "format": "gcz", "level": 4 }), None, Some(4)),
+            ] {
+                let req: RunRequest = serde_json::from_value(json!({
+                    "operation": operation, "config": config, "options": options, "output": output
+                }))
+                .unwrap();
+                assert_eq!(apply_config_defaults(req).unwrap().options.level, expected);
+            }
+        }
+        let req: RunRequest = serde_json::from_value(json!({
+            "operation": "rvl.convert", "config": config, "options": { "format": "wia" }
+        }))
+        .unwrap();
+        assert_eq!(apply_config_defaults(req).unwrap().options.level, None);
     }
 
     #[test]

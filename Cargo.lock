@@ -4299,6 +4299,7 @@ dependencies = [
  "libz-sys",
  "log",
  "lz4",
+ "lzma-rust2 0.20.1",
  "lzma-sdk-sys",
  "lzxd",
  "md-5",

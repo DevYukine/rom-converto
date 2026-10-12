@@ -7,6 +7,7 @@ import {
 	runnerDerivedOutput,
 	templateIsActive,
 	type OpDef,
+	type OpStore,
 } from "./types";
 import {
 	CHD_CODEC_OPTIONS,
@@ -24,7 +25,9 @@ import { useXboxConvertStore } from "~/stores/xbox-convert";
 import { usePspToIsoStore } from "~/stores/psp-to-iso";
 import { useXenonConvertStore } from "~/stores/xenon-convert";
 import { useWupConvertStore } from "~/stores/wup-convert";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
+import { useDolConvertStore } from "~/stores/dol-convert";
+import { useRvlConvertStore } from "~/stores/rvl-convert";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -173,6 +176,121 @@ const wup: OpDef = {
 		),
 	chips: (store) => (store.direction === "wud" ? "wux → wud" : "wud → wux"),
 };
+
+function discConvert(console: "dol" | "rvl"): OpDef {
+	const wii = console === "rvl";
+	const formats = wii ? ["iso", "wbfs", "gcz", "wia", "rvz"] : ["iso", "gcz", "rvz"];
+	const acceptedExts = wii ? ["iso", "wbfs", "rvz", "gcz", "wia"] : ["iso", "gcm", "rvz", "gcz"];
+	return {
+		op: "convert",
+		console,
+		opLabel: "Convert",
+		storeId: `${console}-convert`,
+		useStore: wii ? useRvlConvertStore : useDolConvertStore,
+		command: "cmd_run",
+		resultKind: "convert",
+		title: wii ? "Convert Wii discs" : "Convert GameCube discs",
+		subtitle: "Convert a disc image to the selected format, restoring omitted data from NKit inputs.",
+		dropText: `Drop ${acceptedExts.map((ext) => `.${ext}`).join(", ")} files or folders`,
+		acceptedExts: [...acceptedExts, ...ARCHIVE_EXTS],
+		browseFilters: [{ name: wii ? "Wii discs" : "GameCube discs", extensions: acceptedExts }],
+		fields: [
+			{
+				kind: "segmented",
+				key: "format",
+				label: "Format",
+				options: formats.map((value) => ({ label: value.toUpperCase(), value })),
+				onSet: (store) => { store.level = null; },
+				tooltip: "The target disc format. Inputs already in this format are skipped.",
+			},
+			...(wii ? [{
+				kind: "select" as const,
+				key: "compression",
+				label: "Compression",
+				section: "Conversion",
+				options: [
+					{ label: "LZMA2 (default)", value: "" },
+					{ label: "None", value: "none" },
+					{ label: "bzip2", value: "bzip2" },
+					{ label: "LZMA", value: "lzma" },
+					{ label: "LZMA2", value: "lzma2" },
+				],
+				visible: (s: OpStore) => s.format === "wia",
+				tooltip: "WIA compression method. LZMA2 is the default; WIA always uses 2 MiB chunks.",
+			}] : []),
+			{
+				kind: "number",
+				key: "level",
+				label: "Level",
+				section: "Conversion",
+				placeholder: "22",
+				visible: (s) => s.format === "rvz",
+				tooltip: "Zstandard compression level. Leave empty to use the configured value or the default of 22.",
+			},
+			...(wii ? [{
+				kind: "number" as const,
+				key: "level",
+				label: "Level",
+				section: "Conversion",
+				placeholder: "6",
+				visible: (s: OpStore) => s.format === "wia",
+				tooltip: "WIA level: 0 through 9 for LZMA/LZMA2, or 1 through 9 for bzip2. None ignores level. Leave empty for the default of 6.",
+			}] : []),
+			{
+				kind: "number",
+				key: "chunkSize",
+				label: "Chunk size",
+				section: "Conversion",
+				placeholder: "131072",
+				visible: (s) => s.format === "rvz",
+				tooltip: "RVZ chunk size in bytes, a power of two from 32768 through 2097152. Defaults to 131072.",
+			},
+			{
+				kind: "number",
+				key: "blockSize",
+				label: "Block size",
+				section: "Conversion",
+				placeholder: "131072",
+				visible: (s) => s.format === "gcz",
+				tooltip: "GCZ block size in bytes, a power of two from 32768 through 2097152. Defaults to 131072.",
+			},
+			{
+				kind: "toggle",
+				key: "skipVerify",
+				label: "Skip verify",
+				section: "Conversion",
+				tooltip: "Skip the integrity check before converting GCZ, WIA, or NKit input.",
+			},
+			...recursiveFields(),
+		],
+		note: "Inputs already in the selected format are skipped. NKit inputs rebuild omitted data; NKit output is not supported.",
+		outputRows: templateOutputRowsWithReport(),
+		actionNote: "Jobs start automatically. Parameters lock once queued.",
+		deriveOutput: (input, store) => deriveDiscPath(input, store.format),
+		buildArgs: (store, item, taskId) => {
+			const derived = runnerDerivedOutput(store, item.path, (input) => deriveDiscPath(input, store.format));
+			return runArgs(
+				`${console}.convert`,
+				item.path,
+				derived.output,
+				{
+					format: store.format,
+					...((store.format === "rvz" || store.format === "wia") && store.level != null ? { level: store.level } : {}),
+					...(store.format === "rvz" && store.chunkSize != null ? { chunk_size: store.chunkSize } : {}),
+					...(store.format === "gcz" && store.blockSize != null ? { block_size: store.blockSize } : {}),
+					...(store.format === "wia" && store.compression ? { compression: store.compression } : {}),
+					...(store.skipVerify ? { skip_verify: true } : {}),
+					...derived.options,
+					...commonOptions(store),
+				},
+				false,
+				taskId,
+				store.reportFile || null,
+			);
+		},
+		chips: (store) => store.format,
+	};
+}
 
 const cso: OpDef = {
 	op: "convert",
@@ -615,4 +733,4 @@ const xenon: OpDef = {
 	chips: (store) => (store.title ? "custom title" : ""),
 };
 
-export const convertOps: OpDef[] = [ctr, wup, cso, chd, chdMigrate, cue, xbox, psp, xenon];
+export const convertOps: OpDef[] = [ctr, discConvert("dol"), discConvert("rvl"), wup, cso, chd, chdMigrate, cue, xbox, psp, xenon];

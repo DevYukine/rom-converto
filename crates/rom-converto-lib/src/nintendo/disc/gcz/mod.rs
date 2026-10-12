@@ -1,10 +1,11 @@
-//! GCZ (CompressedBlob) input support: streaming reconstruction
-//! of the logical disc plus a pre-conversion integrity pass.
+//! GCZ (CompressedBlob) support: streaming reconstruction and
+//! compression of the logical disc plus an integrity pass.
 
 pub mod error;
 pub mod format;
 pub mod reader;
 pub mod verify;
+pub mod writer;
 
 #[cfg(test)]
 pub(crate) mod test_fixtures;
@@ -13,6 +14,7 @@ pub use error::{GczError, GczResult};
 pub use format::GczHeader;
 pub use reader::{GczReader, gcz_logical_prefix};
 pub use verify::{verify_gcz_blocking, verify_total};
+pub use writer::{DEFAULT_BLOCK_SIZE, compress_to_gcz, validate_block_size};
 
 use std::io::Read;
 use std::path::Path;

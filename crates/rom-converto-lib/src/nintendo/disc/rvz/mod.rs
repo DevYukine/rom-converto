@@ -508,15 +508,7 @@ fn group_range_fits(group_index: u32, n_groups: u32, len: u64) -> bool {
 /// `.nkit.iso`/`.nkit.gcz` double extension so the result is
 /// `name.rvz` rather than `name.nkit.rvz`.
 pub fn derive_rvz_path(input: &Path) -> PathBuf {
-    // Strip NKit's double extension so game.nkit.iso becomes
-    // game.rvz instead of game.nkit.rvz.
-    if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
-        let lower = name.to_ascii_lowercase();
-        if lower.ends_with(".nkit.iso") || lower.ends_with(".nkit.gcz") {
-            return input.with_file_name(format!("{}.rvz", &name[..name.len() - 9]));
-        }
-    }
-    input.with_extension("rvz")
+    super::convert::derive_convert_path(input, super::convert::DiscFormat::Rvz)
 }
 
 /// Derives an output `.iso` path from `input` by replacing its extension.

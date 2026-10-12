@@ -236,3 +236,158 @@ describe("the PSP / PS2 convert page routes by extension", () => {
 		expect(buildCliCommand(payload)).toMatch(new RegExp(`^${echo}\\b`));
 	});
 });
+
+describe("disc convert page args", () => {
+	beforeEach(() => {
+		setActivePinia(createPinia());
+		setWindowsQuoting(false);
+	});
+
+	it.each(["dol", "rvl"])("defaults %s to ISO without sending unset options", (console) => {
+		const def = defs.find((def) => def.storeId === `${console}-convert`)!;
+		const store = def.useStore();
+		expect(store.format).toBe("iso");
+		expect(store.level).toBeNull();
+		expect(store.skipVerify).toBe(false);
+		const payload = def.buildArgs(store, { ...ITEM, path: "/roms/game.nkit.gcz" }, "task-1");
+		expect(payload.request.operation).toBe(`${console}.convert`);
+		expect(payload.request.output).toBe("/roms/game.iso");
+		expect(payload.request.options.format).toBe("iso");
+		for (const key of ["level", "chunk_size", "block_size", "compression", "skip_verify"]) {
+			expect(payload.request.options).not.toHaveProperty(key);
+		}
+	});
+
+	it.each([
+		["dol", "iso"], ["dol", "gcz"], ["dol", "rvz"],
+		["rvl", "iso"], ["rvl", "wbfs"], ["rvl", "gcz"], ["rvl", "wia"], ["rvl", "rvz"],
+	])("derives and echoes %s conversion to %s", (console, format) => {
+		const def = defs.find((def) => def.storeId === `${console}-convert`)!;
+		const store = def.useStore();
+		store.format = format;
+		const payload = def.buildArgs(store, { ...ITEM, path: "/roms/game.nkit.iso" }, "task-1");
+		expect(payload.request.output).toBe(`/roms/game.${format}`);
+		expect(payload.request.options.format).toBe(format);
+		const echo = buildCliCommand(payload);
+		expect(echo).toMatch(new RegExp(`^rom-converto ${console} convert\\b`));
+		expect(echo).toContain(`--format ${format}`);
+		expect(echo).not.toContain("--level");
+	});
+
+	it.each([["dol", "rvz", 22], ["rvl", "rvz", 10], ["rvl", "wia", 0]])(
+		"sends a typed level for %s %s",
+		(console, format, level) => {
+			const def = defs.find((def) => def.storeId === `${console}-convert`)!;
+			const store = def.useStore();
+			store.format = format;
+			expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("level");
+			store.level = level;
+			const payload = def.buildArgs(store, ITEM, "task-1");
+			expect(payload.request.options.level).toBe(level);
+			expect(buildCliCommand(payload)).toContain(`--level ${level}`);
+			store.level = null;
+			expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("level");
+		},
+	);
+
+	it("only sends compression settings that apply to the selected format", () => {
+		const def = defs.find((def) => def.storeId === "rvl-convert")!;
+		const store = def.useStore();
+		store.compression = "lzma2";
+		store.level = 6;
+		store.chunkSize = 262144;
+		store.blockSize = 131072;
+		store.skipVerify = true;
+		for (const format of ["iso", "wbfs", "gcz", "wia", "rvz"]) {
+			store.format = format;
+			const payload = def.buildArgs(store, ITEM, "task-1");
+			const options = payload.request.options;
+			expect("level" in options).toBe(format === "rvz" || format === "wia");
+			expect("chunk_size" in options).toBe(format === "rvz");
+			expect("block_size" in options).toBe(format === "gcz");
+			expect("compression" in options).toBe(format === "wia");
+			if (format === "wia") {
+				expect(options.compression).toBe("lzma2");
+				expect(buildCliCommand(payload)).toContain("--compression lzma2");
+			}
+			expect(options.skip_verify).toBe(true);
+			expect(buildCliCommand(payload)).toContain("--skip-verify");
+		}
+	});
+
+	it.each([
+		["dol", ["iso", "gcm", "rvz", "gcz"]],
+		["rvl", ["iso", "wbfs", "rvz", "gcz", "wia"]],
+	] as const)("accepts %s disc images and archives", (console, images) => {
+		const def = defs.find((def) => def.storeId === `${console}-convert`)!;
+		const archives = ["zip", "7z", "rar", "tar", "tgz", "gz"];
+		expect(def.acceptedExts).toHaveLength(images.length + archives.length);
+		expect(def.acceptedExts).toEqual(expect.arrayContaining([...images, ...archives]));
+	});
+
+	it("omits unset WIA compression, including after clearing a selection", () => {
+		const def = defs.find((def) => def.storeId === "rvl-convert")!;
+		const store = def.useStore();
+		store.format = "wia";
+		expect(store.compression).toBeNull();
+		expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("compression");
+		store.compression = "bzip2";
+		expect(def.buildArgs(store, ITEM, "task-1").request.options.compression).toBe("bzip2");
+		const field = def.fields.find((field) => field.key === "compression")!;
+		expect(field.kind).toBe("select");
+		if (field.kind !== "select") throw new Error("Expected a select field");
+		store.compression = field.options.find((option) => option.value === "")!.value;
+		expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("compression");
+	});
+
+	it.each([
+		["dol", "rvz", "gcz"],
+		["rvl", "rvz", "wia"],
+		["rvl", "wia", "rvz"],
+	])("clears the level when changing %s from %s to %s", (console, from, to) => {
+		const def = defs.find((def) => def.storeId === `${console}-convert`)!;
+		const store = def.useStore();
+		store.format = from;
+		store.level = 22;
+		const field = def.fields.find((field) => field.key === "format")!;
+		expect(field.kind).toBe("segmented");
+		if (field.kind !== "segmented") throw new Error("Expected a segmented field");
+		store.format = to;
+		field.onSet?.(store);
+		expect(store.level).toBeNull();
+		expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("level");
+	});
+
+	it("keeps output templates and directories on the runner-derived path", () => {
+		const def = defs.find((def) => def.storeId === "rvl-convert")!;
+		const store = def.useStore();
+		store.format = "wia";
+		store.outputDir = "/out";
+		store.outputTemplate = "{title}.{ext}";
+		const request = def.buildArgs(store, ITEM, "task-1").request;
+		expect(request.output).toBeNull();
+		expect(request.options.output_dir).toBe("/out");
+		expect(request.options.output_template).toBe("{title}.{ext}");
+	});
+});
+
+describe("disc extract verification options", () => {
+	beforeEach(() => {
+		setActivePinia(createPinia());
+		setWindowsQuoting(false);
+	});
+
+	it.each(["dol", "rvl"])("only sends skip_verify for %s when enabled", (console) => {
+		const def = defs.find((def) => def.storeId === `${console}-decompress`)!;
+		const store = def.useStore();
+		const field = def.fields.find((field) => field.key === "skipVerify")!;
+		expect(field.kind).toBe("toggle");
+		expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("skip_verify");
+		store[field.key] = true;
+		const payload = def.buildArgs(store, ITEM, "task-1");
+		expect(payload.request.options.skip_verify).toBe(true);
+		expect(buildCliCommand(payload)).toContain("--skip-verify");
+		store[field.key] = false;
+		expect(def.buildArgs(store, ITEM, "task-1").request.options).not.toHaveProperty("skip_verify");
+	});
+});

@@ -10,6 +10,7 @@ use crate::commands::support::{
 use crate::util::{ensure_input_exists, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
+use rom_converto_lib::nintendo::disc::convert::DiscFormat;
 use rom_converto_lib::nintendo::disc::legacy::ALL_MIGRATE_FORMATS;
 use rom_converto_lib::nintendo::disc::rvz::RvzCompressOptions;
 use rom_converto_lib::nintendo::rvl::verify::{RvlVerifyOptions, verify_rvl};
@@ -20,6 +21,7 @@ use rom_converto_lib::util::{CancelToken, oversized_rvz_chunk};
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum RvlCommands {
     Compress(CompressDiscCommand),
+    Convert(ConvertDiscCommand),
     Migrate(MigrateDiscCommand),
     Decompress(DecompressDiscCommand),
     Verify(VerifyDiscCommand),
@@ -157,14 +159,76 @@ pub struct CompressDiscCommand {
     pub batch: BatchArgs,
 }
 
-/// Decompress an RVZ Wii disc image back to ISO or WBFS
+/// Convert a Wii disc image to ISO, WBFS, GCZ, WIA, or RVZ
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decompress an RVZ Wii disc image back to ISO or WBFS\n\nThe output format follows the output file extension: a .wbfs path writes a scrubbed WBFS container streamed directly from the RVZ, anything else writes a raw .iso. Defaults to .iso.",
+    long_about = "Convert a Wii disc image to ISO, WBFS, GCZ, WIA, or RVZ\n\nSupported input: .iso, .wbfs, .rvz, .gcz, .wia, .nkit.iso, and .nkit.gcz. Output defaults to the input path with the target extension; the .nkit suffix is removed. The default target is ISO. Plain inputs already in the target format are skipped unless an output or encoding option is set.",
+    after_long_help = "EXAMPLES:\n  Restore ISO:     rom-converto rvl convert game.wia\n  Write WBFS:      rom-converto rvl convert game.rvz --format wbfs\n  Compress WIA:    rom-converto rvl convert game.iso --format wia --compression lzma2\n  Whole directory: rom-converto rvl convert -R ./roms --format rvz --output-dir ./rvz\n"
+)]
+pub struct ConvertDiscCommand {
+    /// Input disc image path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output path (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Target format (defaults to iso)
+    #[arg(long, value_parser = ["iso", "wbfs", "gcz", "wia", "rvz"])]
+    pub format: Option<String>,
+
+    /// RVZ Zstandard level (-22 through 22, default 22), or WIA level (default 6)
+    #[arg(long, short = 'l', allow_hyphen_values = true)]
+    pub level: Option<i32>,
+
+    /// RVZ chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB)
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// GCZ block size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB)
+    #[arg(long)]
+    pub block_size: Option<u32>,
+
+    /// WIA codec (defaults to lzma2); WIA always uses 2 MiB chunks
+    #[arg(long, value_parser = ["none", "bzip2", "lzma", "lzma2"])]
+    pub compression: Option<String>,
+
+    /// Skip the integrity pass on GCZ, WIA, and NKit inputs
+    #[arg(long)]
+    pub skip_verify: bool,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Convert every .iso, .wbfs, .rvz, .gcz and .wia found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R')]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
+/// Decompress a Wii disc image to ISO or WBFS
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decompress an RVZ, GCZ, WIA, WBFS, or NKit Wii disc image to ISO or WBFS\n\nA .wbfs output path writes a scrubbed WBFS container; otherwise output is a raw ISO. Defaults to .iso, removing the .nkit suffix.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto rvl decompress game.rvz\n  Explicit output: rom-converto rvl decompress game.rvz game.wbfs\n  Whole directory: rom-converto rvl decompress -R ./rvz --output-dir ./roms\n"
 )]
 pub struct DecompressDiscCommand {
-    /// Input RVZ file path, or a directory with --recursive
+    /// Input disc image path (.rvz, .gcz, .wia, .wbfs, .nkit.iso, .nkit.gcz), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -184,10 +248,14 @@ pub struct DecompressDiscCommand {
     #[command(flatten)]
     pub out: OutputArgs,
 
+    /// Skip the integrity pass on GCZ, WIA, and NKit inputs
+    #[arg(long)]
+    pub skip_verify: bool,
+
     #[command(flatten)]
     pub conflict: ConflictArgs,
 
-    /// Decompress every .rvz found in the INPUT directory and its subdirectories
+    /// Decompress every .rvz, .gcz, .wia and .wbfs found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -219,6 +287,50 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         dry_run,
     };
     match command {
+        RvlCommands::Convert(cmd) => {
+            let eff = &effective.rvl;
+            require_input(&cmd.input, cmd.recursive)?;
+            let output = cmd.output_flag.or(cmd.output);
+            let format = cmd
+                .format
+                .as_deref()
+                .and_then(|format| format.parse().ok())
+                .or_else(|| output.as_deref().and_then(DiscFormat::from_extension))
+                .unwrap_or(DiscFormat::Iso);
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.format = cmd.format;
+            options.level = if format == DiscFormat::Rvz {
+                cmd.level.or(eff.level)
+            } else {
+                cmd.level
+            };
+            options.chunk_size = cmd.chunk_size.or(eff.chunk_size);
+            options.block_size = cmd.block_size;
+            options.compression = cmd.compression;
+            options.skip_verify = Some(cmd.skip_verify);
+            if format == DiscFormat::Rvz
+                && let Some(msg) = oversized_rvz_chunk(
+                    options
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                )
+            {
+                log::warn!("{msg}");
+            }
+            batch::run(&run, "rvl.convert", cmd.input, output, options).await?;
+        }
         RvlCommands::Compress(cmd) => {
             let eff = &effective.rvl;
             require_input(&cmd.input, cmd.recursive)?;
@@ -292,7 +404,7 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         RvlCommands::Decompress(cmd) => {
             let eff = &effective.rvl;
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
                 output_template: cmd.out.output_template,
@@ -305,6 +417,7 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            options.skip_verify = Some(cmd.skip_verify);
             batch::run(
                 &run,
                 "rvl.decompress",

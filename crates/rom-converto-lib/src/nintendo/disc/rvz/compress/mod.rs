@@ -1,4 +1,4 @@
-//! RVZ compression entry point.
+//! Shared RVZ and WIA compression pipeline.
 //!
 //! # Pipeline
 //!
@@ -29,12 +29,10 @@
 //!
 //! # Compression methods
 //!
-//! Only zstd is emitted. The spec defines NONE, PURGE, BZIP2, LZMA,
-//! LZMA2, and ZSTD; NONE and PURGE require 4-byte-aligned padding
-//! rules documented in the spec, and BZIP2/LZMA/LZMA2 are not used
-//! for writing by any modern producer. Supporting those methods for
-//! either read or write is explicitly out of scope.
+//! RVZ uses Zstandard with packing and raw fallback. WIA uses its selected
+//! codec for all groups and tables, without packing or compressed raw fallback.
 
+mod codec;
 pub mod partition;
 pub mod raw;
 
@@ -51,18 +49,29 @@ use crate::nintendo::disc::rvz::format::{
     WiaRawData,
 };
 use crate::nintendo::disc::rvz::regions::{DiscRegion, RegionPlan};
+use crate::nintendo::disc::wia::format::{WIA_CHUNK_GRANULARITY, WIA_MAGIC, WIA_VERSION, WiaGroup};
+use crate::nintendo::disc::wia::{WiaCompressOptions, WiaCompression};
 use crate::nintendo::dol::is_gamecube;
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::nintendo::rvl::is_wii;
-use crate::util::worker_pool::{Pool, parallelism};
+use crate::util::worker_pool::{Admission, Budget, Pool, parallelism};
 use crate::util::{CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 use binrw::{BinWrite, Endian};
+use codec::{ChunkCodec, Container};
 use log::info;
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tokio::task;
+
+#[derive(Clone, Copy)]
+struct EncodeOptions {
+    container: Container,
+    level: i32,
+    chunk_size: u32,
+    compression: WiaCompression,
+}
 
 /// Compression options for [`compress_disc`].
 #[derive(Debug, Clone, Copy)]
@@ -141,12 +150,79 @@ pub(crate) async fn compress_iso(
     cancel: CancelToken,
 ) -> RvzResult<()> {
     validate_chunk_size(options.chunk_size)?;
+    compress_container(
+        input,
+        output,
+        EncodeOptions {
+            container: Container::Rvz,
+            level: options.compression_level,
+            chunk_size: options.chunk_size,
+            compression: WiaCompression::None,
+        },
+        progress,
+        cancel,
+    )
+    .await
+}
 
+/// Compresses a Wii disc from any supported container to WIA with 2 MiB chunks.
+///
+/// Writes through a sibling temporary file published only on success.
+///
+/// # Errors
+/// Returns an error for invalid compression levels, GameCube or unrecognized
+/// discs, malformed inputs, I/O or codec failures, or cancellation.
+pub async fn compress_wia(
+    input: &Path,
+    output: &Path,
+    options: WiaCompressOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
+    if let Some(range) = options.compression.level_range()
+        && !range.contains(&options.level)
+    {
+        return Err(RvzError::Custom(format!(
+            "invalid WIA {} level {}: expected {}..={}",
+            options.compression.as_str(),
+            options.level,
+            range.start(),
+            range.end(),
+        )));
+    }
+    compress_container(
+        input,
+        output,
+        EncodeOptions {
+            container: Container::Wia,
+            level: options.level as i32,
+            chunk_size: WIA_CHUNK_GRANULARITY,
+            compression: options.compression,
+        },
+        progress,
+        cancel,
+    )
+    .await
+}
+
+async fn compress_container(
+    input: &Path,
+    output: &Path,
+    options: EncodeOptions,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> RvzResult<()> {
     let iso_size = {
         let input = input.to_path_buf();
         task::spawn_blocking(move || logical_input_size(&input)).await??
     };
-    progress.start(iso_size, "Compressing disc to RVZ");
+    progress.start(
+        iso_size,
+        match options.container {
+            Container::Rvz => "Compressing disc to RVZ",
+            Container::Wia => "Compressing disc to WIA",
+        },
+    );
 
     let input_owned: PathBuf = input.to_path_buf();
     let compressed_size = run_scratch_write(
@@ -171,7 +247,7 @@ pub(crate) async fn compress_iso(
     Ok(())
 }
 
-fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
+pub(crate) fn validate_chunk_size(chunk_size: u32) -> RvzResult<()> {
     if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&chunk_size) || !chunk_size.is_power_of_two() {
         return Err(RvzError::Custom(format!(
             "invalid chunk size {chunk_size}: this writer emits power-of-two chunk sizes \
@@ -194,11 +270,10 @@ pub(super) enum CompressedKind {
     /// The input chunk was all zeros. Emitted as a sentinel (zero
     /// `data_off4` + zero `data_size`) with no bytes on disk.
     AllZero,
-    /// zstd shrunk the chunk. The `Vec<u8>` is the compressed bytes.
+    /// The chunk encoded with the container's codec.
     Compressed(Vec<u8>),
-    /// zstd did not shrink the chunk. The `Vec<u8>` is the raw chunk
-    /// body (or the raw fallback with 4-byte-aligned exception list
-    /// padding for partition chunks).
+    /// An uncompressed chunk body, with 4-byte-aligned exception
+    /// list padding for partition chunks.
     Raw(Vec<u8>),
 }
 
@@ -228,7 +303,7 @@ pub(super) struct PartitionLayout {
 fn compress_blocking(
     input: &Path,
     output: std::fs::File,
-    options: RvzCompressOptions,
+    options: EncodeOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
@@ -244,12 +319,17 @@ fn compress_blocking(
 fn compress_reader<R: Read + Seek>(
     mut reader: BufReader<R>,
     output: std::fs::File,
-    options: RvzCompressOptions,
+    options: EncodeOptions,
     iso_size: u64,
     bytes_done: Arc<AtomicU64>,
     cancel: &CancelToken,
 ) -> RvzResult<u64> {
     let (dhead, disc_type, plan) = read_disc_plan(&mut reader, iso_size)?;
+    if options.container == Container::Wia && disc_type == 1 {
+        return Err(RvzError::Custom(
+            "WIA output is Wii-only; use GCZ or RVZ for GameCube discs".into(),
+        ));
+    }
 
     let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, output);
 
@@ -319,7 +399,7 @@ fn read_disc_plan<R: Read + Seek>(
 /// Everything the region walk needs beyond the reader, the writer,
 /// and the plan itself.
 struct RegionEncodeCtx<'a> {
-    options: RvzCompressOptions,
+    options: EncodeOptions,
     iso_size: u64,
     bytes_done: &'a Arc<AtomicU64>,
     cancel: &'a CancelToken,
@@ -355,14 +435,28 @@ fn encode_regions<R: Read + Seek>(
         partitions: Vec::new(),
     };
 
-    // Spawn the worker pools once per compress invocation: one
-    // raw pool (always, since the 0x80-aligned disc header lives
-    // in a raw region) and, if the plan has partition regions,
-    // one partition pool. `zstd::bulk::Compressor::new` runs
-    // exactly once per worker this way, instead of once per
-    // region. GameCube runs skip the partition pool entirely.
-    let n_threads = parallelism();
-    let raw_workers = raw::make_raw_compress_workers(n_threads, ctx.options.compression_level)?;
+    // Retain worker codecs across regions. GameCube runs skip the partition pool.
+    let admission = if ctx.options.container == Container::Wia {
+        Budget {
+            codec_per_worker: ChunkCodec::new_for(ctx.options)?.memory_usage(),
+            per_job: effective_chunk_size as usize * 2,
+            writer_slot: effective_chunk_size as usize,
+            fixed: 8 * 1024 * 1024,
+        }
+        .admit(
+            parallelism(),
+            ctx.iso_size.div_ceil(effective_chunk_size as u64),
+        )
+        .expect("fixed WIA chunks and capped dictionaries fit the worker memory target")
+    } else {
+        let workers = parallelism();
+        Admission {
+            workers,
+            max_in_flight: workers * 2,
+            writer_capacity: workers * 4,
+        }
+    };
+    let raw_workers = raw::make_raw_compress_workers(admission.workers, ctx.options)?;
     let raw_pool: Pool<raw::RawWork, raw::CompressedChunk, RvzError> = Pool::spawn(raw_workers);
 
     let has_partitions = plan
@@ -372,8 +466,7 @@ fn encode_regions<R: Read + Seek>(
     let mut partition_pool: Option<
         Pool<partition::PartitionWork, Vec<partition::PartitionChunk>, RvzError>,
     > = if has_partitions {
-        let workers =
-            partition::make_partition_compress_workers(n_threads, ctx.options.compression_level)?;
+        let workers = partition::make_partition_compress_workers(admission.workers, ctx.options)?;
         Some(Pool::spawn(workers))
     } else {
         None
@@ -400,6 +493,7 @@ fn encode_regions<R: Read + Seek>(
                             region_size: *size,
                             iso_size: ctx.iso_size,
                             chunk_size: effective_chunk_size,
+                            admission,
                             bytes_done: ctx.bytes_done,
                             cancel: ctx.cancel,
                         },
@@ -427,6 +521,7 @@ fn encode_regions<R: Read + Seek>(
                         partition::PartitionRegionEncode {
                             info,
                             chunk_size: effective_chunk_size,
+                            admission,
                             iso_size: ctx.iso_size,
                             bytes_done: ctx.bytes_done,
                             cancel: ctx.cancel,
@@ -476,13 +571,11 @@ fn write_tables_and_head(
     tables: &EncodedTables,
     dhead: [u8; 128],
     disc_type: u32,
-    options: RvzCompressOptions,
+    options: EncodeOptions,
     iso_size: u64,
 ) -> RvzResult<u64> {
-    // Now that every region is on disk, emit the three metadata
-    // tables in the format's order: partitions, raw_data
-    // (zstd-compressed), groups (zstd-compressed). Each is 4-byte
-    // aligned so the file-head offsets are trivially recoverable.
+    // Tables follow the chunks: cleartext partitions, then codec-compressed
+    // raw-data and group descriptors. Each table starts on a 4-byte boundary.
     //
     // These offsets come from the tracked `writer_pos` rather
     // than `writer.stream_position()` so the BufWriter never
@@ -503,23 +596,38 @@ fn write_tables_and_head(
     let part_hash = compute_part_hash(&tables.partitions);
 
     let raw_data_off = writer_pos;
-    let raw_data_compressed = serialize_and_compress(&tables.raw_data, options.compression_level)?;
+    let mut codec = ChunkCodec::new_for(options)?;
+    let raw_data_compressed = serialize_and_compress(&tables.raw_data, &mut codec, options)?;
     writer.write_all(&raw_data_compressed)?;
     writer_pos += raw_data_compressed.len() as u64;
     pad_to_alignment(writer, &mut writer_pos, 4)?;
 
     let group_off = writer_pos;
-    let group_compressed = serialize_and_compress(&tables.groups, options.compression_level)?;
+    let group_compressed = match options.container {
+        Container::Rvz => serialize_and_compress(&tables.groups, &mut codec, options)?,
+        Container::Wia => {
+            let groups: Vec<WiaGroup> = tables
+                .groups
+                .iter()
+                .map(|group| WiaGroup {
+                    data_off4: group.data_off4,
+                    data_size: group.compressed_size(),
+                })
+                .collect();
+            serialize_and_compress(&groups, &mut codec, options)?
+        }
+    };
     writer.write_all(&group_compressed)?;
     writer_pos += group_compressed.len() as u64;
     pad_to_alignment(writer, &mut writer_pos, 4)?;
 
     let wia_file_size = writer_pos;
 
+    let (compr_data, compr_data_len) = codec.compr_data();
     let disc = WiaDisc {
         disc_type,
-        compression: 5,
-        compr_level: options.compression_level,
+        compression: codec.compression_id(),
+        compr_level: options.level,
         chunk_size: options.chunk_size,
         dhead,
         n_part: tables.partitions.len() as u32,
@@ -532,16 +640,21 @@ fn write_tables_and_head(
         n_groups: tables.groups.len() as u32,
         group_off,
         group_size: group_compressed.len() as u32,
-        compr_data_len: 0,
-        compr_data: [0u8; 7],
+        compr_data_len,
+        compr_data,
     };
     let disc_hash = compute_disc_hash(&disc);
 
     let head = WiaFileHead {
-        magic: RVZ_MAGIC,
-        // The container version pair every reader accepts.
-        version: 0x01000000,
-        version_compatible: 0x00030000,
+        magic: match options.container {
+            Container::Rvz => RVZ_MAGIC,
+            Container::Wia => WIA_MAGIC,
+        },
+        version: WIA_VERSION,
+        version_compatible: match options.container {
+            Container::Rvz => 0x00030000,
+            Container::Wia => 0x00090000,
+        },
         disc_size: WIA_DISC_SIZE as u32,
         disc_hash,
         iso_file_size: iso_size,
@@ -696,11 +809,12 @@ pub(super) fn write_msg_drain_loop(
     Ok(())
 }
 
-/// Serialize a `BinWrite` slice into a plain byte buffer, then zstd
-/// compress it. Used for the raw-data table and the group table at
-/// the end of the file; both are small enough that the one-shot
-/// allocation is fine.
-fn serialize_and_compress<T>(items: &[T], level: i32) -> RvzResult<Vec<u8>>
+/// Serializes and compresses a metadata table with the container's codec.
+fn serialize_and_compress<T>(
+    items: &[T],
+    codec: &mut ChunkCodec,
+    options: EncodeOptions,
+) -> RvzResult<Vec<u8>>
 where
     T: BinWrite<Args<'static> = ()>,
 {
@@ -709,12 +823,42 @@ where
     for item in items {
         item.write_options(&mut cursor, Endian::Big, ())?;
     }
-    Ok(zstd::bulk::compress(&plain, level)?)
+    if options.container == Container::Rvz {
+        Ok(zstd::bulk::compress(&plain, options.level)?)
+    } else if matches!(codec, ChunkCodec::None) {
+        Ok(plain)
+    } else {
+        codec.compress(&plain)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rvz_tables_use_fresh_zstd_contexts() {
+        let options = EncodeOptions {
+            container: Container::Rvz,
+            level: DEFAULT_COMPRESSION_LEVEL,
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            compression: WiaCompression::None,
+        };
+        let items = [RvzGroup::new_compressed(100, 123, 0)];
+        let mut plain = Vec::new();
+        items[0]
+            .write_options(&mut Cursor::new(&mut plain), Endian::Big, ())
+            .unwrap();
+        let expected = zstd::bulk::compress(&plain, options.level).unwrap();
+        let mut codec = ChunkCodec::new_for(options).unwrap();
+        for _ in 0..2 {
+            codec.compress(&[1; 1024]).unwrap();
+            assert_eq!(
+                serialize_and_compress(&items, &mut codec, options).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn validate_chunk_size_accepts_min_max_and_default() {

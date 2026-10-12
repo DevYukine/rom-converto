@@ -93,9 +93,25 @@ set through the C ABI.
 ### Operations
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
-`nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `ps3.decrypt`, `psp.to_iso`,
+`dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `ps3.decrypt`, `psp.to_iso`,
 `psp.extract`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
+
+`dol.convert` accepts `options.format` `iso` (default), `gcz`, or `rvz`;
+`rvl.convert` also accepts `wbfs` and `wia`. Their format-specific options are
+`level`, `chunk_size` (RVZ), `block_size` (GCZ, default 131072 bytes),
+`compression` (WIA: `none`, `bzip2`, `lzma`, `lzma2`, default `lzma2`), and
+`skip_verify` (skip the integrity pass on GCZ, WIA, and NKit inputs).
+RVZ uses a Zstandard level; WIA uses 0 through 9 for LZMA/LZMA2 or 1 through 9
+for bzip2, and ignores level for `none`. WIA is Wii-only and uses 2 MiB chunks.
+GCZ block size must be a power of two from 32 KiB through 2 MiB.
+Without `options.format`, an explicit output extension selects the target;
+otherwise the default is ISO. A conflicting format and output extension returns
+`invalid_argument`. An input already in the target format returns a `skipped`
+record. NKit input is restored to a full image; NKit output is not supported.
+Both operations take the common output, conflict, recursive, depth, and report
+options. `dol.decompress` and `rvl.decompress` accept the same containers and
+integrity-skip option, but write ISO (or WBFS for Wii when `output` ends in `.wbfs`).
 
 `nx.merge` takes its containers in `options.inputs` (the first names the
 record) and its format in `options.format` (`nsp`, default, or `xci`); each

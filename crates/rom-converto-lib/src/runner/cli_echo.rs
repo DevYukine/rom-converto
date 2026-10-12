@@ -132,6 +132,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("max_depth", FlagKind::Value),
     ("report", FlagKind::Value),
     ("format", FlagKind::Value),
+    ("compression", FlagKind::Value),
     ("block_size", FlagKind::Value),
     ("hunk_size", FlagKind::Value),
     ("codecs", FlagKind::Value),
@@ -458,6 +459,22 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "dol convert",
+        &[
+            "block_size",
+            "chunk_size",
+            "format",
+            "level",
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "recursive",
+            "report",
+            "skip_verify",
+        ],
+    ),
+    (
         "dol decompress",
         &[
             "max_depth",
@@ -466,6 +483,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "skip_verify",
         ],
     ),
     (
@@ -643,6 +661,23 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "rvl convert",
+        &[
+            "block_size",
+            "chunk_size",
+            "compression",
+            "format",
+            "level",
+            "max_depth",
+            "on_conflict",
+            "output_dir",
+            "output_template",
+            "recursive",
+            "report",
+            "skip_verify",
+        ],
+    ),
+    (
         "rvl decompress",
         &[
             "max_depth",
@@ -651,6 +686,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "skip_verify",
         ],
     ),
     (

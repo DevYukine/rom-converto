@@ -7,6 +7,7 @@ export const useRvlDecompressStore = makeOpStore("rvl-decompress", () => ({
   format: "iso" as "iso" | "wbfs",
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,
+  skipVerify: false,
   outputTemplate: "",
   reportFile: "",
   recursive: true,

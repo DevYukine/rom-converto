@@ -85,6 +85,8 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 	],
 	convert: [
 		{ id: "ctr", name: "3DS", hint: "CIA ↔ CCI" },
+		{ id: "dol", name: "GameCube", hint: "ISO, GCZ, RVZ" },
+		{ id: "rvl", name: "Wii", hint: "ISO, WBFS, GCZ, WIA, RVZ" },
 		{ id: "wup", name: "Wii U", hint: "WUD ↔ WUX" },
 		{ id: "cso", name: "PSP / PS2", hint: "CSO/ISO → CHD" },
 		{ id: "chd", name: "CD / DVD", hint: "CHD → CSO/ZSO" },

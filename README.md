@@ -14,8 +14,8 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 |---|---|
 | Nintendo DS | Encrypt and decrypt NDS ROMs |
 | Nintendo 3DS | Encrypt, decrypt, and convert CIA/CCI; compress decrypted ROMs to Z3DS; build CIA from CDN content; bundle a game with its updates and DLC for Azahar |
-| GameCube | Compress ISO/GCM to RVZ; migrate GCZ and NKit to RVZ; decompress RVZ |
-| Wii | Compress ISO/WBFS to RVZ; migrate GCZ, WIA, and NKit to RVZ; decompress RVZ |
+| GameCube | Convert ISO/GCM, RVZ, GCZ, and NKit to ISO, GCZ, or RVZ; decompress supported containers to ISO |
+| Wii | Convert ISO, WBFS, RVZ, GCZ, WIA, and NKit to ISO, WBFS, GCZ, WIA, or RVZ; decompress supported containers |
 | Wii U | Pack NUS, loadiine, WUD, or WUX into WUA; convert WUD to WUX and back; decrypt NUS to a game folder |
 | Nintendo Switch | Compress NSP/XCI to NSZ/XCZ and decompress them; merge or split uncompressed NSP/XCI; decrypt NSP/XCI to NxEmu DNSP/DXCI |
 | CD / DVD | Compress CUE/BIN, GDI, or ISO to CHD; migrate CHD v1 to v4 into v5; extract CHD; merge CUE/BIN tracks |
@@ -67,6 +67,9 @@ Other common tasks:
 ```sh
 # Restore an RVZ to ISO
 rom-converto dol decompress game.rvz
+
+# Convert a Wii GCZ to WIA
+rom-converto rvl convert game.gcz --format wia
 
 # Decrypt a 3DS ROM
 rom-converto ctr decrypt game.cia

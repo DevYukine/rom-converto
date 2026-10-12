@@ -9,6 +9,7 @@ import {
   deriveCuePath,
   deriveDecryptedPath,
   deriveDiscIsoPath,
+  deriveDiscPath,
   deriveDnspPath,
   deriveEncryptedPath,
   deriveGodDir,
@@ -113,6 +114,25 @@ describe("plain image inputs keep extension replacement", () => {
     expect(deriveDnspPath("game.xci")).toBe("game.dxci");
     expect(deriveDnspPath("game.xci.zip")).toBe("game.dxci");
     expect(deriveDnspPath(`${DOTTED}.zip`)).toBe(`${DOTTED}.dnsp`);
+  });
+});
+
+describe("disc format derivation", () => {
+  it.each(["iso", "wbfs", "gcz", "wia", "rvz"] as const)("derives %s output", (format) => {
+    expect(deriveDiscPath("game.rvz", format)).toBe(`game.${format}`);
+    expect(deriveDiscPath(`${DOTTED}.zip`, format)).toBe(`${DOTTED}.${format}`);
+  });
+
+  it.each(["iso", "wbfs", "gcz", "wia", "rvz"] as const)("strips the NKit suffix for %s", (format) => {
+    expect(deriveDiscPath("game.nkit.iso", format)).toBe(`game.${format}`);
+    expect(deriveDiscPath("game.NKit.GCZ", format)).toBe(`game.${format}`);
+    expect(deriveDiscPath(`${DOTTED}.nkit.iso.zip`, format)).toBe(`${DOTTED}.${format}`);
+  });
+
+  it("keeps existing disc and RVZ helpers consistent", () => {
+    expect(deriveDiscIsoPath("game.nkit.gcz")).toBe("game.iso");
+    expect(deriveRvzPath("game.nkit.iso")).toBe("game.rvz");
+    expect(deriveDiscPath("game.nkit edition.iso", "wia")).toBe("game.nkit edition.wia");
   });
 });
 

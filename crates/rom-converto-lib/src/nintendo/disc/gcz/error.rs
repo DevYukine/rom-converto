@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-/// Errors from reading or decoding a GCZ container.
+/// Errors from reading, decoding, or writing a GCZ container.
 #[derive(Debug, Error)]
 pub enum GczError {
     /// Wraps an underlying I/O failure.
@@ -16,6 +16,10 @@ pub enum GczError {
     /// Wraps a binary read/write failure from the `binrw` layer.
     #[error(transparent)]
     BinRw(#[from] binrw::Error),
+
+    /// Wraps a failure to open the logical input disc.
+    #[error(transparent)]
+    Input(#[from] Box<crate::nintendo::disc::input::DiscInputError>),
 
     /// The file does not start with the GCZ magic bytes.
     #[error("invalid GCZ magic: expected 0xb10bc001, got {0:#010x}")]
@@ -46,6 +50,12 @@ pub enum GczError {
 
     #[error("{0}")]
     Custom(String),
+}
+
+impl From<crate::nintendo::disc::input::DiscInputError> for GczError {
+    fn from(err: crate::nintendo::disc::input::DiscInputError) -> Self {
+        Self::Input(Box::new(err))
+    }
 }
 
 impl From<crate::util::worker_pool::PoolChannelClosed> for GczError {

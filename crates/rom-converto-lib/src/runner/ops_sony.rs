@@ -21,6 +21,7 @@ pub(crate) async fn ps3_decrypt(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::sony::ps3::derive_decrypted_path(basis),
             operation: "ps3.decrypt",
@@ -75,6 +76,7 @@ pub(crate) async fn psp_to_iso(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("iso"),
             operation: "psp.to_iso",

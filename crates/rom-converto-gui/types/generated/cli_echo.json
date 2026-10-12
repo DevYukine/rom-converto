@@ -136,6 +136,10 @@
       "dol",
       "compress"
     ],
+    "dol.convert": [
+      "dol",
+      "convert"
+    ],
     "dol.decompress": [
       "dol",
       "decompress"
@@ -225,6 +229,10 @@
     "rvl.compress": [
       "rvl",
       "compress"
+    ],
+    "rvl.convert": [
+      "rvl",
+      "convert"
     ],
     "rvl.decompress": [
       "rvl",
@@ -378,6 +386,12 @@
       "flag": "--compress",
       "global": false,
       "kind": "bool",
+      "explicit_off": false
+    },
+    "compression": {
+      "flag": "--compression",
+      "global": false,
+      "kind": "value",
       "explicit_off": false
     },
     "config": {
@@ -1077,13 +1091,27 @@
       "recursive",
       "report"
     ],
+    "dol.convert": [
+      "block_size",
+      "chunk_size",
+      "format",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report",
+      "skip_verify"
+    ],
     "dol.decompress": [
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "skip_verify"
     ],
     "dol.migrate": [
       "chunk_size",
@@ -1283,13 +1311,28 @@
       "recursive",
       "report"
     ],
+    "rvl.convert": [
+      "block_size",
+      "chunk_size",
+      "compression",
+      "format",
+      "level",
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "output_template",
+      "recursive",
+      "report",
+      "skip_verify"
+    ],
     "rvl.decompress": [
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "skip_verify"
     ],
     "rvl.migrate": [
       "chunk_size",
@@ -1321,7 +1364,8 @@
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "skip_verify"
     ],
     "rvz.migrate": [
       "chunk_size",
@@ -1426,6 +1470,7 @@
     "dat.scan": "none",
     "dat.verify": "none",
     "dol.compress": "positional",
+    "dol.convert": "positional",
     "dol.decompress": "positional",
     "dol.migrate": "positional",
     "dol.verify": "none",
@@ -1450,6 +1495,7 @@
     "psp.to-iso": "positional",
     "psp.to_iso": "positional",
     "rvl.compress": "positional",
+    "rvl.convert": "positional",
     "rvl.decompress": "positional",
     "rvl.migrate": "positional",
     "rvl.verify": "none",

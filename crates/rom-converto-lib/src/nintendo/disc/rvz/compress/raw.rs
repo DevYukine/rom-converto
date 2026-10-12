@@ -4,8 +4,7 @@
 //! GameCube body. Chunks flow through the same persistent worker
 //! pool as the partition encoder ([`super::partition`]); see
 //! [`crate::util::worker_pool::Pool`] for the pool shape.
-//! Each worker's `zstd::bulk::Compressor` is allocated once per
-//! thread for the lifetime of the region.
+//! Each worker's codec is retained for the lifetime of the pool.
 //!
 //! The per-chunk math follows the format's raw-data rules:
 //!
@@ -18,15 +17,16 @@
 //!   group entry (`data_off4 = 0, data_size = 0`) with no on-disk
 //!   footprint.
 
+use super::codec::{ChunkCodec, Container};
 use super::{
-    CompressedKind, RegionWriteState, WriteMsg, push_compressed_chunk_via_channel,
+    CompressedKind, EncodeOptions, RegionWriteState, WriteMsg, push_compressed_chunk_via_channel,
     write_msg_drain_loop,
 };
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::rvl::constants::WII_SECTOR_SIZE_U64;
 use crate::util::CancelToken;
 use crate::util::Cancelled;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Admission, Pool, Worker, drive};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,17 +49,17 @@ pub(super) struct RawWork {
     data_offset: u64,
 }
 
-/// Per-thread raw-region encoder state. The persistent
-/// `zstd::bulk::Compressor` is allocated once per thread for the
-/// lifetime of the [`Pool`].
+/// Per-thread raw-region encoder state retained for the lifetime of the pool.
 pub(super) struct RawCompressWorker {
-    compressor: zstd::bulk::Compressor<'static>,
+    compressor: ChunkCodec,
+    container: Container,
 }
 
 impl Worker<RawWork, CompressedChunk, RvzError> for RawCompressWorker {
     fn process(&mut self, work: RawWork) -> RvzResult<CompressedChunk> {
         compress_one_chunk_with(
             &mut self.compressor,
+            self.container,
             work.data,
             work.this_size,
             work.data_offset,
@@ -69,13 +69,13 @@ impl Worker<RawWork, CompressedChunk, RvzError> for RawCompressWorker {
 
 pub(super) fn make_raw_compress_workers(
     n_threads: usize,
-    compression_level: i32,
+    options: EncodeOptions,
 ) -> RvzResult<Vec<RawCompressWorker>> {
     (0..n_threads)
         .map(|_| -> RvzResult<RawCompressWorker> {
             Ok(RawCompressWorker {
-                compressor: zstd::bulk::Compressor::new(compression_level)
-                    .map_err(|e| RvzError::Custom(format!("zstd init: {e}")))?,
+                compressor: ChunkCodec::new_for(options)?,
+                container: options.container,
             })
         })
         .collect()
@@ -88,6 +88,7 @@ pub(super) struct RawRegionEncode<'a> {
     pub region_size: u64,
     pub iso_size: u64,
     pub chunk_size: u32,
+    pub admission: Admission,
     pub bytes_done: &'a Arc<AtomicU64>,
     pub cancel: &'a CancelToken,
 }
@@ -116,6 +117,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
         region_size,
         iso_size,
         chunk_size,
+        admission,
         bytes_done,
         cancel,
     } = args;
@@ -136,12 +138,6 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
 
     reader.seek(SeekFrom::Start(effective_start))?;
 
-    // In-flight cap so the dispatcher doesn't enqueue the entire
-    // disc while workers are still chewing on earlier chunks. Two
-    // units of work per thread keeps all workers busy without
-    // wasting memory.
-    let max_in_flight = parallelism() * 2;
-
     // Overlap writes with dispatch via a dedicated writer
     // thread. The dispatcher does read, submit, recv, and
     // forward-via-channel; the writer thread drains the
@@ -152,7 +148,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
     // measured worse on Windows than plain
     // `BufReader::read_exact`.
     let mut local_writer_pos = *writer_pos;
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<WriteMsg>(max_in_flight * 2);
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<WriteMsg>(admission.writer_capacity);
 
     let scope_result: RvzResult<()> = std::thread::scope(|s| {
         let writer_slot: &mut BufWriter<std::fs::File> = writer;
@@ -162,7 +158,7 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
         let drive_result = drive(
             pool,
             total_chunks,
-            max_in_flight,
+            admission.max_in_flight,
             // produce: read the next chunk from the ISO in
             // submission order, clamped by
             // `bytes_to_read = min(chunk_size, data_offset +
@@ -223,11 +219,12 @@ pub(super) fn encode_raw_region<R: Read + Seek>(
         );
 
         drop(write_tx);
-        let writer_result = writer_handle
+        // A failed write closes the channel, which the dispatcher only
+        // sees as a closed channel; report the writer's I/O error first.
+        writer_handle
             .join()
-            .unwrap_or_else(|_| Err(RvzError::Custom("writer thread panicked".into())));
-        drive_result?;
-        writer_result
+            .unwrap_or_else(|_| Err(RvzError::Custom("writer thread panicked".into())))?;
+        drive_result
     });
 
     *writer_pos = local_writer_pos;
@@ -258,12 +255,10 @@ fn is_all_zero(data: &[u8]) -> bool {
         && suffix.iter().all(|&b| b == 0)
 }
 
-/// Compress one chunk using a persistent `Compressor` borrowed from
-/// the worker pool. The zstd context is reused across calls, so the
-/// expensive `ZSTD_createCCtx` happens once per worker thread rather
-/// than once per chunk.
+/// Compresses one chunk with the worker's codec and container framing.
 fn compress_one_chunk_with(
-    compressor: &mut zstd::bulk::Compressor<'_>,
+    compressor: &mut ChunkCodec,
+    container: Container,
     data: Vec<u8>,
     this_size: u64,
     data_offset: u64,
@@ -275,27 +270,31 @@ fn compress_one_chunk_with(
             rvz_packed_size: 0,
         });
     }
-    // Try RVZ packing first. If the scanner finds LFG junk runs the
-    // packed bytes replace the raw chunk going into zstd and the
-    // decoder knows to invoke `pack_decode` via the non-zero
-    // `rvz_packed_size`. Otherwise fall through to zstd on raw
-    // bytes, exactly as the format's packing pass does on the
-    // raw-data branch.
-    let (bytes_for_zstd, rvz_packed_size) =
+    // RVZ packing replaces detected LFG junk runs before zstd compression.
+    // A nonzero packed size tells the decoder to restore them. WIA skips packing.
+    let (bytes_for_compression, rvz_packed_size) = if container == Container::Rvz {
         match crate::nintendo::disc::rvz::packing::pack_encode(&data, data_offset) {
             Some(packed) => {
                 let pack_len = packed.len() as u32;
                 (packed, pack_len)
             }
             None => (data, 0u32),
-        };
-    let compressed = compressor
-        .compress(&bytes_for_zstd)
-        .map_err(|e| RvzError::Custom(format!("zstd compress: {e}")))?;
-    let kind = if compressed.len() < bytes_for_zstd.len() {
+        }
+    } else {
+        (data, 0)
+    };
+    if matches!(compressor, ChunkCodec::None) {
+        return Ok(CompressedChunk {
+            kind: CompressedKind::Raw(bytes_for_compression),
+            this_size,
+            rvz_packed_size,
+        });
+    }
+    let compressed = compressor.compress(&bytes_for_compression)?;
+    let kind = if container == Container::Wia || compressed.len() < bytes_for_compression.len() {
         CompressedKind::Compressed(compressed)
     } else {
-        CompressedKind::Raw(bytes_for_zstd)
+        CompressedKind::Raw(bytes_for_compression)
     };
     Ok(CompressedChunk {
         kind,

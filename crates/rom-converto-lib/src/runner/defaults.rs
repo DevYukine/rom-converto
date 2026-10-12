@@ -14,16 +14,21 @@ pub(crate) fn apply_config_defaults(mut req: RunRequest) -> Result<RunRequest> {
         .map_err(|err| invalid_arg(err.to_string()))?;
 
     let operation = req.operation.clone();
+    let rvz_level = !matches!(operation.as_str(), "dol.convert" | "rvl.convert")
+        || super::ops::resolve_convert_target(&req)?
+            == crate::nintendo::disc::convert::DiscFormat::Rvz;
     match operation.split_once('.').map(|(family, _)| family) {
         Some("dol") => apply_disc_defaults(
             &mut req.options,
             preset.as_ref().and_then(|p| p.dol.as_ref()),
             config.dol.as_ref(),
+            rvz_level,
         ),
         Some("rvl") => apply_disc_defaults(
             &mut req.options,
             preset.as_ref().and_then(|p| p.rvl.as_ref()),
             config.rvl.as_ref(),
+            rvz_level,
         ),
         Some("nx") => apply_nx_defaults(
             &mut req.options,
@@ -64,9 +69,12 @@ pub(crate) fn apply_disc_defaults(
     options: &mut RunOptions,
     top: Option<&crate::config::DiscDefaults>,
     base: Option<&crate::config::DiscDefaults>,
+    rvz_level: bool,
 ) {
     let defaults = crate::config::DiscDefaults::merge_layers(top, base);
-    fill(&mut options.level, defaults.level);
+    if rvz_level {
+        fill(&mut options.level, defaults.level);
+    }
     fill(&mut options.chunk_size, defaults.chunk_size);
     fill(&mut options.on_conflict, defaults.on_conflict);
     fill(&mut options.output_dir, defaults.output_dir);

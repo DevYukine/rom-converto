@@ -23,6 +23,7 @@ pub(crate) async fn cue_to_iso(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("iso"),
             operation: "cue.to_iso",
@@ -49,6 +50,7 @@ pub(crate) async fn cue_to_cso(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension(format.extension()),
             operation: "cue.to_cso",
@@ -72,6 +74,7 @@ pub(crate) async fn ntr_encrypt(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ntr::derive_encrypted_path(basis),
             operation: "ntr.encrypt",
@@ -98,6 +101,7 @@ pub(crate) async fn ntr_decrypt(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ntr::derive_decrypted_path(basis),
             operation: "ntr.decrypt",
@@ -198,6 +202,7 @@ pub(crate) async fn nx_merge(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &first,
             derive: &|basis, _| crate::nintendo::nx::derive_merged_path(basis, ext),
             operation: "nx.merge",
@@ -338,6 +343,7 @@ pub(crate) async fn ctr_bundle(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &first,
             derive: &|_, _| crate::nintendo::ctr::bundle::derive_bundle_path(&basis, kind),
             operation: "ctr.bundle",

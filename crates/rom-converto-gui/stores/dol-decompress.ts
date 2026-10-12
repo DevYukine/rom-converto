@@ -6,6 +6,7 @@ export const useDolDecompressStore = makeOpStore("dol-decompress", () => ({
   output: "",
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,
+  skipVerify: false,
   outputTemplate: "",
   reportFile: "",
   recursive: true,

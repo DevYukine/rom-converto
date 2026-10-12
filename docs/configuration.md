@@ -52,6 +52,12 @@ An unknown preset is an error.
 `[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
 `error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.
 
+`[dol] level` and `[rvl] level` also feed `convert` and must fit the selected
+target's range: RVZ uses a Zstandard level, while WIA accepts 0 through 9 for
+LZMA/LZMA2 and 1 through 9 for bzip2. WIA with `none` ignores level.
+Override `--level` when switching targets if the configured value is out of range.
+`chunk_size` applies only to RVZ output on `convert`; WIA always uses 2 MiB chunks.
+
 `chunk_size` is a power of two from 32 KiB through 2 MiB. `nx.level` is 1 through
 22, `nx.block_size_exp` is 14 through 32, and `wup.level` is 0 through 22. CHD
 `codecs` is an array, for example `['cdlz', 'cdzl', 'cdfl']`. Command-line selectors

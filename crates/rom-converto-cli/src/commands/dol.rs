@@ -10,6 +10,7 @@ use crate::commands::support::{
 use crate::util::{ensure_input_exists, ok_str, resolve_policy};
 use crate::{batch, config, info_print};
 use anyhow::Result;
+use rom_converto_lib::nintendo::disc::convert::DiscFormat;
 use rom_converto_lib::nintendo::disc::legacy::{
     DOL_MIGRATE_FORMATS, detect_legacy_format, ensure_format_allowed,
 };
@@ -22,6 +23,7 @@ use rom_converto_lib::util::{CancelToken, oversized_rvz_chunk};
 #[derive(Subcommand, Debug, Eq, PartialEq)]
 pub enum DolCommands {
     Compress(CompressDiscCommand),
+    Convert(ConvertDiscCommand),
     Migrate(MigrateDiscCommand),
     Decompress(DecompressDiscCommand),
     Verify(VerifyDiscCommand),
@@ -154,14 +156,72 @@ pub struct CompressDiscCommand {
     pub batch: BatchArgs,
 }
 
-/// Decompress an RVZ GameCube disc image back to ISO
+/// Convert a GameCube disc image to ISO, GCZ, or RVZ
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Decompress an RVZ GameCube disc image back to ISO\n\nOutput defaults to the input path with extension replaced by .iso.",
+    long_about = "Convert a GameCube disc image to ISO, GCZ, or RVZ\n\nSupported input: .iso, .gcm, .rvz, .gcz, .nkit.iso, and .nkit.gcz. Output defaults to the input path with the target extension; the .nkit suffix is removed. The default target is ISO. Plain inputs already in the target format are skipped unless an output or encoding option is set.",
+    after_long_help = "EXAMPLES:\n  Restore ISO:     rom-converto dol convert game.gcz\n  Compress RVZ:    rom-converto dol convert game.iso --format rvz\n  Explicit output: rom-converto dol convert game.nkit.iso game.gcz\n  Whole directory: rom-converto dol convert -R ./roms --format rvz --output-dir ./rvz\n"
+)]
+pub struct ConvertDiscCommand {
+    /// Input disc image path, or a directory with --recursive
+    #[arg(value_name = "INPUT")]
+    pub input: PathBuf,
+
+    /// Output path (ignored with --recursive)
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
+
+    /// Output path (ignored with --recursive)
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with = "output"
+    )]
+    pub output_flag: Option<PathBuf>,
+
+    /// Target format (defaults to iso)
+    #[arg(long, value_parser = ["iso", "gcz", "rvz"])]
+    pub format: Option<String>,
+
+    /// RVZ Zstandard level, -22 through 22 (defaults to 22)
+    #[arg(long, short = 'l', allow_hyphen_values = true)]
+    pub level: Option<i32>,
+
+    /// RVZ chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB)
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// GCZ block size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB)
+    #[arg(long)]
+    pub block_size: Option<u32>,
+
+    /// Skip the integrity pass on GCZ and NKit inputs
+    #[arg(long)]
+    pub skip_verify: bool,
+
+    #[command(flatten)]
+    pub out: OutputArgs,
+
+    #[command(flatten)]
+    pub conflict: ConflictArgs,
+
+    /// Convert every .iso, .gcm, .rvz and .gcz found in the INPUT directory and its subdirectories
+    #[arg(long, short = 'R')]
+    pub recursive: bool,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
+}
+
+/// Decompress a GameCube disc image to ISO
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Decompress an RVZ, GCZ, or NKit GameCube disc image to ISO\n\nSupported input: .rvz, .gcz, .nkit.iso, and .nkit.gcz. Output defaults to the input path with extension replaced by .iso, removing the .nkit suffix.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto dol decompress game.rvz\n  Explicit output: rom-converto dol decompress game.rvz game.iso\n  Whole directory: rom-converto dol decompress -R ./rvz --output-dir ./roms\n"
 )]
 pub struct DecompressDiscCommand {
-    /// Input RVZ file path, or a directory with --recursive
+    /// Input disc image path (.rvz, .gcz, .nkit.iso, .nkit.gcz), or a directory with --recursive
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
 
@@ -181,10 +241,14 @@ pub struct DecompressDiscCommand {
     #[command(flatten)]
     pub out: OutputArgs,
 
+    /// Skip the integrity pass on GCZ and NKit inputs
+    #[arg(long)]
+    pub skip_verify: bool,
+
     #[command(flatten)]
     pub conflict: ConflictArgs,
 
-    /// Decompress every .rvz found in the INPUT directory and its subdirectories
+    /// Decompress every .rvz and .gcz found in the INPUT directory and its subdirectories
     #[arg(long, short = 'R', default_value_t = false)]
     pub recursive: bool,
 
@@ -216,6 +280,49 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         dry_run,
     };
     match command {
+        DolCommands::Convert(cmd) => {
+            let eff = &effective.dol;
+            require_input(&cmd.input, cmd.recursive)?;
+            let output = cmd.output_flag.or(cmd.output);
+            let format = cmd
+                .format
+                .as_deref()
+                .and_then(|format| format.parse().ok())
+                .or_else(|| output.as_deref().and_then(DiscFormat::from_extension))
+                .unwrap_or(DiscFormat::Iso);
+            let mut options = RunOptions::from(batch::Common {
+                recursive: cmd.recursive,
+                output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: cmd.out.output_template,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
+                policy: resolve_policy(
+                    cmd.conflict.on_conflict,
+                    cmd.conflict.force,
+                    config::policy_fallback(&eff.on_conflict)?,
+                ),
+                skip_space_check,
+            });
+            options.format = cmd.format;
+            options.level = if format == DiscFormat::Rvz {
+                cmd.level.or(eff.level)
+            } else {
+                cmd.level
+            };
+            options.chunk_size = cmd.chunk_size.or(eff.chunk_size);
+            options.block_size = cmd.block_size;
+            options.skip_verify = Some(cmd.skip_verify);
+            if format == DiscFormat::Rvz
+                && let Some(msg) = oversized_rvz_chunk(
+                    options
+                        .chunk_size
+                        .unwrap_or(RvzCompressOptions::default().chunk_size),
+                )
+            {
+                log::warn!("{msg}");
+            }
+            batch::run(&run, "dol.convert", cmd.input, output, options).await?;
+        }
         DolCommands::Compress(cmd) => {
             let eff = &effective.dol;
             require_input(&cmd.input, cmd.recursive)?;
@@ -293,7 +400,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         DolCommands::Decompress(cmd) => {
             let eff = &effective.dol;
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
                 output_template: cmd.out.output_template,
@@ -306,6 +413,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            options.skip_verify = Some(cmd.skip_verify);
             batch::run(
                 &run,
                 "dol.decompress",

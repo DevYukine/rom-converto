@@ -148,21 +148,18 @@ export function deriveCsoPath(input: string, format: "cso" | "zso"): string {
 }
 
 export function deriveRvzPath(input: string): string {
-  input = stripArchiveExt(input);
-  // NKit double extensions collapse: game.nkit.iso -> game.rvz.
-  const lower = input.toLowerCase();
-  if (lower.endsWith(".nkit.iso") || lower.endsWith(".nkit.gcz")) {
-    return `${input.slice(0, -9)}.rvz`;
-  }
-  return replaceExt(input, "rvz");
+  return deriveDiscPath(input, "rvz");
 }
 
 export function deriveDiscIsoPath(input: string): string {
-  return replaceExt(stripArchiveExt(input), "iso");
+  return deriveDiscPath(input, "iso");
 }
 
-export function deriveDiscPath(input: string, format: "iso" | "wbfs"): string {
-  return replaceExt(stripArchiveExt(input), format);
+export function deriveDiscPath(input: string, format: "iso" | "wbfs" | "gcz" | "wia" | "rvz"): string {
+  // Same rule as the runner: only the .nkit.iso and .nkit.gcz double extensions collapse.
+  const base = stripArchiveExt(input);
+  const stem = /\.nkit\.(iso|gcz)$/i.test(base) ? stemOf(base).slice(0, -5) : stemOf(base);
+  return `${stem}.${format}`;
 }
 
 export function deriveNszPath(input: string): string {

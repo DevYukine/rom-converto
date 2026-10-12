@@ -9,8 +9,8 @@ and `info` extensions in the installed build.
 | Family | Input | Output | Main operations |
 |---|---|---|---|
 | Nintendo 3DS (`ctr`) | `.cia`, `.3ds`/`.cci`, `.cxi`, `.3dsx`; CDN content; Azahar bundles `.bcia`, `.bcci`, `.bcxi` | Z3DS: `.zcia`, `.zcci`, `.zcxi`, `.z3dsx`; encrypted/decrypted ROMs; CIA/CCI; Azahar bundles `.bcia`, `.bcci`, `.bcxi` | compress, decompress, encrypt, decrypt, CIA/CCI conversion, CDN to CIA, bundle/unbundle |
-| GameCube (`dol`) | `.iso`, `.gcm`; legacy `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.rvz`, then `.iso` on decompress | compress, migrate, decompress |
-| Wii (`rvl`) | `.iso`, `.wbfs`; legacy `.gcz`, `.wia`, NKit | `.rvz`, then `.iso` or `.wbfs` | compress, migrate, decompress |
+| GameCube (`dol`) | `.iso`, `.gcm`, `.rvz`, `.gcz`, `.nkit.iso`, `.nkit.gcz` | `.iso`, `.gcz`, `.rvz` | convert, compress, migrate, decompress |
+| Wii (`rvl`) | `.iso`, `.wbfs`, `.rvz`, `.gcz`, `.wia`, `.nkit.iso`, `.nkit.gcz` | `.iso`, `.wbfs`, `.gcz`, `.wia`, `.rvz` | convert, compress, migrate, decompress |
 | Wii U (`wup`) | NUS or loadiine title directory, `.wud`, `.wux` | `.wua`; `.wux` or `.wud` | compress, to-wux, to-wud, decrypt NUS to loadiine |
 | Switch (`nx`) | `.nsp`, `.xci` | `.nsz`, `.xcz`, merged NSP/XCI, per-title NSPs, `.dnsp`/`.dxci` | compress, decompress, decrypt, merge, split |
 | CHD (`chd`) | `.cue` with tracks, Dreamcast `.gdi` sets, suitable `.iso`, LaserDisc `.avi`, or legacy CHD v1 to v4 | CHD v5 | compress, migrate, extract, convert DVD CHD to CSO/ZSO |
@@ -86,10 +86,24 @@ load until upstream adds CXI mains. `ctr bundle` packs members into a bundle and
 
 ### RVZ and legacy Nintendo disc containers
 
-RVZ is the GameCube and Wii output container. `dol migrate` accepts GCZ and NKit.
-`rvl migrate` also accepts WIA. Migration checks the legacy container before writing
-RVZ. An RVZ decompresses to ISO for GameCube; Wii writes WBFS only when the requested
-output name ends in `.wbfs`.
+`dol convert` writes ISO (default), GCZ, or RVZ from any supported GameCube
+container. `rvl convert` also reads and writes WBFS and WIA. Inputs already in the
+target format are skipped. An explicit output extension selects the target when
+`--format` is omitted; a conflicting `--format` and output extension is an error.
+
+GCZ output follows the reference block layout, with 128 KiB blocks by default.
+`--block-size` accepts a power of two from 32 KiB through 2 MiB.
+WIA output is Wii-only and always uses 2 MiB chunks. Choose `none`, `bzip2`, `lzma`,
+or `lzma2` with `--compression` (default `lzma2`); its level is 0 through 9 for
+LZMA/LZMA2 or 1 through 9 for bzip2, and `none` ignores level.
+RVZ uses Zstandard and a configurable `--chunk-size`.
+NKit input is restored to a full image; NKit output is not supported.
+
+`dol decompress` restores RVZ, GCZ, and NKit to ISO. `rvl decompress` also restores
+WIA and WBFS, and writes WBFS when the requested output name ends in `.wbfs`.
+Convert and decompress check GCZ, WIA, and NKit integrity before writing unless
+`--skip-verify` is set. `dol migrate` accepts GCZ and NKit; `rvl migrate` also
+accepts WIA. Migration checks the legacy container before writing RVZ.
 
 Chunk sizes above 2 MiB are only unsupported for Wii partition data:
 the container-level rule accepts a power of two of at least 32 KiB or a

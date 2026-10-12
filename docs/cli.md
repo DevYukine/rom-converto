@@ -12,8 +12,8 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 |---|---|
 | `ntr` | Encrypt, decrypt, and inspect Nintendo DS ROMs |
 | `ctr` | Convert, decrypt, compress, and verify Nintendo 3DS ROMs; bundle members for Azahar |
-| `dol` | Compress, migrate, and verify GameCube disc images (RVZ) |
-| `rvl` | Compress, migrate, and verify Wii disc images (RVZ) |
+| `dol` | Convert, compress, decompress, migrate, and verify GameCube disc images (ISO/GCZ/RVZ) |
+| `rvl` | Convert, compress, decompress, migrate, and verify Wii disc images (ISO/WBFS/GCZ/WIA/RVZ) |
 | `wup` | Bundle and decrypt Wii U titles (WUA); convert WUD and WUX disc images |
 | `nx` | Compress, decompress, verify, and inspect Switch containers; merge or split uncompressed NSP/XCI; decrypt NSP/XCI to NxEmu DNSP/DXCI |
 | `chd` | Compress, extract, and verify CD/DVD/LaserDisc images (CHD) |
@@ -100,6 +100,8 @@ deciding. What it checks depends on the format:
 |---|---|
 | `chd compress`, `cso compress` | Reads the produced file in full, about the cost of a decompression pass |
 | `dol compress`, `rvl compress` | Verifies the `.rvz` against its stored SHA-1 structural hashes, fast, no group data decompressed |
+| `dol convert`, `rvl convert` with RVZ output | Verifies the `.rvz` stored SHA-1 structural hashes without decompressing group data |
+| `dol convert`, `rvl convert` with other output formats | No output integrity check is available, so it falls back to existence-based skip |
 | `nx compress` | Decrypts every NCA section and checks the hash hierarchy; needs `prod.keys`. Falls back to existence-based skip when keys are absent |
 | `chd extract`, `cso decompress`, `dol`/`rvl`/`nx decompress` | Raw output has no integrity check, so it falls back to existence-based skip |
 
@@ -407,20 +409,42 @@ rom-converto dol <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.gcm` to Dolphin's `.rvz` |
+| `convert <INPUT> [OUTPUT]` | Convert ISO/GCM, RVZ, GCZ, or NKit to ISO, GCZ, or RVZ |
 | `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
-| `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+| `decompress <INPUT> [OUTPUT]` | Restore RVZ, GCZ, or NKit GCZ to `.iso`. Use `convert` for NKit ISO input |
 | `verify <INPUT>` | Verify a `.iso`, `.gcm`, `.rvz`, or legacy `.gcz`/NKit image (checks RVZ container hashes, or a whole-disc SHA-1 with `--full`) |
 | `info <INPUT>` | Inspect GameCube disc metadata. See [info](#info) |
 
 | Flag | Applies to | Description |
 |---|---|---|
-| `-l, --level <LEVEL>` | `compress`, `migrate` | Zstandard compression level (defaults to 22, Dolphin's max non-extreme) |
-| `--chunk-size <BYTES>` | `compress`, `migrate` | Chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB to match Dolphin) |
-| `--output-dir <DIR>` | `compress`, `decompress` | Write outputs under this directory instead of beside each input |
-| `--skip-verify` | `migrate` | Skip the pre-conversion integrity pass |
+| `-o, --output <PATH>` | `convert`, `compress`, `decompress`, `migrate` | Set the output path instead of positional `OUTPUT` |
+| `--format <FORMAT>` | `convert` | Target format: `iso`, `gcz`, or `rvz` (defaults to `iso`) |
+| `-l, --level <LEVEL>` | `convert`, `compress`, `migrate` | RVZ Zstandard compression level (defaults to 22, Dolphin's max non-extreme) |
+| `--chunk-size <BYTES>` | `convert`, `compress`, `migrate` | RVZ chunk size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB) |
+| `--block-size <BYTES>` | `convert` | GCZ block size in bytes, power of two between 32 KiB and 2 MiB (defaults to 128 KiB) |
+| `--output-dir <DIR>` | `convert`, `compress`, `decompress` | Write derived outputs under this directory instead of beside each input |
+| `--output-template <TEMPLATE>` | `convert`, `compress`, `decompress` | Build output paths from metadata tokens |
+| `--on-conflict <POLICY>` | `convert`, `compress`, `decompress` | Choose how to handle existing output. See [Conflict policy](#conflict-policy) |
+| `-f, --force` | `convert`, `compress`, `decompress`, `migrate` | Overwrite existing output |
+| `--skip-verify` | `convert`, `decompress`, `migrate` | Skip the pre-conversion integrity pass on GCZ and NKit inputs |
+| `-R, --recursive` | `convert`, `compress`, `decompress`, `migrate`, `verify` | Scan a folder for supported input files |
+| `--max-depth <N>` | `convert`, `compress`, `decompress`, `verify` | Limit recursive scan depth |
+| `--report <FILE>` | `convert`, `compress`, `decompress` | Write a CSV, HTML, or JSON run report |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
-Output is byte-identical to Dolphin's own encoder and decoder in both directions.
+`convert` skips a plain input already in the target format when no explicit output
+or compression settings are given. Without `--format`, an explicit output extension
+selects the target; otherwise the default is ISO. A conflicting `--format` and
+explicit output extension is an error. Omit `OUTPUT` to derive the name beside
+the input, stripping `.nkit` when restoring NKit.
+
+`dol convert -R` scans `.iso`, `.gcm`, `.rvz`, and `.gcz`.
+`dol decompress -R` scans `.rvz` and `.gcz`. Use `dol convert` for NKit ISO input.
+GCZ output follows the reference block layout. NKit input is restored to a full
+image; NKit output is not supported.
+
+RVZ encoding is byte-identical to Dolphin's own encoder. Restoring WBFS or NKit
+rebuilds omitted data rather than preserving the original container's bytes.
 
 `migrate` integrity-checks the source first (GCZ block checksums, NKit whole-file CRC32),
 regenerates NKit junk data, and streams the rebuilt disc straight to `.rvz` with no
@@ -431,9 +455,9 @@ output, while a recursive run skips it and continues.
 
 `dol verify` reads the same legacy GameCube containers as `migrate` (`.gcz`, NKit); a `.wia` holds a Wii disc image and is rejected with a pointer to `rvl verify`.
 
-Advisory warning: `--chunk-size` above 1 MiB on `compress` or `migrate` prints a warning
-that large chunks can stutter on weaker playback hardware, and suggests re-encoding at
-128 KiB. `rvl compress` and `rvl migrate` share the same RVZ pipeline and the same warning.
+Advisory warning: `--chunk-size` above 1 MiB on `compress`, `migrate`, or RVZ `convert`
+prints a warning that large chunks can stutter on weaker playback hardware, and
+suggests re-encoding at 128 KiB. The Wii commands share the same RVZ pipeline and warning.
 
 ## rvl (Wii)
 
@@ -444,8 +468,9 @@ rom-converto rvl <SUBCOMMAND> <INPUT> [OUTPUT]
 | Subcommand | Description |
 |---|---|
 | `compress <INPUT> [OUTPUT]` | Compress a `.iso`/`.wbfs` to Dolphin's `.rvz` |
+| `convert <INPUT> [OUTPUT]` | Convert ISO, WBFS, RVZ, GCZ, WIA, or NKit to ISO, WBFS, GCZ, WIA, or RVZ |
 | `migrate <INPUT> [OUTPUT]` | Migrate a legacy `.wia`, `.gcz`, `.nkit.iso`, or `.nkit.gcz` to `.rvz` with an integrity check first |
-| `decompress <INPUT> [OUTPUT]` | Decompress a `.rvz` back to `.iso` |
+| `decompress <INPUT> [OUTPUT]` | Restore RVZ, GCZ, WIA, WBFS, or NKit GCZ to `.iso`, or `.wbfs` when the output name ends in `.wbfs`. Use `convert` for NKit ISO input |
 | `verify <INPUT>` | Verify a `.iso`, `.wbfs`, `.rvz`, or legacy `.wia`/`.gcz`/NKit image (checks RVZ container hashes, or recomputes the Wii partition hash tree with `--full`) |
 | `info <INPUT>` | Inspect Wii disc metadata. See [info](#info) |
 
@@ -453,13 +478,27 @@ rom-converto rvl <SUBCOMMAND> <INPUT> [OUTPUT]
 `.gcz` and NKit. It rebuilds the Wii hash tree and re-encrypts partitions on the fly while
 converting to `.rvz`.
 
-Flags match the `dol` commands, including `--output-dir` on `compress` and `decompress`
-and the shared `migrate` flags. `rvl migrate` additionally takes `--deep`, which decodes
-every WIA group during verification instead of only the SHA-1 header chain (GCZ and NKit
-checks are already exhaustive, so it applies to WIA input only).
-`--full` on `rvl verify` decrypts every partition cluster and recomputes the H0/H1/H2 hash
-tree. `dol` and `rvl` share one RVZ pipeline, and output is byte-identical to Dolphin on
-both consoles.
+Flags match the `dol` commands, with these Wii additions:
+
+| Flag | Applies to | Description |
+|---|---|---|
+| `--format <FORMAT>` | `convert` | Target format: `iso`, `wbfs`, `gcz`, `wia`, or `rvz` (defaults to `iso`) |
+| `--compression <CODEC>` | `convert` | WIA codec: `none`, `bzip2`, `lzma`, or `lzma2` (defaults to `lzma2`) |
+| `-l, --level <LEVEL>` | `convert` | RVZ Zstandard level, or WIA level 0 through 9 for LZMA/LZMA2 and 1 through 9 for bzip2 (WIA defaults to 6; `none` ignores level) |
+| `--skip-verify` | `convert`, `decompress`, `migrate` | Skip the integrity pass on GCZ, WIA, and NKit inputs |
+| `--deep` | `migrate` | Decode every WIA group during verification instead of only the SHA-1 header chain |
+
+`rvl convert -R` scans `.iso`, `.wbfs`, `.rvz`, `.gcz`, and `.wia`.
+`rvl decompress -R` scans `.rvz`, `.gcz`, `.wia`, and `.wbfs`. Use `rvl convert`
+for NKit ISO input. Both commands support `-o`, output directories and templates,
+conflict policies, `-f`, maximum scan depth, and reports as listed for `dol`.
+WIA output is Wii-only and always uses 2 MiB chunks; `--chunk-size` applies only
+to RVZ and `--block-size` only to GCZ. NKit output is not supported.
+
+GCZ and NKit integrity checks are already exhaustive, so `--deep` applies to WIA
+input only. `--full` on `rvl verify` decrypts every partition cluster and recomputes
+the H0/H1/H2 hash tree. `dol` and `rvl` share one RVZ pipeline, and RVZ output is
+byte-identical to Dolphin on both consoles.
 
 ## wup (Wii U)
 

@@ -53,6 +53,33 @@ The Hash page hashes the file inside an archive that holds a known image, and th
 archive's own bytes otherwise, like `rom-converto hash`. With Recursive on, dropping a
 folder hashes every file in it.
 
+### GameCube and Wii conversion
+
+Choose **GameCube** or **Wii** under Convert. The target format picker offers ISO
+(default), GCZ, and RVZ for GameCube, and ISO, WBFS, GCZ, WIA, and RVZ for Wii.
+The GameCube page accepts `.iso`, `.gcm`, `.rvz`, and `.gcz`; Wii accepts `.iso`,
+`.wbfs`, `.rvz`, `.gcz`, and `.wia`. NKit ISO and GCZ inputs are restored to full
+images. A plain input already in the selected format is skipped unless an output
+filename or compression settings are given. Both pages also accept supported archives.
+
+| Option | Applies to | Description |
+|---|---|---|
+| Compression | WIA | Choose None, bzip2, LZMA, or LZMA2 (default LZMA2) |
+| Level | RVZ, WIA | Send a value only when typed. Changing the target clears it. RVZ uses the configured Zstandard level or 22; WIA uses 0 through 9 for LZMA/LZMA2 or 1 through 9 for bzip2 (default 6). None ignores level |
+| Chunk size | RVZ | Choose a power of two from 32 KiB through 2 MiB (default 128 KiB) |
+| Block size | GCZ | Choose a power of two from 32 KiB through 2 MiB (default 128 KiB) |
+| Skip verify | GCZ, WIA, NKit input | Skip the integrity pass before conversion |
+
+Both pages support output directory and filename, output templates, On conflict,
+recursive folder scans, maximum depth, reports, and dry run. A filename extension
+that conflicts with the target picker is an error. WIA output is Wii-only and
+always uses 2 MiB chunks; NKit output is not supported.
+
+Under Extract, GameCube restores RVZ and GCZ to ISO. Wii also accepts WIA and WBFS
+and offers ISO or WBFS output. Both pages offer **Skip verify** for the input
+integrity pass. Use Convert for NKit ISO input. Restoring WBFS or NKit GCZ rebuilds
+omitted data rather than preserving the original container's bytes.
+
 ### CHD migration
 
 Choose **CHD (old)** in Convert to migrate a v1 to v4 file to v5. The default output
@@ -238,6 +265,7 @@ portable copies each receive their own package:
 The GUI does not expose shell completions, `self-update`, terminal verbosity
 flags, `--config`, `--preset`, `--no-update-check`, or `info --json`. It also
 does not provide `dat identify`, `dat fixdat`, `dol migrate`, or `rvl migrate`
-as dedicated pages. The relevant compression pages accept supported legacy inputs
-and migrate them through their normal conversion flow. `nx split -R` (recursive
-split with `--output-dir`) is also CLI-only: the Split page takes one container.
+as dedicated pages. The GameCube and Wii Convert pages accept supported legacy
+inputs and restore them through their normal conversion flow; Organize still
+selects RVZ for both consoles. `nx split -R` (recursive split with `--output-dir`)
+is also CLI-only: the Split page takes one container.

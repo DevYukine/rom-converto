@@ -205,6 +205,32 @@ pub async fn verify_legacy_input(
         })
 }
 
+/// Detects a legacy input, enforces the console policy, and verifies it unless skipped.
+///
+/// # Errors
+/// Returns an error for a disallowed or corrupt source, I/O failures, or cancellation.
+pub async fn gate_legacy_input(
+    input: &Path,
+    allowed: &[LegacyFormat],
+    next_command: &str,
+    skip_verify: bool,
+    deep: bool,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+) -> RvzResult<Option<LegacyFormat>> {
+    let format = {
+        let input = input.to_path_buf();
+        task::spawn_blocking(move || detect_legacy_format(&input)).await??
+    };
+    if let Some(format) = format {
+        ensure_format_allowed_for(format, allowed, next_command)?;
+        if !skip_verify {
+            verify_legacy_input(input, format, deep, progress, cancel).await?;
+        }
+    }
+    Ok(format)
+}
+
 /// Progress total the integrity pass will report against, in the unit
 /// each format's verifier counts.
 fn legacy_verify_total(path: &Path, fmt: LegacyFormat, deep: bool) -> RvzResult<u64> {
@@ -257,20 +283,22 @@ pub async fn migrate_disc(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> RvzResult<()> {
-    let fmt = {
-        let input = input.to_path_buf();
-        task::spawn_blocking(move || detect_legacy_format(&input)).await??
-    }
+    let fmt = gate_legacy_input(
+        input,
+        allowed,
+        "rvl migrate",
+        migrate.skip_verify,
+        migrate.deep_verify,
+        progress,
+        &cancel,
+    )
+    .await?
     .ok_or_else(|| {
         RvzError::Custom(
             "input is not a GCZ, WIA, or NKit image; use compress for .iso/.gcm/.wbfs".into(),
         )
     })?;
-    ensure_format_allowed(fmt, allowed)?;
     info!("Migrating {} input {} to RVZ", fmt.name(), input.display());
-    if !migrate.skip_verify {
-        verify_legacy_input(input, fmt, migrate.deep_verify, progress, &cancel).await?;
-    }
     compress_iso(input, output, options, progress, cancel).await
 }
 

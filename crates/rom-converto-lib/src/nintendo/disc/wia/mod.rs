@@ -1,6 +1,5 @@
-//! WIA (Wii ISO Archive, RVZ's predecessor) input support: streaming
-//! reconstruction of the original encrypted disc plus pre-conversion
-//! integrity verification.
+//! WIA (Wii ISO Archive, RVZ's predecessor) streaming reconstruction,
+//! Wii compression, and integrity verification.
 
 pub mod codec;
 pub mod error;
@@ -11,9 +10,91 @@ pub mod verify;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
+pub use crate::nintendo::disc::rvz::compress::compress_wia as compress_to_wia;
 pub use error::{WiaError, WiaResult};
 pub use reader::WiaReader;
 pub use verify::{verify_total, verify_wia_blocking};
+
+use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
+use std::str::FromStr;
+
+/// Default WIA compression level.
+pub const DEFAULT_WIA_LEVEL: u32 = 6;
+
+/// Compression method emitted by the WIA writer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WiaCompression {
+    /// Stores groups and tables without compression.
+    None,
+    /// Compresses groups and tables with bzip2.
+    Bzip2,
+    /// Compresses groups and tables with raw LZMA1.
+    Lzma,
+    /// Compresses groups and tables with raw LZMA2.
+    #[default]
+    Lzma2,
+}
+
+impl WiaCompression {
+    /// Returns the command-line name of the compression method.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Bzip2 => "bzip2",
+            Self::Lzma => "lzma",
+            Self::Lzma2 => "lzma2",
+        }
+    }
+
+    /// Levels the codec accepts; `None` for the uncompressed method.
+    pub fn level_range(self) -> Option<std::ops::RangeInclusive<u32>> {
+        match self {
+            Self::None => None,
+            Self::Bzip2 => Some(1..=9),
+            Self::Lzma | Self::Lzma2 => Some(0..=9),
+        }
+    }
+}
+
+impl std::fmt::Display for WiaCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for WiaCompression {
+    type Err = RvzError;
+
+    fn from_str(value: &str) -> RvzResult<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "bzip2" => Ok(Self::Bzip2),
+            "lzma" => Ok(Self::Lzma),
+            "lzma2" => Ok(Self::Lzma2),
+            _ => Err(RvzError::Custom(format!(
+                "unknown WIA compression {value:?}: expected none, bzip2, lzma, or lzma2"
+            ))),
+        }
+    }
+}
+
+/// Compression options for [`compress_to_wia`].
+#[derive(Debug, Clone, Copy)]
+pub struct WiaCompressOptions {
+    /// Codec used for every group and metadata table.
+    pub compression: WiaCompression,
+    /// Compression level: bzip2 1..=9, LZMA/LZMA2 0..=9; ignored for none.
+    pub level: u32,
+}
+
+impl Default for WiaCompressOptions {
+    fn default() -> Self {
+        Self {
+            compression: WiaCompression::default(),
+            level: DEFAULT_WIA_LEVEL,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -29,6 +110,23 @@ mod tests {
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn compression_names_round_trip() {
+        for compression in [
+            WiaCompression::None,
+            WiaCompression::Bzip2,
+            WiaCompression::Lzma,
+            WiaCompression::Lzma2,
+        ] {
+            assert_eq!(
+                compression.as_str().parse::<WiaCompression>().unwrap(),
+                compression
+            );
+            assert_eq!(compression.to_string(), compression.as_str());
+        }
+        assert_eq!(WiaCompressOptions::default().level, DEFAULT_WIA_LEVEL);
+    }
 
     fn write_temp(bytes: &[u8]) -> tempfile::NamedTempFile {
         let mut f = tempfile::NamedTempFile::with_suffix(".wia").unwrap();
@@ -182,5 +280,166 @@ mod tests {
             matches!(err, WiaError::HashChainMismatch(_) | WiaError::Decode(_)),
             "{err}"
         );
+    }
+
+    async fn assert_writer_round_trip(iso: &[u8], compression: WiaCompression, level: u32) {
+        use crate::nintendo::disc::rvz::format::{WiaDisc, WiaFileHead};
+        use crate::util::NoProgress;
+        use binrw::{BinRead, Endian};
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.iso");
+        let output = dir.path().join("output.wia");
+        tokio::fs::write(&input, iso).await.unwrap();
+        compress_to_wia(
+            &input,
+            &output,
+            WiaCompressOptions { compression, level },
+            &NoProgress,
+            crate::util::CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let mut file = std::fs::File::open(&output).unwrap();
+        let head = WiaFileHead::read_options(&mut file, Endian::Big, ()).unwrap();
+        let disc = WiaDisc::read_options(&mut file, Endian::Big, ()).unwrap();
+        assert_eq!(head.magic, format::WIA_MAGIC);
+        assert_eq!(head.version, format::WIA_VERSION);
+        assert_eq!(head.version_compatible, 0x00090000);
+        assert_eq!(head.wia_file_size, file.metadata().unwrap().len());
+        assert_eq!(head.iso_file_size, iso.len() as u64);
+        assert_eq!(disc.disc_type, 2);
+        assert_eq!(disc.chunk_size, format::WIA_CHUNK_GRANULARITY);
+        assert_eq!(disc.compr_level, level as i32);
+        let id = match compression {
+            WiaCompression::None => WIA_COMPR_NONE,
+            WiaCompression::Bzip2 => WIA_COMPR_BZIP2,
+            WiaCompression::Lzma => WIA_COMPR_LZMA,
+            WiaCompression::Lzma2 => WIA_COMPR_LZMA2,
+        };
+        assert_eq!(disc.compression, id);
+        let options = lzma_rust2::LzmaOptions::with_preset(level);
+        let dict = options.dict_size.min(4 * 1024 * 1024);
+        match compression {
+            WiaCompression::Lzma => {
+                assert_eq!(disc.compr_data_len, 5);
+                assert_eq!(disc.compr_data[0], options.get_props());
+                assert_eq!(&disc.compr_data[1..5], &dict.to_le_bytes());
+            }
+            WiaCompression::Lzma2 => {
+                assert_eq!(disc.compr_data_len, 1);
+                let p = disc.compr_data[0];
+                assert!(p <= 20);
+                assert_eq!((2 | (p as u32 & 1)) << (p / 2 + 11), dict);
+            }
+            _ => assert_eq!(disc.compr_data_len, 0),
+        }
+
+        let mut reader = crate::nintendo::disc::input::open_disc_input(&output).unwrap();
+        let mut restored = Vec::new();
+        reader.read_to_end(&mut restored).unwrap();
+        assert!(
+            restored == iso,
+            "writer round trip failed for {compression:?}"
+        );
+        verify_total(&output, true).unwrap();
+        verify_wia_blocking(
+            &output,
+            true,
+            Arc::new(AtomicU64::new(0)),
+            crate::util::CancelToken::new(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn writer_round_trips_raw_and_partitioned_wii_with_every_codec() {
+        let raw = crate::nintendo::rvl::test_fixtures::make_fake_wii_iso(5 * 1024 * 1024 + 123);
+        let partitioned = make_fake_wii_iso_with_partition(3);
+        for compression in [
+            WiaCompression::None,
+            WiaCompression::Bzip2,
+            WiaCompression::Lzma,
+            WiaCompression::Lzma2,
+        ] {
+            assert_writer_round_trip(&raw, compression, 6).await;
+            assert_writer_round_trip(&partitioned, compression, 6).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_round_trips_partial_partition_and_raw_zero_sentinel() {
+        let partial = make_fake_wii_iso_with_partial_partition(1, 5);
+        let mut raw = crate::nintendo::rvl::test_fixtures::make_fake_wii_iso(5 * 1024 * 1024 + 123);
+        raw[2 * 1024 * 1024..4 * 1024 * 1024].fill(0);
+        for compression in [
+            WiaCompression::None,
+            WiaCompression::Bzip2,
+            WiaCompression::Lzma,
+            WiaCompression::Lzma2,
+        ] {
+            assert_writer_round_trip(&partial, compression, 6).await;
+            assert_writer_round_trip(&raw, compression, 6).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn writer_rejects_gamecube_and_out_of_range_levels() {
+        use crate::util::{CancelToken, NoProgress};
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("input.iso");
+        let output = dir.path().join("output.wia");
+        tokio::fs::write(&input, make_fake_gamecube_iso(1024 * 1024))
+            .await
+            .unwrap();
+        let error = compress_to_wia(
+            &input,
+            &output,
+            WiaCompressOptions::default(),
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, RvzError::Custom(_)));
+        assert!(error.to_string().contains("Wii-only"));
+        assert!(!output.exists());
+
+        for (compression, level, range) in [
+            (WiaCompression::Bzip2, 0, "1..=9"),
+            (WiaCompression::Bzip2, 10, "1..=9"),
+            (WiaCompression::Lzma, 10, "0..=9"),
+            (WiaCompression::Lzma2, 10, "0..=9"),
+            (WiaCompression::Lzma2, u32::MAX, "0..=9"),
+        ] {
+            let error = compress_to_wia(
+                &input,
+                &output,
+                WiaCompressOptions { compression, level },
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(error, RvzError::Custom(_)));
+            assert!(error.to_string().contains(range));
+            assert!(!output.exists());
+        }
+    }
+
+    #[test]
+    fn writer_compression_parsing_and_defaults() {
+        assert_eq!(WiaCompression::default(), WiaCompression::Lzma2);
+        assert_eq!(WiaCompressOptions::default().level, 6);
+        for (name, compression) in [
+            ("none", WiaCompression::None),
+            ("bzip2", WiaCompression::Bzip2),
+            ("lzma", WiaCompression::Lzma),
+            ("lzma2", WiaCompression::Lzma2),
+        ] {
+            assert_eq!(name.parse::<WiaCompression>().unwrap(), compression);
+        }
+        assert!("zstd".parse::<WiaCompression>().is_err());
     }
 }

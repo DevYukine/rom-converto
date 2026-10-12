@@ -661,6 +661,7 @@ pub struct RunOptions {
     pub max_depth: Option<usize>,
     pub report: Option<PathBuf>,
     pub format: Option<String>,
+    pub compression: Option<String>,
     pub block_size: Option<u32>,
     pub hunk_size: Option<u32>,
     pub codecs: Option<Vec<String>>,

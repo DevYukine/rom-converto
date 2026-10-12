@@ -20,8 +20,12 @@ use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_ve
 use crate::cso::{CsoCompressOptions, CsoFormat};
 use crate::disc::chd::error::ChdError;
 use crate::disc::chd::{ChdCodec, ChdOptions, DiscMode};
+use crate::nintendo::disc::convert::{
+    DiscConvertOptions, DiscFormat, convert_disc, derive_convert_path, detect_disc_format,
+};
 use crate::nintendo::disc::legacy::{ALL_MIGRATE_FORMATS, DOL_MIGRATE_FORMATS, MigrateOptions};
 use crate::nintendo::disc::rvz::RvzCompressOptions;
+use crate::nintendo::disc::wia::{WiaCompressOptions, WiaCompression};
 use crate::util::fs::{file_len, has_ext};
 use crate::util::verify::unverifiable;
 use crate::util::{
@@ -42,7 +46,12 @@ use std::time::Instant;
 /// walked file itself, or the archive member the run stages). Case-insensitive
 /// volumes treat names that differ only in case as one. An archive whose
 /// listing failed has no member to name, so it claims nothing.
-fn batch_output_key(op: &OpSpec, path: &Path, output_basis: &Path) -> Option<String> {
+fn batch_output_key(
+    op: &OpSpec,
+    options: &RunOptions,
+    path: &Path,
+    output_basis: &Path,
+) -> Option<String> {
     if !op.writes_output {
         return None;
     }
@@ -51,7 +60,7 @@ fn batch_output_key(op: &OpSpec, path: &Path, output_basis: &Path) -> Option<Str
         (None, Some(_)) if crate::util::is_archive_path(path) && output_basis == path => {
             return None;
         }
-        (None, Some(derive)) => derive(output_basis),
+        (None, Some(derive)) => derive(options, output_basis),
         (None, None) => return None,
     };
     Some(claim.to_string_lossy().to_lowercase())
@@ -110,9 +119,7 @@ pub(crate) struct OpSpec {
     /// to detect two children writing the same output; the handler derives
     /// the same path when it runs. `None` for read-only operations and for
     /// directory-output operations, which claim `batch_output_dir` instead.
-    /// A format option that only renames the extension (cso/zso) is keyed
-    /// on the default, which cannot change who collides.
-    derive_output: Option<fn(&Path) -> PathBuf>,
+    derive_output: Option<fn(&RunOptions, &Path) -> PathBuf>,
     /// Bytes the output needs when the source file's own size is the wrong
     /// estimate: a decoded ISO, a source tree.
     required_bytes: Option<fn(&RunRequest, &Path) -> u64>,
@@ -128,7 +135,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(cso_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -139,7 +146,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("iso")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("iso")),
         run: |req, progress, cancel| Box::pin(cso_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -165,7 +172,7 @@ pub(crate) static OPS: &[OpSpec] = &[
                 .map(|info| info.uncompressed_size)
                 .unwrap_or_else(|_| file_len(source))
         }),
-        derive_output: Some(|basis: &Path| basis.with_extension("chd")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("chd")),
         run: |req, progress, cancel| Box::pin(cso_to_chd(req, progress, cancel)),
     },
     OpSpec {
@@ -176,7 +183,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("chd")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("chd")),
         run: |req, progress, cancel| Box::pin(chd_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -187,7 +194,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::disc::chd::migrated_chd_path),
+        derive_output: Some(|_, p| crate::disc::chd::migrated_chd_path(p)),
         run: |req, progress, cancel| Box::pin(chd_migrate(req, progress, cancel)),
     },
     OpSpec {
@@ -201,7 +208,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         // Only a collision key: the real extension depends on the CHD's
         // flavor, which the walk cannot read. Two inputs naming one basis
         // still collide on it.
-        derive_output: Some(std::path::Path::to_path_buf),
+        derive_output: Some(|_, p| p.to_path_buf()),
         run: |req, progress, cancel| Box::pin(chd_extract(req, progress, cancel)),
     },
     OpSpec {
@@ -227,7 +234,7 @@ pub(crate) static OPS: &[OpSpec] = &[
                 .map(|info| info.logical_bytes)
                 .unwrap_or_else(|_| file_len(source))
         }),
-        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(chd_to_cso(req, progress, cancel)),
     },
     OpSpec {
@@ -238,18 +245,41 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "dol.convert",
+        aliases: &[],
+        batch_exts: Some(&["iso", "gcm", "rvz", "gcz"]),
+        input_exts: None,
+        batch_output_dir: None,
+        writes_output: true,
+        required_bytes: Some(convert_required_bytes),
+        derive_output: Some(|o, p| {
+            derive_convert_path(
+                p,
+                o.format
+                    .as_deref()
+                    .and_then(|format| format.parse().ok())
+                    .unwrap_or(DiscFormat::Iso),
+            )
+        }),
+        run: |req, progress, cancel| {
+            Box::pin(disc_convert(req, progress, cancel, DOL_MIGRATE_FORMATS))
+        },
     },
     OpSpec {
         name: "dol.decompress",
         aliases: &[],
-        batch_exts: Some(&["rvz"]),
+        batch_exts: Some(&["rvz", "gcz"]),
         input_exts: None,
         batch_output_dir: None,
         writes_output: true,
-        required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
+        required_bytes: Some(|_, source| {
+            crate::nintendo::disc::input::disc_size_of(source).unwrap_or_else(|_| file_len(source))
+        }),
+        derive_output: Some(|_, p| derive_convert_path(p, DiscFormat::Iso)),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -260,7 +290,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, DOL_MIGRATE_FORMATS))
         },
@@ -284,18 +314,41 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "rvl.convert",
+        aliases: &[],
+        batch_exts: Some(&["iso", "wbfs", "rvz", "gcz", "wia"]),
+        input_exts: None,
+        batch_output_dir: None,
+        writes_output: true,
+        required_bytes: Some(convert_required_bytes),
+        derive_output: Some(|o, p| {
+            derive_convert_path(
+                p,
+                o.format
+                    .as_deref()
+                    .and_then(|format| format.parse().ok())
+                    .unwrap_or(DiscFormat::Iso),
+            )
+        }),
+        run: |req, progress, cancel| {
+            Box::pin(disc_convert(req, progress, cancel, ALL_MIGRATE_FORMATS))
+        },
     },
     OpSpec {
         name: "rvl.decompress",
         aliases: &[],
-        batch_exts: Some(&["rvz"]),
+        batch_exts: Some(&["rvz", "gcz", "wia", "wbfs"]),
         input_exts: None,
         batch_output_dir: None,
         writes_output: true,
-        required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
+        required_bytes: Some(|_, source| {
+            crate::nintendo::disc::input::disc_size_of(source).unwrap_or_else(|_| file_len(source))
+        }),
+        derive_output: Some(|_, p| derive_convert_path(p, DiscFormat::Iso)),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -306,7 +359,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, ALL_MIGRATE_FORMATS))
         },
@@ -330,7 +383,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| Box::pin(rvz_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -341,7 +394,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_disc_path),
+        derive_output: Some(|_, p| derive_convert_path(p, DiscFormat::Iso)),
         run: |req, progress, cancel| Box::pin(rvz_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -352,7 +405,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::disc::rvz::derive_rvz_path),
+        derive_output: Some(|_, p| crate::nintendo::disc::rvz::derive_rvz_path(p)),
         run: |req, progress, cancel| {
             Box::pin(migrate_disc(req, progress, cancel, ALL_MIGRATE_FORMATS))
         },
@@ -365,7 +418,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("cia")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("cia")),
         run: |req, progress, cancel| Box::pin(ctr_cdn_to_cia(req, progress, cancel)),
     },
     OpSpec {
@@ -387,7 +440,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ctr::derive_decrypted_path),
+        derive_output: Some(|_, p| crate::nintendo::ctr::derive_decrypted_path(p)),
         run: |req, progress, cancel| Box::pin(ctr_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -398,7 +451,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ctr::derive_encrypted_path),
+        derive_output: Some(|_, p| crate::nintendo::ctr::derive_encrypted_path(p)),
         run: |req, progress, cancel| Box::pin(ctr_encrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -409,7 +462,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ctr::z3ds::derive_compressed_path),
+        derive_output: Some(|_, p| crate::nintendo::ctr::z3ds::derive_compressed_path(p)),
         run: |req, progress, cancel| Box::pin(ctr_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -420,7 +473,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ctr::z3ds::derive_decompressed_path),
+        derive_output: Some(|_, p| crate::nintendo::ctr::z3ds::derive_decompressed_path(p)),
         run: |req, progress, cancel| Box::pin(ctr_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -434,7 +487,7 @@ pub(crate) static OPS: &[OpSpec] = &[
             crate::nintendo::ctr::convert::converted_size(source, req.options.trim.unwrap_or(false))
                 .unwrap_or_else(|_| file_len(source))
         }),
-        derive_output: Some(crate::nintendo::ctr::convert::derive_converted_path),
+        derive_output: Some(|_, p| crate::nintendo::ctr::convert::derive_converted_path(p)),
         run: |req, progress, cancel| Box::pin(ctr_convert(req, progress, cancel)),
     },
     OpSpec {
@@ -478,7 +531,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::nx::derive_compressed_path),
+        derive_output: Some(|_, p| crate::nintendo::nx::derive_compressed_path(p)),
         run: |req, progress, cancel| Box::pin(nx_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -489,7 +542,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::nx::derive_decompressed_path),
+        derive_output: Some(|_, p| crate::nintendo::nx::derive_decompressed_path(p)),
         run: |req, progress, cancel| Box::pin(nx_decompress(req, progress, cancel)),
     },
     OpSpec {
@@ -500,7 +553,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::nx::derive_decrypted_path),
+        derive_output: Some(|_, p| crate::nintendo::nx::derive_decrypted_path(p)),
         run: |req, progress, cancel| Box::pin(nx_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -522,7 +575,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::wup::derive_wua_path),
+        derive_output: Some(|_, p| crate::nintendo::wup::derive_wua_path(p)),
         run: |req, progress, cancel| Box::pin(wup_compress(req, progress, cancel)),
     },
     OpSpec {
@@ -564,7 +617,7 @@ pub(crate) static OPS: &[OpSpec] = &[
                     .unwrap_or_else(|_| file_len(source))
             }
         }),
-        derive_output: Some(|basis: &Path| basis.with_extension("wux")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("wux")),
         run: |req, progress, cancel| Box::pin(wup_to_wux(req, progress, cancel)),
     },
     OpSpec {
@@ -578,7 +631,7 @@ pub(crate) static OPS: &[OpSpec] = &[
             crate::nintendo::wup::disc::logical_disc_size(source)
                 .unwrap_or_else(|_| file_len(source))
         }),
-        derive_output: Some(|basis: &Path| basis.with_extension("wud")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("wud")),
         run: |req, progress, cancel| Box::pin(wup_to_wud(req, progress, cancel)),
     },
     OpSpec {
@@ -600,7 +653,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("iso")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("iso")),
         run: |req, progress, cancel| Box::pin(cue_to_iso(req, progress, cancel)),
     },
     OpSpec {
@@ -611,7 +664,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(|basis: &Path| basis.with_extension("cso")),
+        derive_output: Some(|_, basis: &Path| basis.with_extension("cso")),
         run: |req, progress, cancel| Box::pin(cue_to_cso(req, progress, cancel)),
     },
     OpSpec {
@@ -622,7 +675,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ntr::derive_encrypted_path),
+        derive_output: Some(|_, p| crate::nintendo::ntr::derive_encrypted_path(p)),
         run: |req, progress, cancel| Box::pin(ntr_encrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -633,7 +686,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::nintendo::ntr::derive_decrypted_path),
+        derive_output: Some(|_, p| crate::nintendo::ntr::derive_decrypted_path(p)),
         run: |req, progress, cancel| Box::pin(ntr_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -666,7 +719,7 @@ pub(crate) static OPS: &[OpSpec] = &[
         batch_output_dir: None,
         writes_output: true,
         required_bytes: None,
-        derive_output: Some(crate::sony::ps3::derive_decrypted_path),
+        derive_output: Some(|_, p| crate::sony::ps3::derive_decrypted_path(p)),
         run: |req, progress, cancel| Box::pin(ps3_decrypt(req, progress, cancel)),
     },
     OpSpec {
@@ -1036,14 +1089,10 @@ pub(crate) async fn run_batch_request(
         && !req.dry_run
         && !req.options.skip_space_check.unwrap_or(false)
     {
-        let required = files
-            .iter()
-            .filter(|p| p.unreadable.is_none())
-            .map(|p| {
-                op.required_bytes
-                    .map_or_else(|| file_len(&p.path), |estimate| estimate(&req, &p.path))
-            })
-            .sum();
+        let mut required = 0;
+        for entry in files.iter().filter(|entry| entry.unreadable.is_none()) {
+            required += required_bytes(op, &req, &entry.path).await;
+        }
         preflight_space(req.options.output_dir.as_deref().unwrap_or(&root), required)?;
     }
 
@@ -1073,11 +1122,13 @@ pub(crate) async fn run_batch_request(
         let plain_keys: std::collections::HashSet<String> = files
             .iter()
             .filter(|collected| !crate::util::is_archive_path(&collected.path))
-            .filter_map(|collected| batch_output_key(op, &collected.path, &collected.output_basis))
+            .filter_map(|collected| {
+                batch_output_key(op, &req.options, &collected.path, &collected.output_basis)
+            })
             .collect();
         let (late, mut ordered): (Vec<_>, Vec<_>) = files.into_iter().partition(|collected| {
             crate::util::is_archive_path(&collected.path)
-                && batch_output_key(op, &collected.path, &collected.output_basis)
+                && batch_output_key(op, &req.options, &collected.path, &collected.output_basis)
                     .is_some_and(|key| plain_keys.contains(&key))
         });
         ordered.extend(late);
@@ -1134,7 +1185,7 @@ pub(crate) async fn run_batch_request(
                 let input = guarded(&collected.path).expect("walked inputs are guarded");
                 let basis = guarded(&collected.output_basis).expect("output bases are guarded");
                 let own = basis.to_string_lossy().to_lowercase();
-                batch_output_key(op, &input, &basis)
+                batch_output_key(op, &req.options, &input, &basis)
                     .map(|key| {
                         batch_destination(
                             &key,
@@ -1232,6 +1283,7 @@ pub(crate) async fn run_batch_request(
             .then(|| {
                 batch_output_key(
                     op,
+                    &req.options,
                     guard_input.as_deref().unwrap_or(&input),
                     guard_basis.as_deref().unwrap_or(&collected.output_basis),
                 )
@@ -1445,6 +1497,7 @@ pub(crate) async fn cso_compress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension(format.extension()),
             operation: "cso.compress",
@@ -1475,6 +1528,7 @@ pub(crate) async fn cso_decompress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("iso"),
             operation: "cso.decompress",
@@ -1519,6 +1573,7 @@ pub(crate) async fn chd_compress(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("chd"),
             operation: "chd.compress",
@@ -1587,6 +1642,7 @@ pub(crate) async fn chd_migrate(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::disc::chd::migrated_chd_path(basis),
             operation: "chd.migrate",
@@ -1616,6 +1672,7 @@ pub(crate) async fn chd_extract(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, source| basis.with_extension(chd_extract_ext(source)),
             operation: "chd.extract",
@@ -1736,6 +1793,7 @@ pub(crate) async fn cso_to_chd(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("chd"),
             operation: "cso.to_chd",
@@ -1769,6 +1827,7 @@ pub(crate) async fn chd_to_cso(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension(format.extension()),
             operation: "chd.to_cso",
@@ -1798,6 +1857,7 @@ pub(crate) async fn rvz_compress(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::disc::rvz::derive_rvz_path(basis),
             operation: &req.operation,
@@ -1819,34 +1879,201 @@ pub(crate) async fn rvz_compress(
     .await
 }
 
+pub(crate) fn resolve_convert_target(req: &RunRequest) -> Result<DiscFormat> {
+    let formats = if req.operation == "dol.convert" {
+        "iso, gcz, rvz"
+    } else {
+        "iso, wbfs, gcz, wia, rvz"
+    };
+    let specified = req
+        .options
+        .format
+        .as_deref()
+        .map(|format| {
+            format.parse::<DiscFormat>().map_err(|_| {
+                invalid_arg(format!(
+                    "invalid format {format:?}; expected one of {formats}"
+                ))
+            })
+        })
+        .transpose()?;
+    let extension = req.output.as_deref().and_then(DiscFormat::from_extension);
+    if let (Some(format), Some(extension)) = (specified, extension)
+        && format != extension
+    {
+        return Err(invalid_arg(format!(
+            "--format {} disagrees with output extension .{}",
+            format.extension(),
+            extension.extension()
+        )));
+    }
+    let format = specified.or(extension).unwrap_or(DiscFormat::Iso);
+    if req.operation == "dol.convert" && matches!(format, DiscFormat::Wbfs | DiscFormat::Wia) {
+        return Err(invalid_arg(
+            "use rvl convert for Wii disc images (WBFS and WIA output)",
+        ));
+    }
+    Ok(format)
+}
+
+fn can_skip_disc_convert(req: &RunRequest, input: &Path) -> bool {
+    req.output.is_none()
+        && input.is_file()
+        && !crate::util::is_archive_path(input)
+        && !req
+            .input
+            .as_deref()
+            .is_some_and(crate::util::is_archive_path)
+        && req.options.level.is_none()
+        && req.options.chunk_size.is_none()
+        && req.options.block_size.is_none()
+        && req.options.compression.is_none()
+}
+
+fn convert_required_bytes(req: &RunRequest, source: &Path) -> u64 {
+    let format = resolve_convert_target(req).unwrap_or(DiscFormat::Iso);
+    if can_skip_disc_convert(req, source)
+        && detect_disc_format(source).ok().flatten() == Some(format)
+    {
+        return 0;
+    }
+    if format == DiscFormat::Rvz {
+        file_len(source)
+    } else {
+        crate::nintendo::disc::input::disc_size_of(source).unwrap_or_else(|_| file_len(source))
+    }
+}
+
+async fn disc_convert(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+    allowed: &'static [crate::nintendo::disc::legacy::LegacyFormat],
+) -> Result<RunResponse> {
+    let input = required_input(&req)?;
+    let format = resolve_convert_target(&req)?;
+    if let Some(block_size) = req.options.block_size {
+        crate::nintendo::disc::gcz::validate_block_size(block_size)
+            .map_err(|err| invalid_arg(err.to_string()))?;
+    }
+    if let Some(chunk_size) = req.options.chunk_size {
+        crate::nintendo::disc::rvz::compress::validate_chunk_size(chunk_size)
+            .map_err(|err| invalid_arg(err.to_string()))?;
+    }
+    let mut options = DiscConvertOptions {
+        format,
+        rvz: rvz_options(&req),
+        gcz_block_size: req
+            .options
+            .block_size
+            .unwrap_or(crate::nintendo::disc::gcz::DEFAULT_BLOCK_SIZE),
+        skip_verify: req.options.skip_verify.unwrap_or(false),
+        allowed_legacy: allowed,
+        next_command: if req.operation == "dol.convert" {
+            "dol convert"
+        } else {
+            "rvl convert"
+        },
+        ..DiscConvertOptions::default()
+    };
+    if format == DiscFormat::Rvz
+        && let Some(level) = req.options.level
+        && !(-22..=22).contains(&level)
+    {
+        return Err(invalid_arg(format!(
+            "invalid RVZ level {level}: expected -22..=22"
+        )));
+    }
+    if format == DiscFormat::Wia {
+        let compression = req
+            .options
+            .compression
+            .as_deref()
+            .map(str::parse::<WiaCompression>)
+            .transpose()
+            .map_err(|err| invalid_arg(err.to_string()))?
+            .unwrap_or_default();
+        let level = req
+            .options
+            .level
+            .unwrap_or(crate::nintendo::disc::wia::DEFAULT_WIA_LEVEL as i32);
+        if let Some(range) = compression.level_range()
+            && !u32::try_from(level).is_ok_and(|level| range.contains(&level))
+        {
+            return Err(invalid_arg(format!(
+                "invalid WIA {} level {level}: expected {}..={}",
+                compression.as_str(),
+                range.start(),
+                range.end()
+            )));
+        }
+        options.wia = WiaCompressOptions {
+            compression,
+            level: u32::try_from(level).unwrap_or(crate::nintendo::disc::wia::DEFAULT_WIA_LEVEL),
+        };
+    }
+    convert_op(
+        progress,
+        &req,
+        ConvertTarget {
+            skip_if_already: can_skip_disc_convert(&req, &input).then_some(format),
+            input: &input,
+            derive: &|basis, _| derive_convert_path(basis, format),
+            operation: &req.operation,
+            verify: if format == DiscFormat::Rvz {
+                OutputVerify::Rvz
+            } else {
+                OutputVerify::None
+            },
+        },
+        cancel,
+        |input, output, cancel| async move {
+            convert_disc(&input, &output, options, progress, cancel)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+    )
+    .await
+}
+
 pub(crate) async fn rvz_decompress(
     req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
+    let skip_verify = req.options.skip_verify.unwrap_or(false);
+    let allowed_legacy = if req.operation == "dol.decompress" {
+        DOL_MIGRATE_FORMATS
+    } else {
+        ALL_MIGRATE_FORMATS
+    };
     convert_op(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
-            derive: &|basis, _| crate::nintendo::disc::rvz::derive_disc_path(basis),
+            derive: &|basis, _| derive_convert_path(basis, DiscFormat::Iso),
             operation: &req.operation,
             verify: OutputVerify::None,
         },
         cancel,
         |input, output, cancel| async move {
-            if has_ext(&output, "wbfs") {
-                crate::nintendo::disc::rvz::decompress_disc_to_wbfs(
-                    &input, &output, progress, cancel,
-                )
+            let options = DiscConvertOptions {
+                format: if has_ext(&output, "wbfs") {
+                    DiscFormat::Wbfs
+                } else {
+                    DiscFormat::Iso
+                },
+                skip_verify,
+                allowed_legacy,
+                next_command: "rvl decompress",
+                ..DiscConvertOptions::default()
+            };
+            convert_disc(&input, &output, options, progress, cancel)
                 .await
                 .map_err(anyhow::Error::from)
-            } else {
-                crate::nintendo::disc::rvz::decompress_disc(&input, &output, progress, cancel)
-                    .await
-                    .map_err(anyhow::Error::from)
-            }
         },
     )
     .await
@@ -1903,6 +2130,7 @@ pub(crate) async fn migrate_disc(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::disc::rvz::derive_rvz_path(basis),
             operation: &req.operation,
@@ -1988,6 +2216,7 @@ pub(crate) async fn ctr_decrypt(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ctr::derive_decrypted_path(basis),
             operation: "ctr.decrypt",
@@ -2011,6 +2240,7 @@ pub(crate) async fn ctr_encrypt(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ctr::derive_encrypted_path(basis),
             operation: "ctr.encrypt",
@@ -2034,6 +2264,7 @@ pub(crate) async fn ctr_compress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ctr::z3ds::derive_compressed_path(basis),
             operation: "ctr.compress",
@@ -2066,6 +2297,7 @@ pub(crate) async fn ctr_decompress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ctr::z3ds::derive_decompressed_path(basis),
             operation: "ctr.decompress",
@@ -2091,6 +2323,7 @@ pub(crate) async fn ctr_convert(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::ctr::convert::derive_converted_path(basis),
             operation: "ctr.convert",
@@ -2299,6 +2532,7 @@ pub(crate) async fn nx_compress(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::nx::derive_compressed_path(basis),
             operation: "nx.compress",
@@ -2341,6 +2575,7 @@ pub(crate) async fn nx_decompress(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::nx::derive_decompressed_path(basis),
             operation: "nx.decompress",
@@ -2367,6 +2602,7 @@ pub(crate) async fn nx_decrypt(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::nx::derive_decrypted_path(basis),
             operation: "nx.decrypt",
@@ -2418,6 +2654,7 @@ pub(crate) async fn wup_compress(
         progress,
         req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| crate::nintendo::wup::derive_wua_path(basis),
             operation: "wup.compress",
@@ -2512,6 +2749,7 @@ pub(crate) async fn wup_to_wux(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("wux"),
             operation: "wup.to_wux",
@@ -2546,6 +2784,7 @@ pub(crate) async fn wup_to_wud(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|basis, _| basis.with_extension("wud"),
             operation: "wup.to_wud",
@@ -2574,6 +2813,7 @@ pub(crate) async fn cue_merge(
         progress,
         &req,
         ConvertTarget {
+            skip_if_already: None,
             input: &input,
             derive: &|_, _| unreachable!("cue.merge requires an explicit output"),
             operation: "cue.merge",
@@ -2765,6 +3005,7 @@ pub(crate) struct ConvertTarget<'a> {
     pub derive: &'a dyn Fn(&Path, &Path) -> PathBuf,
     pub operation: &'a str,
     pub verify: OutputVerify,
+    pub skip_if_already: Option<DiscFormat>,
 }
 
 pub(crate) async fn convert_op<F, Fut>(
@@ -2800,6 +3041,7 @@ where
         derive,
         operation,
         verify,
+        skip_if_already,
     } = target;
     let op = find_op(operation)
         .ok_or_else(|| invalid_arg(format!("unknown operation {operation:?}")))?;
@@ -2807,9 +3049,8 @@ where
     if selection.is_none() {
         selection = req.ctx.archive_selection.clone();
     }
-    // Output templates and `chd.extract` read the member's header, so an
-    // archive is staged up front for them. Otherwise the member listing alone
-    // names the output, and extraction waits until the plan says write.
+    // Templates need the staged member's metadata, and CHD extraction needs
+    // its media type to choose the output extension before planning.
     let mut resolved = if req.options.output_template.is_some() || operation == "chd.extract" {
         stage_input_with_selection(input, operation, selection.take()).await?
     } else {
@@ -2829,12 +3070,34 @@ where
         }
     };
     let source = staged_path(&resolved, input);
+    if let Some(format) = skip_if_already {
+        let probe_input = input.to_path_buf();
+        if tokio::task::spawn_blocking(move || detect_disc_format(&probe_input)).await??
+            == Some(format)
+        {
+            let reason = format!("already {}", format.extension().to_ascii_uppercase());
+            return Ok(skipped_already_done(input, operation, &reason, &reason));
+        }
+    }
     let desired = output_or(req, source, || derive(&basis, source))?;
     let desired = if operation == "chd.extract" {
         chd_extract_target(desired, source, input, req.output.is_some())?
     } else {
         desired
     };
+    if matches!(
+        conflict_policy(req)?,
+        ConflictPolicy::Overwrite | ConflictPolicy::OverwriteInvalid
+    ) && desired.is_file()
+        && FileIdentity::probe(input).is_ok_and(|input_identity| {
+            FileIdentity::probe(&desired).is_ok_and(|identity| identity == input_identity)
+        })
+    {
+        return Err(invalid_arg(format!(
+            "{} is the input file; writing the output there would replace it",
+            desired.display()
+        )));
+    }
     let plan = prepare_output(
         progress,
         req,
@@ -2985,7 +3248,11 @@ pub(crate) fn staged_path<'a>(resolved: &'a Option<ResolvedInput>, input: &'a Pa
 /// else the file.
 async fn required_bytes(op: &OpSpec, req: &RunRequest, source: &Path) -> u64 {
     if let Some(estimate) = op.required_bytes {
-        return estimate(req, source);
+        let req = req.clone();
+        let path = source.to_path_buf();
+        return tokio::task::spawn_blocking(move || estimate(&req, &path))
+            .await
+            .unwrap_or_else(|_| file_len(source));
     }
     if has_ext(source, "cue") {
         return crate::disc::cue::referenced_files_size(source)
@@ -5752,7 +6019,12 @@ mod tests {
             let Some(RunData::Plan(line)) = res.data else {
                 continue;
             };
-            assert_eq!(line.output, derive(&sample), "{}", op.name);
+            assert_eq!(
+                line.output,
+                derive(&RunOptions::default(), &sample),
+                "{}",
+                op.name
+            );
             compared += 1;
         }
         assert!(compared >= 10, "only {compared} rows were comparable");
@@ -5811,6 +6083,91 @@ mod tests {
         };
         assert_eq!(status("game.gcz"), Some(FileStatus::Failed), "{res:?}");
         assert_eq!(status("aaa.zip"), Some(FileStatus::Ok), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn disc_convert_already_target_requires_no_output_space() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(
+            &input,
+            crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000),
+        )
+        .unwrap();
+        let mut req: RunRequest = serde_json::from_value(json!({
+            "operation": "dol.convert", "input": input, "options": { "format": "iso" }
+        }))
+        .unwrap();
+        let op = find_op("dol.convert").unwrap();
+        assert_eq!(required_bytes(op, &req, &input).await, 0);
+        req.options.block_size = Some(crate::nintendo::disc::gcz::DEFAULT_BLOCK_SIZE);
+        assert_eq!(required_bytes(op, &req, &input).await, file_len(&input));
+        req.options.block_size = None;
+        req.output = Some(dir.path().join("copy.iso"));
+        assert_eq!(required_bytes(op, &req, &input).await, file_len(&input));
+        // A member of a real archive is never skipped, so it needs space.
+        req.output = None;
+        let archive = dir.path().join("archive.zip");
+        write_zip(&archive, &[("game.iso", &std::fs::read(&input).unwrap())]);
+        req.input = Some(archive);
+        assert_eq!(required_bytes(op, &req, &input).await, file_len(&input));
+    }
+
+    #[tokio::test]
+    async fn disc_convert_archive_in_target_format_is_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("archive.zip");
+        let bytes = crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000);
+        write_zip(&input, &[("game.iso", &bytes)]);
+        let req = json!({
+            "operation": "dol.convert", "input": input,
+            "options": { "format": "iso", "skip_space_check": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Ok);
+        assert_eq!(std::fs::read(dir.path().join("game.iso")).unwrap(), bytes);
+        assert!(input.is_file());
+    }
+
+    #[tokio::test]
+    async fn disc_convert_batch_never_overwrites_another_walked_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("game.iso");
+        let rvz = dir.path().join("game.rvz");
+        let bytes = crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso(0x20000);
+        std::fs::write(&iso, &bytes).unwrap();
+        crate::nintendo::disc::rvz::compress_disc(
+            &iso,
+            &rvz,
+            RvzCompressOptions::default(),
+            &crate::util::NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let compressed = std::fs::read(&rvz).unwrap();
+        let req = json!({
+            "operation": "dol.convert", "input": dir.path(),
+            "options": { "recursive": true, "format": "rvz", "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let source = res
+            .records
+            .iter()
+            .find(|r| r.input_path.ends_with("game.iso"))
+            .unwrap();
+        assert_eq!(source.status, FileStatus::Skipped);
+        let target = res
+            .records
+            .iter()
+            .find(|r| r.input_path.ends_with("game.rvz"))
+            .unwrap();
+        assert_eq!(target.status, FileStatus::Skipped);
+        assert_eq!(std::fs::read(&rvz).unwrap(), compressed);
+        assert_eq!(std::fs::read(&iso).unwrap(), bytes);
     }
 
     /// `ctr.convert` maps .3ds to .cia and .cia to .3ds: converting the

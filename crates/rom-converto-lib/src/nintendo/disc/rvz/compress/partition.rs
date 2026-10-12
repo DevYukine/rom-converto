@@ -23,14 +23,13 @@
 //! the recompute baseline and the exception diff captures the
 //! right bytes.
 //!
-//! The worker holds persistent scratch buffers
-//! (`padded_payloads`, `hash_regions`, `exception_header`, `body`,
-//! `chunk_exceptions`) so the per-cluster hot loop allocates zero
-//! `Vec`s after the pool is warm. See `PartitionCompressWorker`.
+//! The worker retains scratch buffers for the cluster hash hierarchy,
+//! exception lists, and chunk assembly across calls.
 
+use super::codec::{ChunkCodec, Container};
 use super::{
-    CompressedKind, PartitionLayout, RegionWriteState, WriteMsg, push_compressed_chunk_via_channel,
-    write_msg_drain_loop,
+    CompressedKind, EncodeOptions, PartitionLayout, RegionWriteState, WriteMsg,
+    push_compressed_chunk_via_channel, write_msg_drain_loop,
 };
 use crate::nintendo::disc::rvz::error::{RvzError, RvzResult};
 use crate::nintendo::disc::rvz::partition_encoded_size;
@@ -45,7 +44,7 @@ use crate::nintendo::rvl::partition::{
 };
 use crate::util::CancelToken;
 use crate::util::Cancelled;
-use crate::util::worker_pool::{Pool, Worker, drive, parallelism};
+use crate::util::worker_pool::{Admission, Pool, Worker, drive};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -83,9 +82,8 @@ pub(super) struct PartitionWork {
     pub chunk_size_u64: u64,
 }
 
-/// Per-thread partition encoder state. Holds the persistent
-/// `zstd::bulk::Compressor` plus scratch buffers reused across
-/// every cluster **across every partition this pool services**:
+/// Per-thread partition encoder state. Holds the codec plus scratch buffers
+/// reused across every cluster and partition this pool services:
 ///
 /// * `padded_payloads`: fixed 64-entry scratch used only by the
 ///   partial-cluster path (full clusters skip the copy entirely).
@@ -93,18 +91,17 @@ pub(super) struct PartitionWork {
 ///   `recompute_hash_regions_into` writes the hash hierarchy into.
 /// * `exception_header` / `body` / `assembly`: `Vec<u8>` scratch
 ///   for per-chunk header bytes, payload bytes, and the
-///   `[header][payload]` buffer handed to zstd. `assembly` can't
+///   `[header][payload]` buffer handed to the codec. `assembly` can't
 ///   share with `body` because `pack_encode`'s `Cow::Borrowed`
 ///   path keeps `body` borrowed while assembly happens.
 /// * `chunk_exceptions`: reused `Vec<HashException>` the encoder
 ///   collects the per-chunk exception iterator into.
 ///
-/// Zero `Vec::new` / `Vec::with_capacity` calls in the hot loop
-/// once the pool is warm. Per-partition state (title key, data
-/// size, chunk size) rides in each [`PartitionWork`] so one pool
-/// can process every partition on a disc without tear-down.
+/// Per-partition state (title key, data size, chunk size) rides in each
+/// [`PartitionWork`] so one pool can process every partition on a disc.
 pub(super) struct PartitionCompressWorker {
-    compressor: zstd::bulk::Compressor<'static>,
+    compressor: ChunkCodec,
+    container: Container,
     padded_payloads: Vec<[u8; WII_SECTOR_PAYLOAD_SIZE]>,
     hash_regions: Vec<[u8; HASH_REGION_BYTES]>,
     exception_header: Vec<u8>,
@@ -121,13 +118,13 @@ impl Worker<PartitionWork, Vec<PartitionChunk>, RvzError> for PartitionCompressW
 
 pub(super) fn make_partition_compress_workers(
     n_threads: usize,
-    compression_level: i32,
+    options: EncodeOptions,
 ) -> RvzResult<Vec<PartitionCompressWorker>> {
     (0..n_threads)
         .map(|_| -> RvzResult<PartitionCompressWorker> {
             Ok(PartitionCompressWorker {
-                compressor: zstd::bulk::Compressor::new(compression_level)
-                    .map_err(|e| RvzError::Custom(format!("zstd init: {e}")))?,
+                compressor: ChunkCodec::new_for(options)?,
+                container: options.container,
                 padded_payloads: vec![[0u8; WII_SECTOR_PAYLOAD_SIZE]; WII_BLOCKS_PER_GROUP],
                 hash_regions: vec![[0u8; HASH_REGION_BYTES]; WII_BLOCKS_PER_GROUP],
                 exception_header: Vec::new(),
@@ -144,6 +141,7 @@ pub(super) fn make_partition_compress_workers(
 pub(super) struct PartitionRegionEncode<'a> {
     pub info: &'a PartitionInfo,
     pub chunk_size: u32,
+    pub admission: Admission,
     /// Full input ISO size: the final cluster read clamps to the bytes
     /// the disc actually has, since the image can end inside a cluster.
     pub iso_size: u64,
@@ -151,10 +149,7 @@ pub(super) struct PartitionRegionEncode<'a> {
     pub cancel: &'a CancelToken,
 }
 
-/// Process the partition cluster by cluster via the generic worker
-/// [`Pool`]. Each worker owns a long-lived `zstd::bulk::Compressor`
-/// that stays alive for the full partition, avoiding a
-/// `ZSTD_createCCtx` allocation on every cluster.
+/// Processes the partition cluster by cluster via the generic worker pool.
 ///
 /// [`drive`] handles submit/recv/reorder so this function only
 /// supplies the per-cluster read (`produce`) and per-cluster write
@@ -174,6 +169,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
     let PartitionRegionEncode {
         info,
         chunk_size,
+        admission,
         iso_size,
         bytes_done,
         cancel,
@@ -209,8 +205,6 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
 
     reader.seek(SeekFrom::Start(info.data_start()))?;
 
-    let max_in_flight = parallelism() * 2;
-
     // Overlap writes with reads + dispatch, mirroring the raw
     // region encoder's writer-thread pattern: the consume
     // closure runs on the dispatcher thread and forwards each
@@ -221,7 +215,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
     // `writer.write_all` memcpys that block the next cluster
     // read.
     let mut local_writer_pos = *writer_pos;
-    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<WriteMsg>(max_in_flight * 2);
+    let (write_tx, write_rx) = std::sync::mpsc::sync_channel::<WriteMsg>(admission.writer_capacity);
 
     let scope_result: RvzResult<()> = std::thread::scope(|s| {
         let writer_slot: &mut BufWriter<std::fs::File> = writer;
@@ -231,7 +225,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
         let drive_result = drive(
             pool,
             cluster_count,
-            max_in_flight,
+            admission.max_in_flight,
             // produce: read the next 2 MiB of ciphertext from
             // the ISO and ship it to a worker along with the
             // per-partition metadata the worker needs. Sharing
@@ -282,11 +276,12 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
         );
 
         drop(write_tx);
-        let writer_result = writer_handle
+        // A failed write closes the channel, which the dispatcher only
+        // sees as a closed channel; report the writer's I/O error first.
+        writer_handle
             .join()
-            .unwrap_or_else(|_| Err(RvzError::Custom("writer thread panicked".into())));
-        drive_result?;
-        writer_result
+            .unwrap_or_else(|_| Err(RvzError::Custom("writer thread panicked".into())))?;
+        drive_result
     });
 
     *writer_pos = local_writer_pos;
@@ -308,7 +303,7 @@ pub(super) fn encode_partition_region<R: Read + Seek>(
 ///
 /// This function handles the **cluster-level** work (decrypt,
 /// hash hierarchy, exception list) and delegates the **per-chunk**
-/// work (exception split, pack_encode, zstd compress,
+/// work (exception split, optional packing, compression,
 /// compressed/raw decision) to [`encode_one_chunk_with`].
 fn encode_one_partition_cluster_with(
     worker: &mut PartitionCompressWorker,
@@ -403,27 +398,11 @@ fn encode_one_partition_cluster_with(
     Ok(out_chunks)
 }
 
-/// Encode one partition chunk. Isolated from
-/// [`encode_one_partition_cluster_with`] so the cluster-level
-/// setup stays separate from the per-chunk pipeline:
+/// Encodes a partition chunk's exception list and decrypted payload.
 ///
-/// 1. Collect the chunk's slice of `cluster_exceptions` into
-///    the worker's persistent `chunk_exceptions` scratch.
-/// 2. Copy the chunk's plaintext payload bytes into
-///    `worker.body`.
-/// 3. Run `pack_encode` on `worker.body`. If LFG junk is found,
-///    the packed Vec replaces the payload region going into
-///    zstd; otherwise the raw `body` is used directly via
-///    [`Cow::Borrowed`].
-/// 4. Serialize the exception header into
-///    `worker.exception_header`, then assemble
-///    `[header | payload_region]` into `worker.assembly`.
-/// 5. Run zstd on `worker.assembly`. Apply the format's "will it
-///    compress" check (compressed length < exception list size
-///    rounded up to 4 bytes, plus payload length) to decide
-///    compressed vs raw storage. Raw storage zero-pads the
-///    exception list up to a 4-byte boundary for the uncompressed
-///    fallback path.
+/// RVZ optionally packs the payload and falls back to raw storage when zstd
+/// does not shrink it. WIA always uses its selected codec without packing;
+/// uncompressed storage pads the exception list to a 4-byte boundary.
 fn encode_one_chunk_with(
     worker: &mut PartitionCompressWorker,
     cluster_payloads: &[[u8; WII_SECTOR_PAYLOAD_SIZE]],
@@ -458,55 +437,50 @@ fn encode_one_chunk_with(
     // the raw body itself is the payload region). The two are bridged
     // with `Cow<[u8]>` so downstream code can treat both
     // uniformly without cloning the un-packed path.
-    let (payload_region, rvz_packed_size): (std::borrow::Cow<'_, [u8]>, u32) =
-        match crate::nintendo::disc::rvz::packing::pack_encode(
-            &worker.body,
-            pos.chunk_data_offset_pay(),
-        ) {
-            Some(packed) => {
-                let pack_len = packed.len() as u32;
-                (std::borrow::Cow::Owned(packed), pack_len)
-            }
-            None => (std::borrow::Cow::Borrowed(&worker.body), 0u32),
-        };
-
-    // Serialize the exception header into its reused scratch,
-    // then assemble `[header | payload]` into the worker's
-    // persistent `assembly` buffer (zero per-chunk allocs once
-    // warm).
-    worker.exception_header.clear();
-    serialize_exception_header_into(&worker.chunk_exceptions, &mut worker.exception_header)?;
-    worker.assembly.clear();
-    worker
-        .assembly
-        .reserve(worker.exception_header.len() + payload_region.len());
-    worker.assembly.extend_from_slice(&worker.exception_header);
-    worker.assembly.extend_from_slice(&payload_region);
-
-    let compressed = worker
-        .compressor
-        .compress(&worker.assembly)
-        .map_err(|e| RvzError::Custom(format!("zstd compress: {e}")))?;
-
-    // The format's "will it compress" threshold compares against
-    // `main_data.size() + exception_lists.size() rounded up to 4
-    // bytes`; the same bound keeps compressed/raw decisions
-    // consistent with decoders.
-    let aligned_exc_len = (worker.exception_header.len() + 3) & !3;
-    let uncompressed_size = aligned_exc_len + payload_region.len();
-    let kind = if compressed.len() < uncompressed_size {
-        CompressedKind::Compressed(compressed)
+    let packed = if worker.container == Container::Rvz {
+        crate::nintendo::disc::rvz::packing::pack_encode(&worker.body, pos.chunk_data_offset_pay())
     } else {
-        // Raw storage zero-pads the exception list up to a
-        // 4-byte boundary when a partition chunk falls back
-        // to raw storage.
-        let mut raw_body = Vec::with_capacity(aligned_exc_len + payload_region.len());
-        raw_body.extend_from_slice(&worker.exception_header);
-        raw_body.resize(aligned_exc_len, 0);
-        raw_body.extend_from_slice(&payload_region);
-        CompressedKind::Raw(raw_body)
+        None
+    };
+    let (payload_region, rvz_packed_size): (std::borrow::Cow<'_, [u8]>, u32) = match packed {
+        Some(packed) => {
+            let pack_len = packed.len() as u32;
+            (std::borrow::Cow::Owned(packed), pack_len)
+        }
+        None => (std::borrow::Cow::Borrowed(&worker.body), 0u32),
     };
 
+    // Compressed streams include the exception list without padding.
+    // Raw streams align the payload after the exception list to four bytes.
+    worker.exception_header.clear();
+    serialize_exception_header_into(&worker.chunk_exceptions, &mut worker.exception_header)?;
+    let aligned_exc_len = (worker.exception_header.len() + 3) & !3;
+    let uncompressed_size = aligned_exc_len + payload_region.len();
+    let kind = if matches!(worker.compressor, ChunkCodec::None) {
+        worker.assembly.clear();
+        worker.assembly.reserve(uncompressed_size);
+        worker.assembly.extend_from_slice(&worker.exception_header);
+        worker.assembly.resize(aligned_exc_len, 0);
+        worker.assembly.extend_from_slice(&payload_region);
+        CompressedKind::Raw(worker.assembly.to_vec())
+    } else {
+        worker.assembly.clear();
+        worker
+            .assembly
+            .reserve(worker.exception_header.len() + payload_region.len());
+        worker.assembly.extend_from_slice(&worker.exception_header);
+        worker.assembly.extend_from_slice(&payload_region);
+        let compressed = worker.compressor.compress(&worker.assembly)?;
+        if worker.container == Container::Wia || compressed.len() < uncompressed_size {
+            CompressedKind::Compressed(compressed)
+        } else {
+            let mut raw_body = Vec::with_capacity(uncompressed_size);
+            raw_body.extend_from_slice(&worker.exception_header);
+            raw_body.resize(aligned_exc_len, 0);
+            raw_body.extend_from_slice(&payload_region);
+            CompressedKind::Raw(raw_body)
+        }
+    };
     Ok(PartitionChunk {
         kind,
         rvz_packed_size,
