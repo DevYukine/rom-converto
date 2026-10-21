@@ -49,7 +49,7 @@ pub struct MergeCommand {
 /// Convert a .cue/.bin disc image's data track to a plain .iso
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert a .cue/.bin disc image's data track to a plain .iso\n\nExtracts the first track (which must be a MODE1/MODE2 data track) to 2048-byte ISO sectors. Any audio tracks are skipped.",
+    long_about = "Convert a .cue/.bin disc image's data track to a plain .iso\n\nExtracts the first track (which must be a MODE1/MODE2 data track) to 2048-byte ISO sectors. Any audio tracks are skipped. Mode 2 Form 2 sectors (PlayStation XA audio and video) keep only their first 2048 bytes; keep the .cue/.bin, or compress a 2352-byte image with `chd compress`, to keep them.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-iso game.cue\n  Explicit output: rom-converto cue to-iso game.cue game.iso\n  Whole folder:    rom-converto cue to-iso -R ./roms --output-dir ./iso\n"
 )]
 pub struct ToIsoCommand {
@@ -90,7 +90,7 @@ pub struct ToIsoCommand {
 /// Convert a .cue/.bin disc image's data track straight to a .cso or .zso
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Convert a .cue/.bin disc image's data track straight to a .cso or .zso\n\nExtracts the data track to a temporary ISO, then compresses it, always removing the temporary ISO afterward.",
+    long_about = "Convert a .cue/.bin disc image's data track straight to a .cso or .zso\n\nExtracts the data track to a temporary ISO, then compresses it, always removing the temporary ISO afterward. Mode 2 Form 2 sectors (PlayStation XA audio and video) keep only their first 2048 bytes; keep the .cue/.bin, or compress a 2352-byte image with `chd compress`, to keep them.",
     after_long_help = "EXAMPLES:\n  Single file:     rom-converto cue to-cso game.cue\n  Explicit output: rom-converto cue to-cso game.cue game.cso --format cso\n  Whole folder:    rom-converto cue to-cso -R ./roms --output-dir ./cso\n"
 )]
 pub struct ToCsoCommand {

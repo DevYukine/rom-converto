@@ -97,7 +97,9 @@ impl SectorSource for CueSectors {
             (self.start_lba + lba as u64) * block,
         )?;
         buf.copy_from_slice(
-            extract_user_data(self.track_type, &self.raw, lba as u64).map_err(io::Error::other)?,
+            extract_user_data(self.track_type, &self.raw)
+                .map_err(io::Error::other)?
+                .0,
         );
         Ok(())
     }
@@ -347,7 +349,9 @@ impl SectorSource for ChdSectors {
                     .get(within..within + FRAME_SIZE)
                     .ok_or_else(past_end)?;
                 buf.copy_from_slice(
-                    extract_user_data(track_type, raw, lba as u64).map_err(io::Error::other)?,
+                    extract_user_data(track_type, raw)
+                        .map_err(io::Error::other)?
+                        .0,
                 );
             }
         }

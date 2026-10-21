@@ -830,7 +830,10 @@ single `.bin` named after the output `.cue`. It takes `--on-conflict` (and `-f`)
 
 `to-iso` extracts the first track, which must be a MODE1/MODE2 data track, to 2048-byte ISO
 sectors; any audio tracks are skipped. `to-cso` extracts the data track to a temporary ISO,
-compresses it, and always removes the temporary ISO afterward.
+compresses it, and always removes the temporary ISO afterward. Mode 2 Form 2 sectors
+(PlayStation XA audio and video) keep only their first 2048 bytes, so those streams break in
+the output, and the command warns with the number of sectors that lost data. Keep the
+`.cue`/`.bin`, or compress a 2352-byte image with `chd compress`, to keep them.
 
 ## ps3 (PlayStation 3)
 

@@ -27,6 +27,9 @@ and `info` extensions in the installed build.
 `.dax` is a legacy, decode-only input for CSO commands. It cannot be created.
 CHD extraction recreates a `.cue` plus one `.bin` per track for CD media and an `.iso`
 for DVD media, so its reverse operation is named `extract`.
+CUE to ISO, CSO, or ZSO keeps 2048 bytes per sector. Mode 2 Form 2 sectors (PlayStation XA
+audio and video) hold 2324 bytes, so the rest is cut and those streams break. Keep the
+`.cue`/`.bin`, or compress a 2352-byte image to CHD, to keep them.
 BPS and UPS patches check the source CRC32 before writing, `.rup` checks the MD5, and
 APS and PPF 2.0 check the source size. IPS has no source check.
 

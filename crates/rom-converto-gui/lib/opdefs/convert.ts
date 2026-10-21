@@ -580,7 +580,7 @@ const cue: OpDef = {
 		},
 		...recursiveFields(),
 	],
-	note: "Audio tracks are skipped; only the data track is converted.",
+	note: "Audio tracks are skipped; only the data track is converted. Mode 2 Form 2 sectors (PlayStation XA audio and video) keep only their first 2048 bytes; compress a 2352-byte CUE to CHD to keep them.",
 	outputRows: [
 		{
 			kind: "directory",
