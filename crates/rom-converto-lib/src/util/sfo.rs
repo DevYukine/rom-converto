@@ -1,12 +1,14 @@
 //! `\0PSF` (PARAM.SFO) key/value parser, shared by the PS3 disc and PSP
-//! UMD metadata readers.
+//! UMD metadata readers, and the writer the PS1 EBOOT builder uses.
 
 use crate::util::bytes::{u16_le, u32_le};
 use std::collections::BTreeMap;
 use std::io;
 
 const MAGIC: &[u8; 4] = b"\0PSF";
+const VERSION: u32 = 0x0101;
 const HEADER_LEN: usize = 20;
+const TABLE_ALIGN: usize = 4;
 const INDEX_ENTRY_LEN: usize = 16;
 const MAX_ENTRIES: u32 = 1024;
 const MAX_VALUE_LEN: usize = 64 * 1024;
@@ -103,6 +105,74 @@ impl Sfo {
     }
 }
 
+/// One `\0PSF` entry to write: its key, its value, and the slot the value
+/// is padded to, so a later in-place patch has a fixed place to land.
+pub(crate) struct SfoEntry<'a> {
+    pub key: &'a str,
+    pub value: SfoValue,
+    pub slot: u32,
+}
+
+/// Encodes `entries` as a `\0PSF` blob, keys sorted as firmware expects.
+///
+/// # Errors
+/// Returns `InvalidInput` when a value with its terminator does not fit its
+/// slot.
+pub(crate) fn write(entries: &[SfoEntry<'_>]) -> io::Result<Vec<u8>> {
+    let mut sorted: Vec<&SfoEntry<'_>> = entries.iter().collect();
+    sorted.sort_by_key(|entry| entry.key);
+
+    let key_table_start = HEADER_LEN + sorted.len() * INDEX_ENTRY_LEN;
+    let key_bytes: usize = sorted.iter().map(|entry| entry.key.len() + 1).sum();
+    let data_table_start = (key_table_start + key_bytes).next_multiple_of(TABLE_ALIGN);
+    let data_bytes: usize = sorted.iter().map(|entry| entry.slot as usize).sum();
+
+    let mut out = vec![0u8; data_table_start + data_bytes];
+    out[0..4].copy_from_slice(MAGIC);
+    out[4..8].copy_from_slice(&VERSION.to_le_bytes());
+    out[8..12].copy_from_slice(&(key_table_start as u32).to_le_bytes());
+    out[12..16].copy_from_slice(&(data_table_start as u32).to_le_bytes());
+    out[16..20].copy_from_slice(&(sorted.len() as u32).to_le_bytes());
+
+    let (mut key_offset, mut data_offset) = (0usize, 0usize);
+    for (i, entry) in sorted.iter().enumerate() {
+        let (format, payload) = match &entry.value {
+            SfoValue::U32(v) => (FMT_U32, v.to_le_bytes().to_vec()),
+            SfoValue::Str(s) => {
+                let mut bytes = s.as_bytes().to_vec();
+                bytes.push(0);
+                (FMT_UTF8, bytes)
+            }
+        };
+        if payload.len() > entry.slot as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "PARAM.SFO {} needs {} bytes, its slot holds {}",
+                    entry.key,
+                    payload.len(),
+                    entry.slot
+                ),
+            ));
+        }
+        let index = HEADER_LEN + i * INDEX_ENTRY_LEN;
+        out[index..index + 2].copy_from_slice(&(key_offset as u16).to_le_bytes());
+        out[index + 2..index + 4].copy_from_slice(&format.to_le_bytes());
+        out[index + 4..index + 8].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        out[index + 8..index + 12].copy_from_slice(&entry.slot.to_le_bytes());
+        out[index + 12..index + 16].copy_from_slice(&(data_offset as u32).to_le_bytes());
+
+        let key_at = key_table_start + key_offset;
+        out[key_at..key_at + entry.key.len()].copy_from_slice(entry.key.as_bytes());
+        let data_at = data_table_start + data_offset;
+        out[data_at..data_at + payload.len()].copy_from_slice(&payload);
+
+        key_offset += entry.key.len() + 1;
+        data_offset += entry.slot as usize;
+    }
+    Ok(out)
+}
+
 fn invalid(msg: impl Into<Box<dyn std::error::Error + Send + Sync>>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
 }
@@ -122,55 +192,25 @@ pub(crate) mod test_fixtures {
         U32(u32),
     }
 
-    /// Builds a minimal `\0PSF` blob holding `entries`.
+    /// Builds a minimal `\0PSF` blob holding `entries`, each value in a
+    /// slot of exactly its own size.
     pub fn build_sfo(entries: &[(&str, Val)]) -> Vec<u8> {
-        let mut key_table = Vec::new();
-        let mut key_offsets = Vec::new();
-        for (k, _) in entries {
-            key_offsets.push(key_table.len() as u16);
-            key_table.extend_from_slice(k.as_bytes());
-            key_table.push(0);
-        }
-
-        let mut data_table = Vec::new();
-        let mut meta = Vec::new();
-        for (_, v) in entries {
-            let offset = data_table.len() as u32;
-            match v {
-                Val::Str(s) => {
-                    let mut b = s.as_bytes().to_vec();
-                    b.push(0);
-                    let len = b.len() as u32;
-                    data_table.extend_from_slice(&b);
-                    meta.push((FMT_UTF8, len, offset));
-                }
-                Val::U32(n) => {
-                    data_table.extend_from_slice(&n.to_le_bytes());
-                    meta.push((FMT_U32, 4, offset));
-                }
-            }
-        }
-
-        let num = entries.len() as u32;
-        let key_table_start = HEADER_LEN as u32 + num * INDEX_ENTRY_LEN as u32;
-        let data_table_start = key_table_start + key_table.len() as u32;
-
-        let mut out = Vec::new();
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&0x0101u32.to_le_bytes());
-        out.extend_from_slice(&key_table_start.to_le_bytes());
-        out.extend_from_slice(&data_table_start.to_le_bytes());
-        out.extend_from_slice(&num.to_le_bytes());
-        for (i, (fmt, len, offset)) in meta.iter().enumerate() {
-            out.extend_from_slice(&key_offsets[i].to_le_bytes());
-            out.extend_from_slice(&fmt.to_le_bytes());
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(&len.to_le_bytes());
-            out.extend_from_slice(&offset.to_le_bytes());
-        }
-        out.extend_from_slice(&key_table);
-        out.extend_from_slice(&data_table);
-        out
+        let entries: Vec<SfoEntry<'_>> = entries
+            .iter()
+            .map(|(key, value)| match value {
+                Val::Str(s) => SfoEntry {
+                    key,
+                    value: SfoValue::Str((*s).to_string()),
+                    slot: s.len() as u32 + 1,
+                },
+                Val::U32(n) => SfoEntry {
+                    key,
+                    value: SfoValue::U32(*n),
+                    slot: 4,
+                },
+            })
+            .collect();
+        write(&entries).expect("fixture values fit their slots")
     }
 }
 
@@ -198,6 +238,45 @@ mod tests {
     #[test]
     fn rejects_bad_magic() {
         assert!(Sfo::parse(b"XXXX and more bytes here").is_err());
+    }
+
+    #[test]
+    fn write_sorts_keys_and_pads_values_to_their_slots() {
+        let blob = write(&[
+            SfoEntry {
+                key: "TITLE",
+                value: SfoValue::Str("Game".to_string()),
+                slot: 128,
+            },
+            SfoEntry {
+                key: "BOOTABLE",
+                value: SfoValue::U32(1),
+                slot: 4,
+            },
+        ])
+        .unwrap();
+        // Header, two index entries, "BOOTABLE\0TITLE\0" aligned to 4, slots.
+        let data_table_start = (HEADER_LEN + 2 * INDEX_ENTRY_LEN + 15).next_multiple_of(4);
+        assert_eq!(blob.len(), data_table_start + 4 + 128);
+        assert_eq!(u32_le(&blob, 12) as usize, data_table_start);
+        // BOOTABLE sorts first, so TITLE's data sits after its 4-byte slot.
+        assert_eq!(u32_le(&blob, HEADER_LEN + INDEX_ENTRY_LEN + 12), 4);
+        assert_eq!(u32_le(&blob, HEADER_LEN + INDEX_ENTRY_LEN + 8), 128);
+
+        let sfo = Sfo::parse(&blob).unwrap();
+        assert_eq!(sfo.get_u32("BOOTABLE"), Some(1));
+        assert_eq!(sfo.get_str("TITLE"), Some("Game"));
+    }
+
+    #[test]
+    fn write_rejects_a_value_longer_than_its_slot() {
+        let err = write(&[SfoEntry {
+            key: "CATEGORY",
+            value: SfoValue::Str("ABCD".to_string()),
+            slot: 4,
+        }])
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
