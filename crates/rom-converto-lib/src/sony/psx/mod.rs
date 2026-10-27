@@ -1,11 +1,14 @@
 //! PS1/PS2 disc metadata: the boot executable and normalized title id
-//! from `SYSTEM.CNF`, plus the ISO9660 volume identifier.
+//! from `SYSTEM.CNF`, plus the ISO9660 volume identifier. [`pbp`] builds
+//! PS1 `EBOOT.PBP` files for the PSP's built-in PS1 emulator.
 
 use std::io;
 
 use serde::{Deserialize, Serialize};
 
 use crate::util::iso9660::{SectorSource, Volume};
+
+pub mod pbp;
 
 /// Metadata read from a PS1 or PS2 disc image.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
