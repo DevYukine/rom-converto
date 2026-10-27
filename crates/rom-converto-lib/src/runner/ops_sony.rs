@@ -1,5 +1,6 @@
-//! PS3, PSP and Vita handlers.
+//! PS1, PS3, PSP and Vita handlers.
 
+use super::invalid_arg;
 use super::models::{RunRequest, RunResponse};
 use super::ops::{
     ConvertTarget, convert_op, dir_op, required_input, required_output_dir, skipped_already_done,
@@ -117,6 +118,45 @@ pub(crate) async fn psp_extract(
     .await
 }
 
+pub(crate) async fn psx_to_pbp(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    use crate::sony::psx::pbp::{BlockEncoding, PbpOptions, derive_output_dir, required_bytes};
+
+    let input = required_input(&req)?;
+    let desired = req
+        .output
+        .clone()
+        .or_else(|| req.options.output_dir.clone())
+        .unwrap_or_else(|| derive_output_dir(&input));
+    let options = PbpOptions {
+        encoding: match req.options.compression.as_deref() {
+            Some(name) => name.parse().map_err(invalid_arg)?,
+            None => BlockEncoding::default(),
+        },
+        title: req.options.title.clone(),
+        disc_id: req.options.disc_id.clone(),
+        splash: req.options.splash.clone(),
+        icon0: req.options.icon0.clone(),
+        pic1: req.options.pic1.clone(),
+    };
+    dir_op(
+        &req,
+        &input,
+        &desired,
+        "psx.to_pbp",
+        required_bytes,
+        |source, output| async move {
+            let written =
+                crate::sony::psx::pbp::to_pbp(progress, &source, &output, &options, cancel).await?;
+            Ok((written.iter().map(|path| file_len(path)).sum(), None))
+        },
+    )
+    .await
+}
+
 pub(crate) async fn vita_extract(
     req: RunRequest,
     progress: &dyn ProgressReporter,
@@ -153,7 +193,8 @@ mod tests {
         let iso = dir.path().join("game.iso");
         let pbp = dir.path().join("EBOOT.PBP");
         let pkg = dir.path().join("game.pkg");
-        for path in [&iso, &pbp, &pkg] {
+        let cue = dir.path().join("game.cue");
+        for path in [&iso, &pbp, &pkg, &cue] {
             std::fs::write(path, b"x").unwrap();
         }
         let out_dir = dir.path().join("out");
@@ -166,6 +207,8 @@ mod tests {
             ),
             ("psp.to_iso", &pbp, None, dir.path().join("EBOOT.iso")),
             ("psp.extract", &pbp, Some(&out_dir), out_dir.clone()),
+            ("psx.to_pbp", &cue, None, dir.path().join("game_psp")),
+            ("psx.to_pbp", &cue, Some(&out_dir), out_dir.clone()),
             ("vita.extract", &pkg, Some(&out_dir), out_dir.clone()),
         ];
         for (operation, input, output, expected) in cases {
@@ -182,6 +225,17 @@ mod tests {
             assert_eq!(data["decision"], "New", "{operation}");
             assert_eq!(data["output"].as_str(), expected.to_str(), "{operation}");
         }
+    }
+
+    #[tokio::test]
+    async fn psx_to_pbp_rejects_an_unknown_block_encoding() {
+        let res = run_json(
+            r#"{"operation":"psx.to_pbp","input":"game.cue","options":{"compression":"zstd"}}"#,
+            CancelToken::new(),
+        )
+        .await;
+        assert_eq!(res.status, 2);
+        assert!(res.message.contains("unknown block encoding"), "{res:?}");
     }
 
     #[tokio::test]

@@ -153,11 +153,21 @@ existing file at the output path needs Overwrite. Overwrite if invalid acts as S
 run, or add folders to the queue.
 
 The page has no key, report, output-template, or verification setting. Directory-output
-pages (Convert ISO to GoD, and the Xbox, Xbox 360, PSP, and PS Vita extract pages) do not
+pages (Convert ISO to GoD, Convert PS1 disc to EBOOT.PBP, and the Xbox, Xbox 360, PSP, and PS Vita extract pages) do not
 offer Rename because the output is a folder; Overwrite if invalid skips existing output
 because GoD has no integrity probe. Folder scanning creates separate queue jobs,
 not a recursive `xenon convert` command, so the title applies to every job while the
 CLI rejects `--title` with `-R`.
+
+### PS1 EBOOT conversion
+
+**PS1** under Convert takes a `.cue`, a CD-mode `.chd`, or an `.m3u` playlist, plain or
+inside an archive, and writes one game folder per EBOOT into `<stem>_psp` by default.
+Copy those folders into `PSP/GAME`. The page offers the same options as `psx to-pbp`:
+compression, title, disc ID, and the boot image, icon, and background, as PNG or JPEG
+files of any size. It has no
+recursive folder scan, because a folder that holds a playlist and its cue sheets would
+build each disc twice; drop the playlist instead.
 
 ### Organize a library
 
