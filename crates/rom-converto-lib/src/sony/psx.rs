@@ -54,11 +54,12 @@ fn cnf_value(text: &str, key: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// `cdrom0:\SLUS_203.12;1` becomes `SLUS-20312`. `None` when the boot
-/// path's basename is not the four-letter, three-digit, two-digit serial
-/// shape, in which case only the boot path itself is reportable.
+/// `cdrom0:\SLUS_203.12;1` becomes `SLUS-20312`, as does the root-relative
+/// `cdrom:SLUS_203.12;1`. `None` when the boot path's basename is not the
+/// four-letter, three-digit, two-digit serial shape, in which case only the
+/// boot path itself is reportable.
 fn normalize_title_id(boot: &str) -> Option<String> {
-    let base = boot.rsplit(['\\', '/']).next()?;
+    let base = boot.rsplit(['\\', '/', ':']).next()?;
     let base = base.split(';').next()?;
     let (name, digits) = base.split_once('_')?;
     let (high, low) = digits.split_once('.')?;
@@ -87,6 +88,10 @@ mod tests {
         assert_eq!(
             normalize_title_id("cdrom0:/SCES_509.16").as_deref(),
             Some("SCES-50916")
+        );
+        assert_eq!(
+            normalize_title_id("cdrom:SCUS_943.01;1").as_deref(),
+            Some("SCUS-94301")
         );
     }
 
