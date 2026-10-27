@@ -21,6 +21,7 @@ and `info` extensions in the installed build.
 | PlayStation 3 (`ps3`) | Encrypted disc `.iso` | Plain `.iso` | decrypt |
 | Nintendo DS (`ntr`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
 | PSP (`psp`) | `EBOOT.PBP` or PSN `.pkg` | extracted files or `.iso` | extract, to-iso |
+| PS1 to PSP (`psx`) | `.cue` with raw 2352-byte sectors, CD-mode `.chd`, or an `.m3u` of either | `EBOOT.PBP` game folders | to-pbp |
 | PS Vita (`vita`) | `.pkg` | extracted files | extract |
 | ROM patches (`patch`) | A plain ROM file plus a `.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`, `.vcdiff`, or `.xdelta` patch | Patched copy of the ROM | apply; also `organize --patch` |
 
@@ -32,6 +33,25 @@ audio and video) hold 2324 bytes, so the rest is cut and those streams break. Ke
 `.cue`/`.bin`, or compress a 2352-byte image to CHD, to keep them.
 BPS and UPS patches check the source CRC32 before writing, `.rup` checks the MD5, and
 APS and PPF 2.0 check the source size. IPS has no source check.
+
+## PS1 EBOOTs for the PSP
+
+`psx to-pbp` builds the `EBOOT.PBP` the PSP's built-in PS1 emulator runs. It targets real
+PSPs on custom firmware such as ARK; the layout was tested on a PSP-1000 with ARK on firmware
+6.61 and the stock emulator. PPSSPP is not a reliable check for these files.
+
+| Topic | Behaviour |
+|---|---|
+| Inputs | Tracks must be raw 2352-byte sectors (`MODE2/2352`, `MODE1/2352`, `AUDIO`). `MODE1/2048` images, non-`BINARY` files, and `PREGAP`/`POSTGAP` silence that is not in the files are refused. The first track must be data |
+| Disc ID | Read from `SYSTEM.CNF`. Discs whose boot file is not named like a serial (homebrew `PSX.EXE`) need `--disc-id`. The PSP names the save folder after it |
+| Encoding | Deflate (default) or stored. Both are deflate-framed: a block stored raw never boots. A block deflate cannot shrink is written stored |
+| Audio tracks | Kept as raw CD audio in the image. Custom firmware such as ARK plays it; the stock emulator refuses raw audio in EBOOTs it did not sign. The lead-out sits at the true end of the disc, so the last track plays to its end |
+| Multi-disc | Up to 5 discs in one EBOOT with **Switch Discs** in the HOME menu, when the build carries the multi-disc table; saves stay on disc 1's memory card across a switch. Otherwise one EBOOT per disc, sharing one memory card |
+| Limits | 32,256 blocks (1.13 GiB) per disc; 4 GiB per EBOOT, the FAT32 file limit |
+| Not written | Sony's boot logo, encrypted footer, `KEYS.BIN`, and the per-block SHA-1. None is needed on custom firmware |
+
+The [POPS and EBOOT reference](https://github.com/chiva/skiff/blob/main/docs/development/pops.md)
+describes the format, the hardware tests behind it, and the multi-disc table.
 
 ## Large files and memory
 

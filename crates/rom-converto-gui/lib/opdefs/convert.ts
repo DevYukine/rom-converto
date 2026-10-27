@@ -23,11 +23,12 @@ import { useChdToCsoStore } from "~/stores/chd-to-cso";
 import { useCueConvertStore } from "~/stores/cue-convert";
 import { useXboxConvertStore } from "~/stores/xbox-convert";
 import { usePspToIsoStore } from "~/stores/psp-to-iso";
+import { usePsxToPbpStore } from "~/stores/psx-to-pbp";
 import { useXenonConvertStore } from "~/stores/xenon-convert";
 import { useWupConvertStore } from "~/stores/wup-convert";
 import { useDolConvertStore } from "~/stores/dol-convert";
 import { useRvlConvertStore } from "~/stores/rvl-convert";
-import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscPath, deriveDiscIsoPath, deriveGodDir, deriveWupDiscPath, deriveXisoPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
+import { basename, deriveConvertedPath, deriveChdPath, deriveCsoPath, deriveDiscPath, deriveDiscIsoPath, deriveGodDir, derivePbpDir, deriveWupDiscPath, deriveXisoPath, hasArchiveExt, withOutputDir } from "~/composables/useDerivedPath";
 
 const ARCHIVE_EXTS = ["zip", "7z", "rar", "tar", "tgz", "gz"];
 
@@ -687,6 +688,121 @@ const psp: OpDef = {
 	chips: () => "",
 };
 
+const IMAGE_FILTERS = [{ name: "PNG or JPEG", extensions: ["png", "jpg", "jpeg"] }];
+
+const psx: OpDef = {
+	op: "convert",
+	console: "psx",
+	opLabel: "Convert",
+	storeId: "psx-to-pbp",
+	useStore: usePsxToPbpStore,
+	command: "cmd_run",
+	resultKind: "convert",
+	title: "Convert PS1 disc → EBOOT.PBP",
+	subtitle: "Builds the EBOOT.PBP the PSP's built-in PS1 emulator runs on custom firmware, one game folder each.",
+	dropText: "Drop a .cue, CD .chd, or .m3u playlist",
+	acceptedExts: ["cue", "chd", "m3u", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "PS1 disc", extensions: ["cue", "chd", "m3u"] }],
+	fields: [
+		{
+			kind: "segmented",
+			key: "compression",
+			label: "Compression",
+			options: [
+				{ label: "Deflate", value: "deflate" },
+				{ label: "Stored", value: "stored" },
+			],
+			tooltip:
+				"Deflate writes a smaller EBOOT. Stored keeps every sector unchanged, so the EBOOT is about the size of the disc image.",
+		},
+		{
+			kind: "text",
+			key: "title",
+			label: "Title (optional)",
+			placeholder: "File name",
+			tooltip: "Name the XMB shows. Leave empty to use the input file name.",
+		},
+		{
+			kind: "text",
+			key: "discId",
+			label: "Disc ID (optional)",
+			placeholder: "From SYSTEM.CNF",
+			tooltip:
+				"Four letters and five digits, such as SLUS-00001. Needed only for a disc whose SYSTEM.CNF names no ID. The PSP names the game's save folder after it.",
+		},
+		{
+			kind: "file",
+			key: "splash",
+			label: "Boot image",
+			section: "Images",
+			filters: IMAGE_FILTERS,
+			display: (s) => (s.splash ? basename(s.splash) : ""),
+			placeholder: "Built-in",
+			tooltip: "PNG or JPEG shown while the game starts, fitted to 480 by 272 pixels.",
+		},
+		{
+			kind: "file",
+			key: "icon0",
+			label: "Icon",
+			section: "Images",
+			filters: IMAGE_FILTERS,
+			display: (s) => (s.icon0 ? basename(s.icon0) : ""),
+			placeholder: "None",
+			tooltip:
+				"PNG or JPEG the XMB shows as the game's icon, such as its cover, fitted to 144 by 80 pixels.",
+		},
+		{
+			kind: "file",
+			key: "pic1",
+			label: "Background",
+			section: "Images",
+			filters: IMAGE_FILTERS,
+			display: (s) => (s.pic1 ? basename(s.pic1) : ""),
+			placeholder: "None",
+			tooltip: "PNG or JPEG the XMB shows behind the game's entry, fitted to 480 by 272 pixels.",
+		},
+	],
+	note:
+		"A playlist without in-game disc switching becomes one EBOOT per disc that share a memory card: save before a disc change, then start the next disc's EBOOT.",
+	outputRows: [
+		...directoryOutputRows(
+			"Where the game folders are written; copy them into PSP/GAME. Leave empty to create a folder next to the input file.",
+		),
+		{
+			kind: "report",
+			label: "Run report",
+			display: (s) => (s.reportFile ? basename(s.reportFile) : ""),
+			placeholder: "None",
+			set: (s, v) => { s.reportFile = v; },
+			tooltip:
+				"Saves a summary of the run to this file when set. The format is chosen from the file extension (csv, json, html, or htm); any other extension defaults to json.",
+		},
+	],
+	renameDisabled: true,
+	actionNote: "Jobs start automatically. Parameters lock once queued.",
+	deriveOutput: derivePbpDir,
+	buildArgs: (store, item, taskId) =>
+		runArgs(
+			"psx.to_pbp",
+			item.path,
+			withOutputDir(derivePbpDir(item.path), store.outputDir || ""),
+			{
+				compression: store.compression,
+				title: store.title || null,
+				disc_id: store.discId || null,
+				splash: store.splash || null,
+				icon0: store.icon0 || null,
+				pic1: store.pic1 || null,
+				on_conflict: directoryConflict(store.onConflict),
+				skip_space_check: store.skipSpaceCheck,
+			},
+			false,
+			taskId,
+			store.reportFile || null,
+		),
+	chips: (store) => (store.compression === "stored" ? "stored" : ""),
+};
+
 const xenon: OpDef = {
 	op: "convert",
 	console: "xenon",
@@ -733,4 +849,4 @@ const xenon: OpDef = {
 	chips: (store) => (store.title ? "custom title" : ""),
 };
 
-export const convertOps: OpDef[] = [ctr, discConvert("dol"), discConvert("rvl"), wup, cso, chd, chdMigrate, cue, xbox, psp, xenon];
+export const convertOps: OpDef[] = [ctr, discConvert("dol"), discConvert("rvl"), wup, cso, chd, chdMigrate, cue, xbox, psp, psx, xenon];

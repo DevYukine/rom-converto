@@ -280,3 +280,11 @@ export function deriveExtractDir(input: string): string {
 export function deriveGodDir(input: string): string {
   return `${stemOf(stripArchiveExt(input))}_god`;
 }
+
+// PS1 disc image -> EBOOT conversion writes one game folder per EBOOT into a
+// sibling directory, matching the runner's default.
+export function derivePbpDir(input: string): string {
+  const source = stripArchiveExt(input);
+  const stem = getExt(source) === "m3u" ? source.slice(0, source.lastIndexOf(".")) : stemOf(source);
+  return `${stem}_psp`;
+}

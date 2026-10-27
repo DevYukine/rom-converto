@@ -112,6 +112,22 @@ the binary. Regenerate it from the `encr_data` literals in devkitPro
 `0de8f088b79a0e73bc31601f767ee674fa31badb`, preserving byte order. Its SHA-256 is
 `bedd20bd7f9cac742ad760e2448d4043e0d37121b67a1be3a6b8afbb8a34f08e`.
 
+## Embedded PS1 EBOOT assets
+
+`psx to-pbp` embeds two files from `resources/psx/`:
+
+- `DATA.PSP` is the loader every PS1 EBOOT starts: a 2,186-byte PSP module that asks the
+  firmware to start the PS1 emulator on its own EBOOT. Its source is in
+  `resources/psx/data_psp/`. Rebuild it with `bash resources/psx/data_psp/build.sh`, which
+  uses the pinned `pspdev/pspdev:v20261001` image and needs Docker. Its SHA-256 is
+  `30c0517dd5463dcb43ce768485fc8e9d756b41b7b7e831966dfcadf5bef94db3`.
+- `startdat.png` is the boot image shown while a game starts, rendered from
+  `startdat.svg`. Rebuild it with `uv run resources/psx/render_startdat.py`, which fetches the
+  two OFL fonts the artwork uses from a pinned commit. Its SHA-256 is
+  `048ae127729352dd099faff77cc32efb7421c5afc022081894e9d2193004a73b`.
+
+Both builds are reproducible: a rebuild gives the same bytes.
+
 ## Documentation and releases
 
 Public `rom-converto-lib` APIs need Rust documentation. Start modules with a

@@ -22,6 +22,7 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 | LaserDisc | Compress AVI to CHD |
 | PSP / PS2 | Compress ISO to CSO/ZSO; decompress CSO/ZSO/DAX; convert between these and CHD |
 | PSP | Extract EBOOT.PBP and PKG; convert supported packages to ISO |
+| PS1 on PSP | Convert CUE/BIN, CHD, or M3U to an EBOOT.PBP for custom firmware |
 | PS Vita | Extract PKG files |
 | Xbox | Convert a disc image or game folder to XISO; extract disc files |
 | Xbox 360 | Pack a disc image or game folder into ZAR; convert a disc ISO to GoD; extract ZAR files |
