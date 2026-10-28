@@ -112,6 +112,43 @@ the binary. Regenerate it from the `encr_data` literals in devkitPro
 `0de8f088b79a0e73bc31601f767ee674fa31badb`, preserving byte order. Its SHA-256 is
 `bedd20bd7f9cac742ad760e2448d4043e0d37121b67a1be3a6b8afbb8a34f08e`.
 
+## Embedded PS1 EBOOT assets
+
+`psx to-pbp` embeds two files from `resources/psx/`:
+
+- `DATA.PSP` is the loader every PS1 EBOOT starts: a 2,186-byte PSP module that asks the
+  firmware to start the PS1 emulator on its own EBOOT. Its source is in
+  `resources/psx/data_psp/`. Rebuild it with `bash resources/psx/data_psp/build.sh`, which
+  uses the pinned `pspdev/pspdev:v20261001` image and needs Docker. Its SHA-256 is
+  `30c0517dd5463dcb43ce768485fc8e9d756b41b7b7e831966dfcadf5bef94db3`.
+- `startdat.png` is the boot image shown while a game starts, rendered from
+  `startdat.svg`. Rebuild it with `uv run resources/psx/render_startdat.py`, which fetches the
+  two OFL fonts the artwork uses from a pinned commit. Its SHA-256 is
+  `048ae127729352dd099faff77cc32efb7421c5afc022081894e9d2193004a73b`.
+
+Both builds are reproducible: a rebuild gives the same bytes.
+
+### Multi-disc table
+
+A PS1 EBOOT with two or more discs needs a 64-byte table at PSTITLEIMG+0x28C. The PSP's PS1
+emulator uses it as the key to the disc-switch menu text it carries in every system language;
+without a valid table the game freezes at boot, and with it the HOME menu offers **Switch
+Discs**. The table is the same for every game and PSP model, but it is derived from Sony's
+firmware (Sony's scrambled strings combined with Sony's text), and no working table can be
+made from facts about the format alone.
+
+It lives in `crates/rom-converto-lib/src/sony/psx/pbp/multidisc/table.rs`, behind the
+`pops-multidisc-table` feature, which is on by default. It was read from a reference two-disc
+EBOOT whose 128-byte slot has the SHA-256 the
+[POPS reference](https://github.com/chiva/skiff/blob/main/docs/development/pops.md#how-pops-uses-it)
+publishes, `70c0b99a16396068390533fa061a52493396596dca414a89a45cef8f63fb56b7`; the table is that
+slot's first 64 bytes, SHA-256 `246a68a915cdb6b329de09ce51e340a985c1b49065a5f685f1b28c958ea7ec38`,
+which a test pins.
+
+Whether the project carries Sony-derived data is the maintainer's call. Build with
+`--no-default-features` to leave it out: every multi-disc playlist then becomes one EBOOT per
+disc, sharing one memory card, with no other change.
+
 ## Documentation and releases
 
 Public `rom-converto-lib` APIs need Rust documentation. Start modules with a

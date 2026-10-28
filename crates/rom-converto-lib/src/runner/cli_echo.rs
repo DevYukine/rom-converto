@@ -172,6 +172,10 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("skip_probe", FlagKind::Bool),
     ("media_patch", FlagKind::Bool),
     ("title", FlagKind::Value),
+    ("disc_id", FlagKind::Value),
+    ("splash", FlagKind::Value),
+    ("icon0", FlagKind::Value),
+    ("pic1", FlagKind::Value),
     ("dat", FlagKind::Bool),
     ("move_source", FlagKind::Bool),
     ("playlists", FlagKind::Bool),
@@ -652,6 +656,19 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     ),
     ("psp extract", &[]),
     ("psp to-iso", &["on_conflict", "output_template", "report"]),
+    (
+        "psx to-pbp",
+        &[
+            "compression",
+            "disc_id",
+            "icon0",
+            "on_conflict",
+            "pic1",
+            "report",
+            "splash",
+            "title",
+        ],
+    ),
     (
         "rvl compress",
         &[

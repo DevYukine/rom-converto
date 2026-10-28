@@ -230,6 +230,14 @@
       "psp",
       "to-iso"
     ],
+    "psx.to-pbp": [
+      "psx",
+      "to-pbp"
+    ],
+    "psx.to_pbp": [
+      "psx",
+      "to-pbp"
+    ],
     "rvl.compress": [
       "rvl",
       "compress"
@@ -470,6 +478,12 @@
       "kind": "value",
       "explicit_off": false
     },
+    "disc_id": {
+      "flag": "--disc-id",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
     "dry_run": {
       "flag": "--dry-run",
       "global": true,
@@ -532,6 +546,12 @@
     },
     "hunk_size": {
       "flag": "--hunk-size",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
+    "icon0": {
+      "flag": "--icon0",
       "global": false,
       "kind": "value",
       "explicit_off": false
@@ -674,6 +694,12 @@
       "kind": "bool",
       "explicit_off": false
     },
+    "pic1": {
+      "flag": "--pic1",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
     "platform": {
       "flag": "--platform",
       "global": false,
@@ -798,6 +824,12 @@
       "flag": "--skip-verify",
       "global": false,
       "kind": "bool",
+      "explicit_off": false
+    },
+    "splash": {
+      "flag": "--splash",
+      "global": false,
+      "kind": "value",
       "explicit_off": false
     },
     "subset": {
@@ -1316,6 +1348,26 @@
       "output_template",
       "report"
     ],
+    "psx.to-pbp": [
+      "compression",
+      "disc_id",
+      "icon0",
+      "on_conflict",
+      "pic1",
+      "report",
+      "splash",
+      "title"
+    ],
+    "psx.to_pbp": [
+      "compression",
+      "disc_id",
+      "icon0",
+      "on_conflict",
+      "pic1",
+      "report",
+      "splash",
+      "title"
+    ],
     "rvl.compress": [
       "chunk_size",
       "level",
@@ -1510,6 +1562,8 @@
     "psp.extract": "positional",
     "psp.to-iso": "positional",
     "psp.to_iso": "positional",
+    "psx.to-pbp": "positional",
+    "psx.to_pbp": "positional",
     "rvl.compress": "positional",
     "rvl.convert": "positional",
     "rvl.decompress": "positional",

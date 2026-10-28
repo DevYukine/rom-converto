@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="272" viewBox="0 0 480 272">
+  <rect width="480" height="272" fill="#101010"/>
+  <g transform="translate(194 52) scale(0.92)">
+    <defs>
+      <clipPath id="disc">
+        <circle cx="50" cy="50" r="46"/>
+      </clipPath>
+    </defs>
+    <circle cx="50" cy="50" r="46" fill="#CFCFCF"/>
+    <g clip-path="url(#disc)" stroke="#FFFFFF">
+      <line x1="6" y1="88" x2="70" y2="34" stroke-width="16"/>
+      <line x1="30" y1="100" x2="96" y2="44" stroke-width="6"/>
+    </g>
+    <polygon points="58,24 86,20 80,48" fill="#FFFFFF"/>
+    <circle cx="47" cy="54" r="6" fill="#101010"/>
+  </g>
+  <text x="240" y="183" text-anchor="middle" font-family="Space Grotesk" font-weight="600" font-size="32" letter-spacing="-0.32" fill="#F2F2F2">rom-converto</text>
+  <text x="240" y="216" text-anchor="middle" font-family="JetBrains Mono" font-weight="500" font-size="12" letter-spacing="2.88" fill="#9E9E9E">PS1 → PSP</text>
+</svg>

@@ -101,4 +101,8 @@ libc = "^0.2"
 rustix = { version = "^1.1", features = ["fs"] }
 
 [features]
+default = ["pops-multidisc-table"]
 ts-export = ["dep:ts-rs"]
+# One EBOOT with in-game disc switching for multi-disc PS1 games. Carries a
+# 64-byte table derived from Sony's firmware; see docs/development.md.
+pops-multidisc-table = []
