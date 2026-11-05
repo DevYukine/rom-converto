@@ -5,6 +5,14 @@ export default defineNuxtConfig({
 	telemetry: false,
 	modules: ["@pinia/nuxt"],
 	components: [{ path: "~/components", pathPrefix: false }],
+	hooks: {
+		// Nuxt scans types/ for auto-imports, but the generated bindings are imported
+		// explicitly and share names with types declared in stores.
+		"imports:dirs"(dirs) {
+			const types = dirs.findIndex((dir) => dir.endsWith("/types") && !dir.endsWith("/shared/types"));
+			if (types !== -1) dirs.splice(types, 1);
+		},
+	},
 	app: {
 		head: {
 			link: [{ rel: "icon", type: "image/png", href: "/logo.png" }],

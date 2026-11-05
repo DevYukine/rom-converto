@@ -17,7 +17,7 @@ byteorder = "1.5"
 chrono = "^0.4"
 encoding_rs = "^0.8"
 reflink-copy = "^0.1"
-regex = "^1.12"
+regex = "^1.13"
 globset = "^0.4"
 
 # RustCrypto cipher stack (cipher 0.5): keep these five in lockstep
@@ -27,15 +27,14 @@ block-padding = "^0.4"
 ctr = "^0.10"
 xts-mode = "^0.6"
 
-# RustCrypto hash stack held at digest 0.10: rsa 0.9 (latest stable) requires it; bump all together when rsa 0.10 is stable
-pbkdf2 = "^0.12.2"
-hmac = "^0.12"
-sha1 = "^0.10"
-sha2 = "^0.10"
-md_5 = { version = "^0.10", package = "md-5" }
+pbkdf2 = "^0.13.0"
+hmac = "^0.13"
+sha1 = "^0.11"
+sha2 = "^0.11"
+md_5 = { version = "^0.11", package = "md-5" }
 rsa = { version = "^0.9", features = ["sha2"] }
 
-base64 = "^0.22"
+base64 = "^0.23"
 hex = "^0.4"
 md5 = "^0.8"
 sha256 = "^1.6"
@@ -45,8 +44,8 @@ unicode-normalization = "^0.1"
 serde.workspace = true
 serde_json.workspace = true
 crc = "^3.4"
-dirs = "^6"
-toml = "^1.1"
+dirs = "^7"
+toml = "^1.2"
 toml_edit = { version = "^0.25", features = ["serde"] }
 
 # Pixel codecs for `info` icon extraction
@@ -56,11 +55,11 @@ image = { version = "^0.25", default-features = false, features = ["jpeg", "png"
 # Compression
 flate2 = { version = "^1.1", features = ["zlib"], default-features = false }
 lzma-sdk-sys = "^0.1"
-lzma-rust2 = { version = "^0.20", default-features = false, features = ["std", "encoder", "optimization"] }
+lzma-rust2 = { version = "^0.25", default-features = false, features = ["std", "encoder", "optimization"] }
 flacenc = "^0.5"
 claxon = "^0.4"
-zstd = { version = "^0.13", features = ["zstdmt"] }
-zstd-sys = { version = "^2.0", default-features = false, features = ["experimental"] }
+zstd = { version = "^0.14", features = ["zstdmt"] }
+zstd-sys = { version = "^2.1", default-features = false, features = ["experimental"] }
 lz4 = "^1.28"
 bzip2 = "^0.6"
 lzxd = "^0.2"
@@ -71,8 +70,8 @@ tempfile = "^3"
 fs4 = "^1.1"
 
 # Transparent archive input (zip/7z/rar/tar/tar.gz); gzip via flate2 above
-zip = { version = "^8", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd", "xz"] }
-sevenz-rust2 = { version = "^0.22", features = ["deflate", "lz4", "zstd"] }
+zip = { version = "^9", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "zstd", "xz"] }
+sevenz-rust2 = { version = "^0.24", features = ["deflate", "lz4", "zstd"] }
 tar = "^0.4"
 unrar = { package = "unrar-ng", version = "^0.7" }
 ts-rs = { workspace = true, optional = true }

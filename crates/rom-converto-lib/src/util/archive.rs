@@ -234,27 +234,25 @@ fn list_zip(path: &Path) -> Result<Vec<ArchiveMember>> {
     let mut name_bytes = 0;
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
+        let name = entry.name()?;
         // enclosed_name is None for absolute or parent-traversing paths.
         if entry.enclosed_name().is_none() {
             continue;
         }
-        if let Some(m) = keep_member(entry.name(), entry.size(), entry.is_dir()) {
+        if let Some(m) = keep_member(&name, entry.size(), entry.is_dir()) {
             push_member(&mut out, &mut name_bytes, m, path)?;
         }
     }
     Ok(out)
 }
 
-/// Index of the zip entry whose decoded name is `member_name`. The zip
-/// crate decodes a stored name by its flag: a CP437-stored non-ASCII name
-/// is only visible through the decoded [`zip::read::ZipFile::name`], never
-/// through `by_name`'s raw-name lookup.
+/// Index of the zip entry whose decoded name is `member_name`.
 fn zip_member_index<R>(zip: &mut zip::ZipArchive<R>, member_name: &str) -> Result<usize>
 where
     R: std::io::Read + std::io::Seek,
 {
     for index in 0..zip.len() {
-        if zip.name_for_index(index) == Some(member_name) {
+        if zip.name_for_index(index).transpose()?.as_deref() == Some(member_name) {
             return Ok(index);
         }
     }
@@ -1427,10 +1425,12 @@ mod tests {
             &CancelToken::new(),
         )
         .unwrap();
-        // The writer stored the name without the UTF-8 flag, so by_name's
-        // raw-name lookup cannot find it.
-        let mut zip = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
-        assert!(zip.by_name("Pok\u{e9}mon.gba").is_err());
+        // The writer stored the name as CP437, so its raw bytes differ from the UTF-8 name.
+        let zip = zip::ZipArchive::new(File::open(&zip_path).unwrap()).unwrap();
+        assert!(
+            zip.index_for_name_raw("Pok\u{e9}mon.gba".as_bytes())
+                .is_none()
+        );
 
         let resolved = resolve_input(&zip_path, &["gba"]).unwrap();
         let extracted = std::fs::read(resolved.path()).unwrap();
@@ -1446,7 +1446,7 @@ mod tests {
     fn write_zip(path: &Path, method: zip::CompressionMethod, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(method);
         for (name, data) in entries {
             zip.start_file(*name, opts).unwrap();
@@ -2029,9 +2029,13 @@ mod tests {
             staging.path(),
             declared as u64,
         )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains(&declared.to_string()), "{err}");
+        .unwrap_err();
+        assert_eq!(
+            err.downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::InvalidData),
+            "{err}"
+        );
         assert!(
             std::fs::read_dir(staging.path()).unwrap().next().is_none(),
             "a leftover file stayed in the staging dir"

@@ -781,7 +781,7 @@ fn verify_rsa_signature(modulus: &[u8], exponent: u32, signature: &[u8], data: &
         Err(_) => return false,
     };
 
-    let verifying_key = VerifyingKey::<Sha256>::new(public_key);
+    let verifying_key = VerifyingKey::<rsa::sha2::Sha256>::new(public_key);
 
     match rsa::pkcs1v15::Signature::try_from(signature) {
         Ok(sig) => verifying_key.verify(data, &sig).is_ok(),
@@ -1200,6 +1200,38 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, TestProgress, synth_cia};
     use std::io::Write as _;
+
+    #[test]
+    fn verify_rsa_signature_accepts_a_valid_pkcs1v15_sha256_signature() {
+        use rsa::signature::{SignatureEncoding, Signer};
+        use rsa::traits::PublicKeyParts;
+
+        // Synthetic 1024-bit test key.
+        let p = BigUint::parse_bytes(
+            b"e9965a8402739f8b422b135dc03f3027871c38917a53ab54a2a67196148be4124ed4cd17ecb9ad026ce0c3fb1ceb751c945b06ca8f9a9e747911724c1d447e29",
+            16,
+        )
+        .unwrap();
+        let q = BigUint::parse_bytes(
+            b"c62f10b10cf96233d81ee949d1ff16bfea8aece3dbcc549418999087f9e0933e713b7d025cd225bc61dca8730dfa07d9bf7ae8eef3b277646e65fe120311db95",
+            16,
+        )
+        .unwrap();
+        let key = rsa::RsaPrivateKey::from_p_q(p, q, BigUint::from(65537u32)).unwrap();
+        let modulus = key.n().to_bytes_be();
+        let data = b"signed certificate body";
+        let signature = rsa::pkcs1v15::SigningKey::<rsa::sha2::Sha256>::new(key)
+            .sign(data)
+            .to_vec();
+
+        assert!(verify_rsa_signature(&modulus, 65537, &signature, data));
+        assert!(!verify_rsa_signature(
+            &modulus,
+            65537,
+            &signature,
+            b"tampered certificate body"
+        ));
+    }
 
     #[tokio::test]
     async fn verify_cia_streaming_parses_header_and_tmd() {

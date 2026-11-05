@@ -3549,7 +3549,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let zip_path = lib.path().join("manuals.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("readme.txt", opts).unwrap();
         zip.finish().unwrap();
@@ -3948,7 +3948,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let zip_path = lib.path().join("Cube Game.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Cube Game.rvz", opts).unwrap();
         zip.write_all(&gcm_bytes()).unwrap();
@@ -4301,7 +4301,7 @@ mod tests {
             let zip_path = lib.path().join(dir).join("Game.zip");
             std::fs::create_dir_all(zip_path.parent().unwrap()).unwrap();
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("Game.gba", opts).unwrap();
             zip.write_all(&gba).unwrap();
@@ -4364,7 +4364,7 @@ mod tests {
             let zip_path = lib.path().join(dir).join("Game.zip");
             std::fs::create_dir_all(zip_path.parent().unwrap()).unwrap();
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("Game.gba", opts).unwrap();
             zip.write_all(&gba_bytes()).unwrap();
@@ -4411,7 +4411,7 @@ mod tests {
             let zip_path = lib.path().join(dir).join("Game.zip");
             std::fs::create_dir_all(zip_path.parent().unwrap()).unwrap();
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("Game.gba", opts).unwrap();
             zip.write_all(&gba_bytes()).unwrap();
@@ -4474,7 +4474,7 @@ mod tests {
         let make_zip = |path: &Path, member: &str, bytes: &[u8]| {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file(member, opts).unwrap();
             zip.write_all(bytes).unwrap();
@@ -6219,7 +6219,7 @@ mod tests {
         std::fs::create_dir_all(&gba_dir).unwrap();
         let zip_path = gba_dir.join("foo.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("foo.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
@@ -6407,7 +6407,7 @@ mod tests {
         let mut zip = zip::ZipWriter::new(
             std::fs::File::create(lib.path().join("b").join("Game.zip")).unwrap(),
         );
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Game.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
@@ -6592,7 +6592,7 @@ mod tests {
         let mut other = gba_bytes();
         other[0xA0..0xA8].copy_from_slice(b"OTHERGAM");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Other.gba", opts).unwrap();
         zip.write_all(&other).unwrap();
@@ -6640,15 +6640,15 @@ mod tests {
         let out = TempDir::new().unwrap();
         let zip_path = lib.path().join("Pack.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Aaa.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Zzz.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("readme.txt", opts).unwrap();
         zip.write_all(b"sidecar").unwrap();
@@ -6942,11 +6942,11 @@ mod tests {
         let lib = TempDir::new().unwrap();
         let zip_path = lib.path().join("Pack.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Pack.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("save.sav", opts).unwrap();
         zip.write_all(b"sav bytes").unwrap();
@@ -7281,7 +7281,7 @@ mod tests {
         let archive = move_lib.join("Game Boy Advance").join("Test Game.zip");
         std::fs::create_dir_all(archive.parent().unwrap()).unwrap();
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-        let options: zip::write::FileOptions<'_, ()> =
+        let options: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Test Game.gba", options).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
@@ -7397,7 +7397,7 @@ mod tests {
         let out = TempDir::new().unwrap();
         let nested = lib.path().join("Saves.zip");
         let mut inner = zip::ZipWriter::new(std::fs::File::create(&nested).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         inner.start_file("save.sav", opts).unwrap();
         inner.write_all(b"save").unwrap();
@@ -7405,11 +7405,11 @@ mod tests {
 
         let pack = lib.path().join("Game.zip");
         let mut outer = zip::ZipWriter::new(std::fs::File::create(&pack).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         outer.start_file("Game.gba", opts).unwrap();
         outer.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         outer.start_file("Saves.zip", opts).unwrap();
         outer
@@ -7600,11 +7600,11 @@ mod tests {
         let out = TempDir::new().unwrap();
         let pack = lib.path().join("Pack.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&pack).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Game.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("notes.txt", opts).unwrap();
         zip.write_all(b"sidecar").unwrap();
@@ -9141,11 +9141,11 @@ mod tests {
         std::fs::write(lib.path().join("Game.gba"), gba_bytes()).unwrap();
         let mut zip =
             zip::ZipWriter::new(std::fs::File::create(lib.path().join("Pack.zip")).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Other.gba", opts).unwrap();
         zip.write_all(&gba_bytes()).unwrap();
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("notes.txt", opts).unwrap();
         zip.write_all(b"sidecar").unwrap();
@@ -9200,7 +9200,7 @@ mod tests {
             std::fs::create_dir_all(&console).unwrap();
             let mut zip =
                 zip::ZipWriter::new(std::fs::File::create(console.join("Game.zip")).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file("Other.gba", opts).unwrap();
             zip.write_all(&gba_bytes()).unwrap();

@@ -17,7 +17,7 @@ fn combined(output: &Output) -> String {
 
 fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
     let mut zip = zip::ZipWriter::new(File::create(path).unwrap());
-    let opts: zip::write::FileOptions<'_, ()> =
+    let opts: zip::write::SimpleFileOptions =
         zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
     for (name, data) in entries {
         zip.start_file(*name, opts).unwrap();

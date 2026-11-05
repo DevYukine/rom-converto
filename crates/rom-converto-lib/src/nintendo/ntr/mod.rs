@@ -492,7 +492,7 @@ mod tests {
         let (_, mut secure) = parts(&rom);
         crypt_secure_area(&mut secure, idcode(), true);
         assert_eq!(
-            format!("{:x}", Sha256::digest(secure)),
+            hex::encode(Sha256::digest(secure)),
             "86d31bc47af8118fc8fa92b7b7a3156dccc211fbb875a3c7b63ec8a307c83082"
         );
     }

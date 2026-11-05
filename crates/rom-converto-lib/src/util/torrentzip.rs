@@ -1021,7 +1021,7 @@ mod tests {
             zip::ZipArchive::new(std::fs::File::open(path).expect("open zip")).expect("archive");
         let index = archive
             .file_names()
-            .position(|n| n == name)
+            .position(|n| n.expect("decode member name") == name)
             .expect("member name");
         let mut member = archive.by_index(index).expect("member");
         let mut bytes = Vec::new();

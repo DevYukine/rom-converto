@@ -516,7 +516,7 @@ mod tests {
             .map(|i| {
                 let path = dir.path().join(format!("game-{i:03}.zip"));
                 let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
-                let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                let options: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                     .compression_method(zip::CompressionMethod::Stored);
                 zip.start_file(format!("game-{i:03}.iso"), options).unwrap();
                 zip.write_all(&[i as u8; 4]).unwrap();

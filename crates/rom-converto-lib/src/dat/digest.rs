@@ -728,7 +728,7 @@ mod tests {
 
         let file = std::fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         for (name, data) in entries {
             zip.start_file(*name, opts).unwrap();

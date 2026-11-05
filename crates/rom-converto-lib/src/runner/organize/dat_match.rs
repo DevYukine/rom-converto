@@ -1112,7 +1112,7 @@ mod tests {
         rom.extend_from_slice(&body);
         let zip_path = dir.path().join("Game.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Game.sfc", opts).unwrap();
         zip.write_all(&rom).unwrap();
@@ -1217,7 +1217,7 @@ mod tests {
         rom.extend_from_slice(&body);
         let zip_path = dir.path().join("Game.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("Game.sfc", opts).unwrap();
         zip.write_all(&rom).unwrap();

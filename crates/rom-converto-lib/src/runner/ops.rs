@@ -4292,7 +4292,7 @@ mod tests {
 
     fn write_zip(archive: &Path, entries: &[(&str, &[u8])]) {
         let mut zip = zip::ZipWriter::new(std::fs::File::create(archive).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         for (member, data) in entries {
             zip.start_file(*member, opts).unwrap();
@@ -4984,7 +4984,7 @@ mod tests {
         let iso = write_iso(dir.path(), "member.iso");
         let archive = dir.path().join("game.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("member.iso", opts).unwrap();
         zip.write_all(&std::fs::read(&iso).unwrap()).unwrap();
@@ -5003,7 +5003,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let archive = dir.path().join("disc.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("game.chd", opts).unwrap();
         zip.write_all(b"not a real chd").unwrap();

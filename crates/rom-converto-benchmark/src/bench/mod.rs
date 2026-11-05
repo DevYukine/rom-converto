@@ -9,6 +9,7 @@ pub mod switch;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -116,8 +117,17 @@ fn has_ext(path: &Path, ext: &str) -> bool {
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).with_context(|| format!("hash {}", path.display()))?;
-    Ok(format!("{:x}", hasher.finalize()))
+    let mut buf = [0; 64 * 1024];
+    loop {
+        let len = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(len) => len,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err).with_context(|| format!("hash {}", path.display())),
+        };
+        hasher.update(&buf[..len]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 pub fn require_input(path: &Path, label: &str) -> Result<()> {

@@ -13,5 +13,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 clap = { version = "^4.6", features = ["derive"] }
 ctrlc = "^3"
-sha2 = "^0.10"
+sha2 = "^0.11"
+hex = "^0.4"
 tempfile = "^3"

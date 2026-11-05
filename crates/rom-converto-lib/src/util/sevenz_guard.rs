@@ -1,14 +1,9 @@
-//! Decoder limits for 7z archives. The 7z reader has no public bound on what
-//! an archive's declared decoders allocate: a declared dictionary is
-//! zero-filled whole on first read, a block with several packed streams
-//! builds its coders once per bound input, and the decode chain follows bind
-//! pairs with no check that each coder is visited once, so a tiny file can
-//! force a multi-gigabyte allocation while it is only being listed. The
-//! guard admits only what real 7z writers produce for a plain archive: one
-//! packed stream per block, a short chain of coders whose methods have a
-//! fixed memory model, and no encryption. [`open`] checks the header before
-//! it is decoded and every parsed data block before listing. [`check_block`]
-//! checks each block again just before decoding; everything else is refused.
+//! Decoder limits for 7z archives. Declared dictionaries, decoded headers and
+//! coder chains are bounded before the reader builds decoders. The guard
+//! admits one packed stream per block, a short chain of coders with a fixed
+//! memory model, and no encryption. [`open`] checks the header before it is
+//! decoded and every parsed data block before listing. [`check_block`] checks
+//! each block again just before decoding; everything else is refused.
 
 use anyhow::{Result, anyhow, bail};
 use std::fs::File;
@@ -28,11 +23,11 @@ const DECODER_SLACK_BYTES: u64 = 8 << 20;
 /// counts bounded only by the header length, so 4 MiB of decoded header
 /// keeps the header phase under about 1 GiB.
 const MAX_HEADER_BYTES: u64 = 4 << 20;
-/// An encoded header's LZMA2 dictionary is zero-filled even when the header
-/// behind it is tiny, so a dictionary more than twice the stream it decodes
-/// (and past this floor, where the reference encoder stops shrinking) is
-/// refused. Data blocks are not held to this: the encoder sizes the
-/// dictionary to the largest file or the solid total, not to each block.
+/// An encoded header's dictionary must stay near the stream it decodes:
+/// more than twice the stream size (and past this floor, where the reference
+/// encoder stops shrinking) is refused. Data blocks are not held to this:
+/// the encoder sizes the dictionary to the largest file or the solid total,
+/// not to each block.
 const LZMA2_DICT_FLOOR_BYTES: u64 = 64 << 20;
 /// Coders per folder or block. Real writers chain a filter or two in front
 /// of a compressor; every coder adds a nested reader layer.
@@ -79,10 +74,10 @@ fn lzma2_dictionary(properties: &[u8]) -> Option<u64> {
     Some(u64::from(2 | (bits & 1)) << (bits / 2 + 11))
 }
 
-/// Memory a coder allocates for its declared parameters, decoding a stream
-/// of `unpack_size` bytes, or `None` when the method is not one the reader
-/// decodes with a known footprint or its properties are unusable. Methods
-/// outside this table (BCJ2, Brotli, encryption, anything else) are refused.
+/// Conservative memory bound for a coder with a stream of `unpack_size`
+/// bytes, or `None` when the method has no known footprint or its properties
+/// are unusable. Methods outside this table (BCJ2, Brotli, encryption,
+/// anything else) are refused.
 fn coder_memory(method_id: &[u8], properties: &[u8], unpack_size: u64) -> Option<u64> {
     match method_id {
         // Stored data and Deflate keep no dictionary to size.
@@ -785,7 +780,7 @@ mod tests {
     }
 
     /// A dictionary within the cap but far above the tiny stream it
-    /// decodes is refused all the same: it is zero-filled regardless.
+    /// decodes is refused by the encoded-header dictionary policy.
     #[test]
     fn check_file_refuses_a_large_dictionary_for_a_tiny_stream() {
         assert!(check_header(&encoded_header(&[(LZMA2_ID, &[30])], &[])).is_err());

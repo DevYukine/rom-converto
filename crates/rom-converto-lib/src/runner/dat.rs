@@ -929,7 +929,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let zip_path = dir.path().join("game.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&zip_path).unwrap());
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
         zip.start_file("game.iso", opts).unwrap();
         zip.write_all(b"cartridge").unwrap();

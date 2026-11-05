@@ -58,6 +58,7 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
     let mut background_index = None;
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
+        let name = entry.name()?;
         // enclosed_name is None for absolute or parent-traversing paths.
         if entry.enclosed_name().is_none() {
             continue;
@@ -68,7 +69,7 @@ pub fn read_info(path: &Path) -> Result<VpkInfo> {
         info.file_count += 1;
         info.total_size += entry.size();
 
-        let name = entry.name().replace('\\', "/").to_ascii_lowercase();
+        let name = name.replace('\\', "/").to_ascii_lowercase();
         match name.as_str() {
             SFO_MEMBER => sfo_index = Some(i),
             ICON_MEMBER => icon_index = Some(i),
@@ -157,7 +158,7 @@ mod tests {
     fn write_vpk(path: &Path, entries: &[(&str, &[u8])]) {
         let file = File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
-        let opts: zip::write::FileOptions<'_, ()> =
+        let opts: zip::write::SimpleFileOptions =
             zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         for (name, data) in entries {
             zip.start_file(*name, opts).unwrap();

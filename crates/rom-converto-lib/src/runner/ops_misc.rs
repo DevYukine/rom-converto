@@ -607,7 +607,7 @@ mod tests {
             ]);
             let archive = dir.path().join(format!("title{n}.zip"));
             let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-            let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+            let opts: zip::write::SimpleFileOptions = zip::write::FileOptions::default()
                 .compression_method(zip::CompressionMethod::Stored);
             zip.start_file(format!("title{n}.nsp"), opts).unwrap();
             zip.write_all(&nsp).unwrap();

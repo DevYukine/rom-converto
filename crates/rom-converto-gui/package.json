@@ -13,22 +13,22 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@pinia/nuxt": "^1.0.2",
-    "@tauri-apps/api": "^2.11.1",
-    "@tauri-apps/plugin-dialog": "^2.7.2",
-    "@tauri-apps/plugin-notification": "^2.3.3",
-    "@tauri-apps/plugin-shell": "^2.3.5",
-    "pinia": "^4.0.3",
-    "vue": "^3.5.42"
+    "@pinia/nuxt": "^1.0.3",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-notification": "^2.8.0",
+    "@tauri-apps/plugin-shell": "^2.6.0",
+    "pinia": "^4.1.0",
+    "vue": "^3.5.44"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4.3.3",
-    "@tauri-apps/cli": "^2.11.4",
-    "@types/node": "^26.4.1",
-    "nuxt": "^4.5.2",
-    "tailwindcss": "^4.3.3",
+    "@tailwindcss/postcss": "^4.3.4",
+    "@tauri-apps/cli": "^2.12.4",
+    "@types/node": "^26.6.6",
+    "nuxt": "^4.6.4",
+    "tailwindcss": "^4.3.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.11",
-    "vue-tsc": "^3.3.11"
+    "vitest": "^5.1.0",
+    "vue-tsc": "^3.3.14"
   }
 }
