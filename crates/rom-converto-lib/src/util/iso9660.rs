@@ -218,14 +218,14 @@ fn classify<S: SectorSource>(
             entry.size.min(SECTOR as u32),
             MAX_FILE_BYTES,
         )?;
-        if contains(&cnf, b"BOOT2") {
+        if has_cnf_key(&cnf, b"BOOT2") {
             return Ok(if volume.total_sectors > CD_MAX_SECTORS {
                 DiscKind::Ps2Dvd
             } else {
                 DiscKind::Ps2Cd
             });
         }
-        if contains(&cnf, b"BOOT") {
+        if has_cnf_key(&cnf, b"BOOT") {
             return Ok(DiscKind::Ps1);
         }
     }
@@ -296,6 +296,16 @@ fn strip_version(name: &[u8]) -> &[u8] {
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Whether `SYSTEM.CNF` has a `key = value` line for exactly `key`, so a
+/// PS1 `BOOT` path that mentions `BOOT2` stays a PS1 disc.
+fn has_cnf_key(cnf: &[u8], key: &[u8]) -> bool {
+    cnf.split(|&b| b == b'\n').any(|line| {
+        line.iter()
+            .position(|&b| b == b'=')
+            .is_some_and(|eq| line[..eq].trim_ascii() == key)
+    })
 }
 
 #[cfg(test)]
@@ -463,6 +473,17 @@ mod tests {
             file_content: cnf,
         });
         assert_eq!(detect_bytes(&dvd), DiscKind::Ps2Dvd);
+    }
+
+    #[test]
+    fn a_ps1_boot_path_naming_boot2_stays_ps1() {
+        let iso = make_iso(&IsoSpec {
+            system_id: b"PLAYSTATION",
+            volume_sectors: 300_000,
+            root_entries: &[(b"SYSTEM.CNF;1", false)],
+            file_content: b"BOOT = cdrom:\\BOOT2.EXE;1\r\nTCB = 4\r\n",
+        });
+        assert_eq!(detect_bytes(&iso), DiscKind::Ps1);
     }
 
     #[test]
