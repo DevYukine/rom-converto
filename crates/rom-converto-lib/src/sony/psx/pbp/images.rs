@@ -6,18 +6,14 @@
 //! the frame, keeping its aspect ratio, and centred on the frame's
 //! background.
 
-use std::io::Cursor;
 use std::path::Path;
 
 use image::imageops::{self, FilterType};
-use image::{ImageError, ImageFormat, Rgba, RgbaImage};
+use image::{Rgba, RgbaImage};
 
 use super::error::{PsxPbpError, PsxPbpResult};
-
-pub(crate) const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-const IHDR_WIDTH: usize = 16;
-const IHDR_HEIGHT: usize = 20;
-const IHDR_END: usize = 24;
+use crate::info::image::Image;
+use crate::util::pixel::encode_png;
 
 const TRANSPARENT: Rgba<u8> = Rgba([0, 0, 0, 0]);
 const BLACK: Rgba<u8> = Rgba([0, 0, 0, 0xFF]);
@@ -56,24 +52,20 @@ pub(crate) const SPLASH: Frame = PIC1;
 /// the decoder can read, and [`PsxPbpError::Io`] when it cannot be read.
 pub(crate) fn fit(path: &Path, frame: Frame) -> PsxPbpResult<Vec<u8>> {
     let bytes = std::fs::read(path)?;
+    let decoded = image::load_from_memory(&bytes).map_err(|source| PsxPbpError::InvalidImage {
+        path: path.to_path_buf(),
+        source,
+    })?;
     if png_dimensions(&bytes) == Some((frame.width, frame.height)) {
         return Ok(bytes);
     }
-    let invalid = |source: ImageError| PsxPbpError::InvalidImage {
-        path: path.to_path_buf(),
-        source,
-    };
-    let fitted = fit_image(
-        &image::load_from_memory(&bytes)
-            .map_err(invalid)?
-            .into_rgba8(),
-        frame,
-    );
-    let mut png = Vec::new();
-    fitted
-        .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
-        .map_err(invalid)?;
-    Ok(png)
+    let fitted = fit_image(&decoded.into_rgba8(), frame);
+    encode_png(fitted.as_raw(), frame.width, frame.height).map_err(|source| {
+        PsxPbpError::ImageEncode {
+            path: path.to_path_buf(),
+            source,
+        }
+    })
 }
 
 /// `source` scaled to fit inside `frame` and centred on its background.
@@ -99,21 +91,14 @@ fn fit_image(source: &RgbaImage, frame: Frame) -> RgbaImage {
 
 /// `length * scale`, rounded, at least one pixel and at most `limit`.
 fn scaled(length: u32, scale: f64, limit: u32) -> u32 {
-    // The product is within 0..=limit, so the cast cannot truncate.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let pixels = (f64::from(length) * scale).round() as u32;
     pixels.clamp(1, limit)
 }
 
-/// The width and height a PNG's header declares, or `None` for anything
-/// that does not start like a PNG.
+/// The width and height a PNG's IHDR declares, or `None` for anything
+/// that is not a PNG.
 pub(crate) fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if !bytes.starts_with(PNG_SIGNATURE) || bytes.len() < IHDR_END {
-        return None;
-    }
-    let word =
-        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    Some((word(IHDR_WIDTH), word(IHDR_HEIGHT)))
+    Image::from_png(bytes.to_vec()).map(|image| (image.width, image.height))
 }
 
 #[cfg(test)]
@@ -232,9 +217,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_png_header_with_no_image_behind_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("icon.png");
+        let mut truncated = png(144, 80, RED);
+        truncated.truncate(33);
+        assert_eq!(png_dimensions(&truncated), Some((144, 80)));
+        std::fs::write(&path, &truncated).unwrap();
+        let err = fit(&path, ICON0).unwrap_err();
+        assert!(matches!(err, PsxPbpError::InvalidImage { .. }), "{err}");
+    }
+
+    #[test]
     fn reads_png_dimensions_from_the_header() {
         assert_eq!(png_dimensions(&png(144, 80, RED)), Some((144, 80)));
         assert_eq!(png_dimensions(&jpeg(8, 8, Rgb([0, 0, 0]))), None);
-        assert_eq!(png_dimensions(PNG_SIGNATURE), None);
+        assert_eq!(png_dimensions(b"\x89PNG\r\n\x1a\n"), None);
     }
 }

@@ -3,16 +3,15 @@
 //! `SYSTEM.CNF` names.
 
 use std::fs::File;
-use std::io::{self, BufReader, Read};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use super::error::{PsxPbpError, PsxPbpResult};
 use crate::disc::cd::SECTOR_SIZE;
+use crate::disc::chd::gdi::{TrackChain, TrackSource};
 use crate::disc::cue::CueParser;
 use crate::disc::cue::models::{FileType, TrackType};
-use crate::disc::cue::to_iso::extract_user_data;
-use crate::util::iso9660::{SectorSource, read_volume};
-use crate::util::pread::file_read_exact_at;
+use crate::sony::read_psx_info;
 
 /// One track of a disc, positioned in the whole image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,79 +127,27 @@ impl DiscImage {
     }
 
     /// Streams the image's bytes, file after file in cue order.
-    pub fn reader(&self) -> io::Result<impl Read + use<>> {
-        let mut chained: Box<dyn Read> = Box::new(io::empty());
-        for (path, size) in &self.files {
-            // Never read past the size the layout was planned from.
-            chained = Box::new(chained.chain(File::open(path)?.take(*size)));
-        }
-        Ok(chained)
+    pub fn reader(&self) -> impl Read + use<> {
+        TrackChain::new(
+            self.files
+                .iter()
+                .map(|(path, bytes)| TrackSource {
+                    path: path.clone(),
+                    bytes: *bytes,
+                    sector_width: SECTOR_SIZE,
+                })
+                .collect(),
+        )
     }
 
     /// Reads the disc ID from the boot executable `SYSTEM.CNF` names.
-    /// `Ok(None)` when the data track has no ISO9660 file system or its
-    /// boot file is not named like a serial.
+    /// `Ok(None)` when the boot file is not named like a serial.
     pub fn read_disc_id(&self) -> PsxPbpResult<Option<DiscId>> {
-        let first = self.tracks[0];
-        let mut src = DataTrack {
-            files: self
-                .files
-                .iter()
-                .map(|(path, size)| Ok((File::open(path)?, size / SECTOR_SIZE as u64)))
-                .collect::<io::Result<_>>()?,
-            track_type: if first.mode2 {
-                TrackType::Mode2_2352
-            } else {
-                TrackType::Mode1_2352
-            },
-            start: u64::from(first.start),
-            sectors: self.sectors() - u64::from(first.start),
-            raw: vec![0u8; SECTOR_SIZE],
-        };
-        let Some(volume) = read_volume(&mut src)? else {
-            return Ok(None);
-        };
-        let info = crate::sony::psx::read(&mut src, &volume)?;
+        let info = read_psx_info(&self.cue).map_err(|source| PsxPbpError::DiscInfo {
+            path: self.cue.clone(),
+            source,
+        })?;
         info.title_id.as_deref().map(DiscId::parse).transpose()
-    }
-}
-
-/// The data track of a [`DiscImage`] as 2048-byte user sectors.
-struct DataTrack {
-    files: Vec<(File, u64)>,
-    track_type: TrackType,
-    start: u64,
-    sectors: u64,
-    raw: Vec<u8>,
-}
-
-impl SectorSource for DataTrack {
-    fn read_sector(&mut self, lba: u32, buf: &mut [u8; 2048]) -> io::Result<()> {
-        if u64::from(lba) >= self.sectors {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "sector past end of image",
-            ));
-        }
-        let mut sector = self.start + u64::from(lba);
-        for (file, file_sectors) in &self.files {
-            if sector < *file_sectors {
-                file_read_exact_at(file, &mut self.raw, sector * SECTOR_SIZE as u64)?;
-                let (user, _) =
-                    extract_user_data(self.track_type, &self.raw).map_err(io::Error::other)?;
-                buf.copy_from_slice(user);
-                return Ok(());
-            }
-            sector -= file_sectors;
-        }
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "sector past end of image",
-        ))
-    }
-
-    fn total_sectors(&self) -> u64 {
-        self.sectors
     }
 }
 
@@ -402,7 +349,6 @@ mod tests {
         DiscImage::open(&cue)
             .unwrap()
             .reader()
-            .unwrap()
             .read_to_end(&mut bytes)
             .unwrap();
         assert_eq!(bytes.len(), 2 * 2352);

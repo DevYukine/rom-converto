@@ -6,7 +6,8 @@
 //! accepts on custom firmware.
 
 use super::disc::{DiscId, DiscImage};
-use crate::disc::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
+use crate::disc::cue::models::Msf;
+use crate::util::template::truncate_bytes;
 
 /// Bytes of disc image per block: 16 raw sectors.
 pub(crate) const BLOCK_SIZE: usize = 0x9300;
@@ -212,11 +213,11 @@ fn bcd(value: u32) -> u8 {
 }
 
 fn msf_bcd(frames: u32) -> [u8; 3] {
-    let seconds = frames / FRAMES_PER_SECOND;
+    let msf = Msf::from_lba(frames);
     [
-        bcd(seconds / SECONDS_PER_MINUTE),
-        bcd(seconds % SECONDS_PER_MINUTE),
-        bcd(frames % FRAMES_PER_SECOND),
+        bcd(msf.minutes.into()),
+        bcd(msf.seconds.into()),
+        bcd(msf.frames.into()),
     ]
 }
 
@@ -228,17 +229,8 @@ fn put_u32(buf: &mut [u8], at: usize, value: u64) {
 /// Writes `text` into a `slot`-byte field, cut at a character boundary so
 /// the field keeps its NUL terminator.
 fn put_text(buf: &mut [u8], at: usize, slot: usize, text: &str) {
-    let text = truncate_utf8(text, slot - 1);
+    let text = truncate_bytes(text, slot - 1);
     buf[at..at + text.len()].copy_from_slice(text.as_bytes());
-}
-
-/// `text` cut to at most `max` bytes without splitting a character.
-pub(crate) fn truncate_utf8(text: &str, max: usize) -> &str {
-    let mut end = text.len().min(max);
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
 }
 
 #[cfg(test)]
@@ -328,8 +320,9 @@ mod tests {
 
     #[test]
     fn titles_are_cut_at_a_character_boundary() {
-        assert_eq!(truncate_utf8("ab\u{e9}", 3), "ab");
-        assert_eq!(truncate_utf8("abc", 8), "abc");
+        let mut slot = vec![0xFFu8; 8];
+        put_text(&mut slot, 0, 4, "ab\u{e9}");
+        assert_eq!(&slot[..4], b"ab\xFF\xFF", "the 2-byte \u{e9} does not fit 3 bytes");
         let mut slot = vec![0xFFu8; 8];
         put_text(&mut slot, 0, 4, "abcdef");
         assert_eq!(&slot[..4], b"abc\xFF");

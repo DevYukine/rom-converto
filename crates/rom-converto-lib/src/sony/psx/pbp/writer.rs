@@ -15,10 +15,11 @@ use super::error::{PsxPbpError, PsxPbpResult};
 use super::format::{
     BLOCK_SIZE, DISC_ALIGN, DISC_DATA_START, IndexEntry, MAX_BLOCKS, MULTIDISC_TABLE_LEN,
     PSAR_ALIGN, PSTITLEIMG_LEN, block_count, data_end, psisoimg_header, pstitleimg_header,
-    startdat_header, startdat_len, truncate_utf8,
+    startdat_header, startdat_len,
 };
 use crate::sony::psp::pbp::{self, DATA_PSAR, SEGMENT_COUNT};
 use crate::util::sfo::{self, SfoEntry, SfoValue};
+use crate::util::template::truncate_bytes;
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 /// Largest file a FAT32 Memory Stick holds.
@@ -97,7 +98,7 @@ impl Eboot<'_> {
             let blocks = self.checked_blocks(disc)?;
             let base = psar + disc_offset;
             out.seek(SeekFrom::Start(base + DISC_DATA_START))?;
-            let mut reader = disc.reader()?;
+            let mut reader = disc.reader();
             let mut remaining = disc.image_size();
             let mut entries = Vec::with_capacity(blocks as usize);
             stored_len = 0;
@@ -204,7 +205,7 @@ impl Eboot<'_> {
             number("REGION", 0x8000, 4),
             text(
                 "TITLE",
-                truncate_utf8(self.title, SFO_TITLE_SLOT as usize - 1),
+                &truncate_bytes(self.title, SFO_TITLE_SLOT as usize - 1),
                 SFO_TITLE_SLOT,
             ),
         ])?)

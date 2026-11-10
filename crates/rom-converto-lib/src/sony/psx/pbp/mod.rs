@@ -32,6 +32,7 @@ use format::{MAX_DISCS, MULTIDISC_TABLE_LEN};
 use writer::{Assets, Eboot, FAT32_MAX_FILE};
 
 use crate::disc::chd::extract_from_chd;
+use crate::util::fs::has_ext;
 use crate::util::{CancelToken, ProgressReporter, atomic_write, spawn_blocking_with_progress};
 
 /// The loader the EBOOT runs first: it asks the firmware to start the PS1
@@ -102,7 +103,7 @@ async fn build_eboots(
     table: Option<&'static [u8; MULTIDISC_TABLE_LEN]>,
     cancel: CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
-    let sources = if has_extension(input, "m3u") {
+    let sources = if has_ext(input, "m3u") {
         read_playlist(input)?
     } else {
         vec![input.to_path_buf()]
@@ -114,9 +115,9 @@ async fn build_eboots(
     let mut scratch = None;
     let mut cues = Vec::with_capacity(sources.len());
     for (i, source) in sources.iter().enumerate() {
-        if has_extension(source, "cue") {
+        if has_ext(source, "cue") {
             cues.push(source.clone());
-        } else if has_extension(source, "chd") {
+        } else if has_ext(source, "chd") {
             let dir = match &scratch {
                 Some(dir) => dir,
                 None => scratch.insert(
@@ -169,7 +170,7 @@ pub fn derive_output_dir(input: &Path) -> PathBuf {
 /// which the EBOOTs hold at most, plus the tracks a CHD is extracted to
 /// first. Zero for an input that cannot be read; the build reports why.
 pub fn required_bytes(input: &Path) -> u64 {
-    let sources = if has_extension(input, "m3u") {
+    let sources = if has_ext(input, "m3u") {
         read_playlist(input).unwrap_or_default()
     } else {
         vec![input.to_path_buf()]
@@ -177,7 +178,7 @@ pub fn required_bytes(input: &Path) -> u64 {
     sources
         .iter()
         .map(|source| {
-            if has_extension(source, "chd") {
+            if has_ext(source, "chd") {
                 crate::disc::chd::info::read_info(source).map_or(0, |info| 2 * info.logical_bytes)
             } else {
                 DiscImage::open(source).map_or(0, |disc| disc.image_size())
@@ -296,12 +297,6 @@ fn publish(
     })
 }
 
-fn has_extension(path: &Path, ext: &str) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Read};
@@ -418,18 +413,16 @@ mod tests {
     }
 
     /// The format reference's worked example: a 2,479,008-byte disc (66
-    /// blocks), stored deflate, no icons, a 486-byte boot image.
+    /// blocks), stored deflate, no icons, a 480x272 boot image.
     #[tokio::test]
     async fn lays_out_the_worked_example() {
+        use image::Rgba;
+
         let dir = tempfile::tempdir().unwrap();
         let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 1054));
         let splash = dir.path().join("splash.png");
-        // A 480x272 PNG header padded to 486 bytes: kept as given, unread.
-        let mut png = images::PNG_SIGNATURE.to_vec();
-        png.extend_from_slice(b"\0\0\0\x0DIHDR");
-        png.extend_from_slice(&480u32.to_be_bytes());
-        png.extend_from_slice(&272u32.to_be_bytes());
-        png.resize(486, 0);
+        // Already 480x272, so it is kept as given.
+        let png = images::test_fixtures::png(480, 272, Rgba([0x10, 0x20, 0x30, 0xFF]));
         std::fs::write(&splash, &png).unwrap();
         let options = PbpOptions {
             encoding: BlockEncoding::Stored,
@@ -438,7 +431,7 @@ mod tests {
         };
 
         let eboot = build_one(&cue, &dir.path().join("out"), &options).await;
-        assert_eq!(eboot.len(), 3_598_726);
+        assert_eq!(eboot.len(), 0x36_E750 + 0x50 + png.len());
         assert_eq!(word(&eboot, 0x24), 0x1_0000);
         assert_eq!(word(&eboot, 0x10_000 + 0x0C), 0x35_E750);
         assert_eq!(&eboot[0x36_E750..0x36_E758], b"STARTDAT");
