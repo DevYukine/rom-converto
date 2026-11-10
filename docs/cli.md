@@ -978,8 +978,10 @@ playlist of either. A playlist entry is relative to the playlist's folder (`..` 
 an absolute path. A cue or CHD may sit inside an archive; a playlist may not, since only
 one member and a cue sheet's tracks are extracted from an archive. It writes one game folder per EBOOT, named after the disc ID, into
 `OUTPUT_DIR` (default `<INPUT>_psp` next to the input). Copy those folders into `PSP/GAME`
-on the Memory Stick. To write into `PSP/GAME` directly, pass it as `OUTPUT_DIR` with
-`--on-conflict overwrite`: the folder is not emptied, only the EBOOTs are replaced.
+on the Memory Stick, or pass `PSP/GAME` as `OUTPUT_DIR` to write there directly.
+`--on-conflict` applies to this game's EBOOTs, not to the folder, so other games in it are
+never a conflict: `skip` keeps the game's existing EBOOT, `error` refuses it, and `overwrite`
+replaces it. The folder is never emptied.
 
 | Option | Description |
 |---|---|

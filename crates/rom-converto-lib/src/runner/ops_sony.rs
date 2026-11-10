@@ -3,8 +3,10 @@
 use super::invalid_arg;
 use super::models::{RunRequest, RunResponse};
 use super::ops::{
-    ConvertTarget, convert_op, dir_op, required_input, required_output_dir, skipped_already_done,
+    ConvertTarget, conflict_policy, convert_op, dir_op, output_exists, required_input,
+    required_output_dir, skipped, skipped_already_done,
 };
+use crate::util::ConflictPolicy;
 use std::path::Path;
 
 use crate::sony::ps3::Ps3Error;
@@ -125,7 +127,9 @@ pub(crate) async fn psx_to_pbp(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
-    use crate::sony::psx::pbp::{BlockEncoding, PbpOptions, derive_output_dir, required_bytes};
+    use crate::sony::psx::pbp::{
+        BlockEncoding, ExistingEboot, PbpOptions, PsxPbpError, derive_output_dir, required_bytes,
+    };
 
     let input = required_input(&req)?;
     refuse_archived_playlist(&input).await?;
@@ -134,7 +138,30 @@ pub(crate) async fn psx_to_pbp(
         .clone()
         .or_else(|| req.options.output_dir.clone())
         .unwrap_or_else(|| derive_output_dir(&input));
+    // The output folder holds one folder per game and may hold other games
+    // (PSP/GAME), so the conflict policy applies to this game's EBOOTs, not
+    // to the folder being non-empty.
+    let existing = match conflict_policy(&req)? {
+        ConflictPolicy::Overwrite => ExistingEboot::Replace,
+        ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => ExistingEboot::Keep,
+        ConflictPolicy::Error => ExistingEboot::Refuse,
+        ConflictPolicy::Rename => {
+            return Err(invalid_arg(format!(
+                "rename is not supported for directory outputs, use overwrite/skip/error: {}",
+                desired.display()
+            )));
+        }
+    };
+    if desired.is_file() {
+        return Err(invalid_arg(format!(
+            "output path is a file, expected a folder: {}",
+            desired.display()
+        )));
+    }
+    let mut folder_req = req.clone();
+    folder_req.options.on_conflict = Some("overwrite".to_string());
     let options = PbpOptions {
+        existing,
         encoding: match req.options.compression.as_deref() {
             Some(name) => name
                 .parse()
@@ -147,19 +174,31 @@ pub(crate) async fn psx_to_pbp(
         icon0: req.options.icon0.clone(),
         pic1: req.options.pic1.clone(),
     };
-    dir_op(
-        &req,
+    let kept_flag = std::sync::atomic::AtomicBool::new(false);
+    let kept = &kept_flag;
+    let response = dir_op(
+        &folder_req,
         &input,
         &desired,
         "psx.to_pbp",
         required_bytes,
         |source, output| async move {
-            let written =
-                crate::sony::psx::pbp::to_pbp(progress, &source, &output, &options, cancel).await?;
+            let written = crate::sony::psx::pbp::to_pbp(progress, &source, &output, &options, cancel)
+                .await
+                .map_err(|err| match &err {
+                    PsxPbpError::EbootExists(path) => output_exists(path, err.to_string()),
+                    _ => err.into(),
+                })?;
+            kept.store(written.is_empty(), std::sync::atomic::Ordering::Relaxed);
             Ok((written.iter().map(|path| file_len(path)).sum(), None))
         },
     )
-    .await
+    .await?;
+    Ok(if kept_flag.load(std::sync::atomic::Ordering::Relaxed) {
+        skipped(&input, &desired, "psx.to_pbp", None)
+    } else {
+        response
+    })
 }
 
 /// Refuses an archive holding an `.m3u`: staging extracts one member and
@@ -290,6 +329,40 @@ mod tests {
             res.message.contains("game.m3u is a playlist inside an archive"),
             "{res:?}"
         );
+    }
+
+    /// PSP/GAME holds other games, so the policy applies to each game's
+    /// EBOOT, not to the folder being non-empty.
+    #[tokio::test]
+    async fn psx_to_pbp_conflicts_are_per_game_in_a_shared_folder() {
+        use crate::sony::psx::pbp::test_fixtures::{ps1_data_track, write_disc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("GAME");
+        let run = |cue: std::path::PathBuf, policy: &str| {
+            let req = json!({
+                "operation": "psx.to_pbp",
+                "input": cue,
+                "output": game,
+                "options": { "on_conflict": policy },
+            });
+            async move { run_json(&req.to_string(), CancelToken::new()).await }
+        };
+        let first = write_disc(dir.path(), "first", &ps1_data_track("SLUS_999.99", 40));
+        let second = write_disc(dir.path(), "second", &ps1_data_track("SLES_999.95", 40));
+
+        for cue in [&first, &second] {
+            let res = run(cue.clone(), "error").await;
+            assert!(res.ok, "{res:?}");
+        }
+        assert!(game.join("SLUS99999/EBOOT.PBP").is_file());
+        assert!(game.join("SLES99995/EBOOT.PBP").is_file());
+
+        let res = run(first.clone(), "skip").await;
+        assert!(res.ok && res.message.starts_with("Skipped existing"), "{res:?}");
+        let res = run(first, "error").await;
+        assert!(!res.ok, "{res:?}");
+        assert!(res.message.contains("SLUS99999"), "{res:?}");
     }
 
     #[tokio::test]

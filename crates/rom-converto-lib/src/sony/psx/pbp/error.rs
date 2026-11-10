@@ -132,6 +132,11 @@ pub enum PsxPbpError {
         available: u64,
     },
 
+    /// The game's EBOOT already exists and the caller asked not to replace
+    /// it.
+    #[error("{0} already exists")]
+    EbootExists(PathBuf),
+
     /// The EBOOT would not fit a FAT32 Memory Stick.
     #[error("the EBOOT would be {size} bytes, over the 4 GiB a FAT32 file can hold")]
     ExceedsFat32 { size: u64 },

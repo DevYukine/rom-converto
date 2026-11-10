@@ -14,6 +14,9 @@ pub use blocks::BlockEncoding;
 pub use disc::DiscId;
 pub use error::{PsxPbpError, PsxPbpResult};
 
+#[cfg(test)]
+pub(crate) use disc::test_fixtures;
+
 use disc::{DiscImage, read_chd_disc_id, read_playlist};
 use format::{MAX_DISCS, MULTIDISC_TABLE_LEN, POPS_MULTIDISC_TABLE};
 use writer::{Assets, Eboot, FAT32_MAX_FILE};
@@ -39,11 +42,26 @@ const STARTDAT_PNG: &[u8] = include_bytes!(concat!(
     "/../../resources/psx/startdat.png"
 ));
 
+/// What to do when a game's EBOOT already exists in the output folder,
+/// which may hold other games, such as `PSP/GAME`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExistingEboot {
+    /// Replace it.
+    #[default]
+    Replace,
+    /// Leave it and build nothing for this game.
+    Keep,
+    /// Fail with [`PsxPbpError::EbootExists`].
+    Refuse,
+}
+
 /// How to build the EBOOTs. The images may be PNG or JPEG of any size;
 /// each is fitted to the size the PSP shows it at.
 #[derive(Debug, Clone, Default)]
 pub struct PbpOptions {
     pub encoding: BlockEncoding,
+    /// What to do about this game's EBOOTs already in the output folder.
+    pub existing: ExistingEboot,
     /// Title on the XMB; the input's file name when unset.
     pub title: Option<String>,
     /// Disc ID when `SYSTEM.CNF` names none, or to override it.
@@ -59,7 +77,8 @@ pub struct PbpOptions {
 
 /// Builds PS1 EBOOTs from `input` (`.cue`, `.chd` or `.m3u`) into
 /// `output_dir`, one game folder each, ready to copy into `PSP/GAME`.
-/// Returns the EBOOTs written.
+/// Returns the EBOOTs written, none when [`ExistingEboot::Keep`] kept the
+/// game's existing ones.
 ///
 /// # Errors
 /// Returns [`PsxPbpError`] when an input cannot become an EBOOT (see its
@@ -124,6 +143,16 @@ async fn build_eboots(
         let options = options.clone();
         spawn_blocking_with_progress(progress, move |_| check_inputs(sources, &options)).await?
     };
+    if let Some(existing) = existing_eboot(output_dir, &checked.ids[0], checked.inputs.len()) {
+        match options.existing {
+            ExistingEboot::Replace => {}
+            ExistingEboot::Keep => {
+                log::info!("Skipped, EBOOT exists: {}", existing.display());
+                return Ok(Vec::new());
+            }
+            ExistingEboot::Refuse => return Err(PsxPbpError::EbootExists(existing)),
+        }
+    }
 
     // CHDs extract to the system temp folder, never beside the output,
     // which may be the Memory Stick. The folder goes when this returns.
@@ -291,6 +320,15 @@ fn shares_disk(scratch: &Path, output: &Path) -> bool {
             _ => true,
         }
     }
+}
+
+/// The first EBOOT of the game `id` names, with `discs` discs, already in
+/// `output_dir`: its one-file folder or any of its per-disc ones.
+fn existing_eboot(output_dir: &Path, id: &DiscId, discs: usize) -> Option<PathBuf> {
+    std::iter::once(id.sfo())
+        .chain((1..=discs).map(|n| format!("{}-DISC{n}", id.sfo())))
+        .map(|folder| output_dir.join(folder).join("EBOOT.PBP"))
+        .find(|path| path.exists())
 }
 
 /// The file stem a default title and output folder derive from, with any
@@ -891,6 +929,38 @@ mod tests {
         let eboot = out.join("SLUS99999/EBOOT.PBP");
         assert!(!eboot.exists());
         assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_existing_eboot_is_kept_or_refused_without_touching_other_games() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let out = dir.path().join("GAME");
+        let other = out.join("SLES99995/EBOOT.PBP");
+        std::fs::create_dir_all(other.parent().unwrap()).unwrap();
+        std::fs::write(&other, b"another game").unwrap();
+        let build = |existing| {
+            let options = PbpOptions {
+                existing,
+                ..PbpOptions::default()
+            };
+            let (cue, out) = (cue.clone(), out.clone());
+            async move { to_pbp(&NoProgress, &cue, &out, &options, CancelToken::new()).await }
+        };
+
+        // Another game in the folder is no conflict under any policy.
+        let written = build(ExistingEboot::Refuse).await.unwrap();
+        assert_eq!(written, vec![out.join("SLUS99999/EBOOT.PBP")]);
+        let built = std::fs::read(&written[0]).unwrap();
+
+        assert_eq!(build(ExistingEboot::Keep).await.unwrap(), Vec::<PathBuf>::new());
+        let err = build(ExistingEboot::Refuse).await.unwrap_err();
+        assert!(
+            matches!(&err, PsxPbpError::EbootExists(path) if *path == written[0]),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&written[0]).unwrap(), built);
+        assert_eq!(std::fs::read(&other).unwrap(), b"another game");
     }
 
     #[tokio::test]

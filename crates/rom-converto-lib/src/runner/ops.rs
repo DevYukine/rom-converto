@@ -3486,7 +3486,7 @@ pub(crate) struct PreparedOutput {
 
 /// An existing-output refusal carrying the [`OutputExists`] marker, so a
 /// batched run skips the file the way [`prepare_output`]'s refusal does.
-fn output_exists(desired: &Path, message: String) -> anyhow::Error {
+pub(crate) fn output_exists(desired: &Path, message: String) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
         OutputExists(desired.to_path_buf()),
