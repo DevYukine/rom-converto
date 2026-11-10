@@ -728,7 +728,7 @@ const psx: OpDef = {
 			label: "Disc ID (optional)",
 			placeholder: "From SYSTEM.CNF",
 			tooltip:
-				"Four letters and five digits, such as SLUS-00001. Needed only for a disc whose SYSTEM.CNF names no ID. The PSP names the game's save folder after it.",
+				"Four letters and five digits, such as SLUS-99999. Needed only for a disc whose SYSTEM.CNF names no ID. The PSP names the game's save folder after it.",
 		},
 		{
 			kind: "file",

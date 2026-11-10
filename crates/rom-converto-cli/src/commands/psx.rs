@@ -65,7 +65,7 @@ pub struct ToPbpCommand {
     #[arg(long, value_name = "TITLE")]
     pub title: Option<String>,
 
-    /// Disc ID such as SLUS-00001, for a disc whose SYSTEM.CNF names none
+    /// Disc ID such as SLUS-99999, for a disc whose SYSTEM.CNF names none
     #[arg(long = "disc-id", value_name = "ID")]
     pub disc_id: Option<String>,
 
@@ -181,7 +181,7 @@ mod tests {
             "--title",
             "My Game",
             "--disc-id",
-            "SLUS-00001",
+            "SLUS-99999",
             "--splash",
             "boot.png",
             "--icon0",
@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(c.output_dir, Some(PathBuf::from("out")));
         assert_eq!(c.compression, BlockEncodingArg::Stored);
         assert_eq!(c.title.as_deref(), Some("My Game"));
-        assert_eq!(c.disc_id.as_deref(), Some("SLUS-00001"));
+        assert_eq!(c.disc_id.as_deref(), Some("SLUS-99999"));
         assert_eq!(c.splash, Some(PathBuf::from("boot.png")));
         assert_eq!(c.icon0, Some(PathBuf::from("icon.png")));
         assert_eq!(c.pic1, Some(PathBuf::from("back.png")));

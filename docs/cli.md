@@ -985,7 +985,7 @@ on the Memory Stick. To write into `PSP/GAME` directly, pass it as `OUTPUT_DIR` 
 |---|---|
 | `--compression <deflate\|stored>` | `deflate` (default) writes a smaller EBOOT. `stored` keeps every sector unchanged, so the EBOOT is about the size of the disc image |
 | `--title <TITLE>` | Name the XMB shows. Defaults to the input file name without its extensions |
-| `--disc-id <ID>` | Disc ID such as `SLUS-00001`, for a disc whose `SYSTEM.CNF` names none. It also overrides the one `SYSTEM.CNF` names |
+| `--disc-id <ID>` | Disc ID such as `SLUS-99999`, for a disc whose `SYSTEM.CNF` names none. It also overrides the one `SYSTEM.CNF` names |
 | `--splash <IMAGE>` | Image shown while the game starts (480x272), in place of the built-in one |
 | `--icon0 <IMAGE>` | XMB icon (144x80), such as the game's cover |
 | `--pic1 <IMAGE>` | XMB background (480x272) |
