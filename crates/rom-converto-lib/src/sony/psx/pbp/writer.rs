@@ -1,11 +1,5 @@
-//! Writes one PS1 `EBOOT.PBP`: the PBP container, `PARAM.SFO`, the
-//! loader, then `DATA.PSAR` with one PSISOIMG per disc and the STARTDAT
-//! boot image after the last.
-//!
-//! The disc data streams through once, its blocks encoded on a worker pool.
-//! Each PSISOIMG header, whose index depends on the encoded block sizes, is
-//! written after its disc's data by seeking back; the gaps the seeks leave
-//! are zeros.
+//! Writes one PS1 `EBOOT.PBP`, encoding disc blocks on a worker pool and
+//! seeking back to fill each PSISOIMG header once its index is known.
 
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
@@ -245,8 +239,8 @@ impl Eboot<'_> {
         Ok(pbp::layout(&sizes, PSAR_ALIGN))
     }
 
-    /// The nine keys of a PS1 `PARAM.SFO`. Fixed slots make it 944 bytes,
-    /// so the disc ID and title can be patched in place.
+    /// The nine keys of a PS1 `PARAM.SFO`, in fixed slots that make it 944
+    /// bytes.
     fn param_sfo(&self) -> PsxPbpResult<Vec<u8>> {
         let text = |key, value: &str, slot| SfoEntry {
             key,

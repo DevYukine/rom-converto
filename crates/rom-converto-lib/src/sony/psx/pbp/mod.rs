@@ -1,17 +1,5 @@
-//! PS1 disc images to `EBOOT.PBP` files the PSP's built-in PS1 emulator
-//! runs on custom firmware.
-//!
-//! An EBOOT carries a 944-byte `PARAM.SFO` (category `ME`), a small loader
-//! module (`DATA.PSP`), the disc data in 0x9300-byte deflate-framed blocks
-//! behind one PSISOIMG header per disc, and a STARTDAT boot image after the
-//! last disc. Inputs are cue sheets with raw 2352-byte sectors, CD-mode
-//! CHDs (extracted to a scratch cue sheet first) and `.m3u` playlists of
-//! either.
-//!
-//! A playlist becomes one EBOOT with in-game disc switching when the build
-//! carries the multi-disc table and the discs fit one file; otherwise each
-//! disc becomes its own EBOOT carrying disc 1's ID, so they share one
-//! memory card.
+//! PS1 disc images (`.cue`, CD-mode `.chd`, `.m3u`) to `EBOOT.PBP` files
+//! for the PSP's built-in PS1 emulator; the layout is in `docs/formats.md`.
 
 mod blocks;
 mod disc;

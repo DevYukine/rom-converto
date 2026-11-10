@@ -136,7 +136,9 @@ pub(crate) async fn psx_to_pbp(
         .unwrap_or_else(|| derive_output_dir(&input));
     let options = PbpOptions {
         encoding: match req.options.compression.as_deref() {
-            Some(name) => name.parse().map_err(invalid_arg)?,
+            Some(name) => name
+                .parse()
+                .map_err(|err: crate::sony::psx::pbp::PsxPbpError| invalid_arg(err.to_string()))?,
             None => BlockEncoding::default(),
         },
         title: req.options.title.clone(),

@@ -101,6 +101,10 @@ pub enum PsxPbpError {
     #[error("{0}: the playlist names no discs")]
     EmptyPlaylist(PathBuf),
 
+    /// A block encoding other than `deflate` or `stored`.
+    #[error("unknown block encoding {0:?}: expected deflate or stored")]
+    UnknownEncoding(String),
+
     /// An input that is neither a cue sheet, a CHD, nor a playlist.
     #[error("{0}: expected a .cue, .chd or .m3u file")]
     UnsupportedInput(PathBuf),

@@ -1,9 +1,5 @@
-//! The fixed structures of a PS1 EBOOT's `DATA.PSAR`: the PSISOIMG header
-//! of each disc with its table of contents and block index, the PSTITLEIMG
-//! header of a multi-disc file, and the STARTDAT boot image.
-//!
-//! Every field not written here is zero, which the PSP's PS1 emulator
-//! accepts on custom firmware.
+//! The fixed structures of a PS1 EBOOT's `DATA.PSAR`: PSISOIMG and
+//! PSTITLEIMG headers, the table of contents, the block index, STARTDAT.
 
 use super::disc::{DiscId, DiscImage};
 use super::error::{PsxPbpError, PsxPbpResult};

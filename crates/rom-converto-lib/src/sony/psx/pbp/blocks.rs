@@ -1,7 +1,5 @@
-//! Block encodings for a PS1 EBOOT's disc data. Custom firmware inflates
-//! every block, so each one is raw deflate: compressed, or a single stored
-//! deflate block when compressing would not shrink it. A plain raw block
-//! never boots.
+//! Block encodings for a PS1 EBOOT's disc data: raw deflate, compressed or
+//! stored, since custom firmware inflates every block.
 
 use flate2::{Compress, Compression, FlushCompress, Status};
 
@@ -27,15 +25,13 @@ pub enum BlockEncoding {
 }
 
 impl std::str::FromStr for BlockEncoding {
-    type Err = String;
+    type Err = PsxPbpError;
 
-    fn from_str(name: &str) -> Result<Self, Self::Err> {
+    fn from_str(name: &str) -> PsxPbpResult<Self> {
         match name {
             "deflate" => Ok(Self::Deflate),
             "stored" => Ok(Self::Stored),
-            other => Err(format!(
-                "unknown block encoding {other:?}: expected deflate or stored"
-            )),
+            other => Err(PsxPbpError::UnknownEncoding(other.to_string())),
         }
     }
 }
@@ -47,6 +43,8 @@ pub(crate) struct BlockEncoder {
 }
 
 impl BlockEncoder {
+    /// An encoder for `encoding`; deflate keeps one compressor, reset per
+    /// block.
     pub fn new(encoding: BlockEncoding) -> Self {
         Self {
             compress: (encoding == BlockEncoding::Deflate)

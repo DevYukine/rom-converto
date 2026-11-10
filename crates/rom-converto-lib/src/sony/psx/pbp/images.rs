@@ -1,10 +1,4 @@
-//! The images a user gives for the boot screen and the XMB, fitted to the
-//! sizes the PSP shows them at.
-//!
-//! A PNG already at the right size is kept byte for byte. Anything else
-//! (another size, or a JPEG such as a cover scan) is scaled to fit inside
-//! the frame, keeping its aspect ratio, and centred on the frame's
-//! background.
+//! The boot screen and XMB images, fitted to the sizes the PSP shows them at.
 
 use std::path::Path;
 

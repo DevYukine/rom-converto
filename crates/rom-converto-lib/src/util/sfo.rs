@@ -106,7 +106,7 @@ impl Sfo {
 }
 
 /// One `\0PSF` entry to write: its key, its value, and the slot the value
-/// is padded to, so a later in-place patch has a fixed place to land.
+/// is padded to.
 pub(crate) struct SfoEntry<'a> {
     pub key: &'a str,
     pub value: SfoValue,
