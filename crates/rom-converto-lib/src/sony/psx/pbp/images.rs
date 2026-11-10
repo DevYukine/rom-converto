@@ -49,9 +49,13 @@ pub(crate) const SPLASH: Frame = PIC1;
 ///
 /// # Errors
 /// Returns [`PsxPbpError::InvalidImage`] when the file is not a PNG or JPEG
-/// the decoder can read, and [`PsxPbpError::Io`] when it cannot be read.
+/// the decoder can read, and [`PsxPbpError::ReadImage`] when it cannot be
+/// read.
 pub(crate) fn fit(path: &Path, frame: Frame) -> PsxPbpResult<Vec<u8>> {
-    let bytes = std::fs::read(path)?;
+    let bytes = std::fs::read(path).map_err(|source| PsxPbpError::ReadImage {
+        path: path.to_path_buf(),
+        source,
+    })?;
     let decoded = image::load_from_memory(&bytes).map_err(|source| PsxPbpError::InvalidImage {
         path: path.to_path_buf(),
         source,

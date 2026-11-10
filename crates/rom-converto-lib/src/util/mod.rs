@@ -72,8 +72,9 @@ pub const BYTES_PER_MB: f64 = 1_000_000.0;
 /// the same set the frontend's derived-output helpers use.
 const DERIVE_IMAGE_EXTS: &[&str] = &[
     "3ds", "3dsx", "bcia", "bcci", "bcxi", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
-    "gcm", "gcz", "gdi", "iso", "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs", "wia", "wua",
-    "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
+    "gcm", "gcz", "gdi", "iso", "m3u", "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs", "wia",
+    "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi",
+    "zso",
 ];
 
 /// The file-name stem a default output derives from. An archive extension
@@ -672,6 +673,7 @@ mod tests {
             ("game.nsp.zip", "game"),
             ("game.zip", "game"),
             ("game.cue.rar", "game"),
+            ("game.m3u", "game"),
             ("x.tar.nsp", "x.tar"),
             ("game.tar.zip", "game.tar"),
             ("game.nsp", "game"),

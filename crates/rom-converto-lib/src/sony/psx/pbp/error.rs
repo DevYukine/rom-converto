@@ -121,9 +121,26 @@ pub enum PsxPbpError {
     #[error("{field} {value} is past the 4 GiB a PS1 EBOOT header can address")]
     HeaderFieldOverflow { field: &'static str, value: u64 },
 
+    /// The system temp folder has no room for the CHDs' extracted tracks.
+    #[error(
+        "not enough free space in {dir} to extract the CHDs: need about {needed} bytes, {available} available; point TMPDIR at a disk with more room"
+    )]
+    ScratchSpace {
+        dir: PathBuf,
+        needed: u64,
+        available: u64,
+    },
+
     /// The EBOOT would not fit a FAT32 Memory Stick.
     #[error("the EBOOT would be {size} bytes, over the 4 GiB a FAT32 file can hold")]
     ExceedsFat32 { size: u64 },
+
+    /// An image given for the splash or an icon cannot be read.
+    #[error("{path}: cannot read the image: {source}")]
+    ReadImage {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 
     /// An image given for the splash or an icon is not a PNG or JPEG the
     /// decoder can read.

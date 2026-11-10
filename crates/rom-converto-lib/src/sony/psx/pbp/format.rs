@@ -183,7 +183,7 @@ fn table_of_contents(disc: &DiscImage) -> PsxPbpResult<Vec<u8>> {
         [control, 0, point, 0, 0, 0, 0, p[0], p[1], p[2]]
     };
     let sectors = u32::try_from(disc.sectors()).map_err(|_| PsxPbpError::DiscTooLong {
-        path: disc.cue.clone(),
+        path: disc.source.clone(),
         sectors: disc.sectors(),
         max: MAX_SECTORS,
     })?;
@@ -251,7 +251,7 @@ mod tests {
     fn disc(sectors: u32) -> (tempfile::TempDir, DiscImage) {
         let dir = tempfile::tempdir().unwrap();
         let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", sectors));
-        let disc = DiscImage::open(&cue).unwrap();
+        let disc = DiscImage::open(&cue, &cue).unwrap();
         (dir, disc)
     }
 

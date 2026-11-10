@@ -28,6 +28,19 @@ pub(crate) const FAT32_MAX_FILE: u64 = u32::MAX as u64;
 const SFO_TITLE_SLOT: u32 = 128;
 const SFO_LICENSE: &str = "rom-converto";
 
+/// Bytes a disc of `image_size` bytes takes in an EBOOT at most: its
+/// PSISOIMG header, every block stored, and the alignment before the next.
+pub(crate) fn max_disc_bytes(image_size: u64) -> u64 {
+    DISC_DATA_START + block_count(image_size) * STORED_BLOCK_LEN as u64 + DISC_ALIGN
+}
+
+/// Bytes an EBOOT takes besides its discs at most, with `assets_len` bytes
+/// of loader and boot image: the PBP header and `PARAM.SFO` padded to
+/// `DATA.PSAR`, the PSTITLEIMG, and the STARTDAT header.
+pub(crate) fn max_fixed_bytes(assets_len: usize) -> u64 {
+    PSAR_ALIGN + PSTITLEIMG_LEN + startdat_len(0) + assets_len as u64
+}
+
 /// The files a PS1 EBOOT carries besides its discs.
 pub(crate) struct Assets<'a> {
     pub data_psp: &'a [u8],
@@ -164,7 +177,7 @@ impl Eboot<'_> {
         let blocks = block_count(disc.image_size());
         if blocks > MAX_BLOCKS {
             return Err(PsxPbpError::IndexOverflow {
-                path: disc.cue.clone(),
+                path: disc.source.clone(),
                 blocks,
                 max: MAX_BLOCKS,
             });

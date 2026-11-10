@@ -27,13 +27,16 @@ pub use blocks::BlockEncoding;
 pub use disc::DiscId;
 pub use error::{PsxPbpError, PsxPbpResult};
 
-use disc::{DiscImage, read_playlist};
+use disc::{DiscImage, read_chd_disc_id, read_playlist};
 use format::{MAX_DISCS, MULTIDISC_TABLE_LEN};
 use writer::{Assets, Eboot, FAT32_MAX_FILE};
 
 use crate::disc::chd::extract_from_chd;
 use crate::util::fs::has_ext;
-use crate::util::{CancelToken, ProgressReporter, atomic_write, spawn_blocking_with_progress};
+use crate::util::{
+    CancelToken, DEFAULT_SPACE_HEADROOM, ProgressReporter, available_space, derive_output_stem,
+    publish_set, scratch_output_file, space_shortfall, spawn_blocking_with_progress,
+};
 
 /// The loader the EBOOT runs first: it asks the firmware to start the PS1
 /// emulator on its own PBP. Built from `resources/psx/data_psp`.
@@ -74,7 +77,7 @@ pub struct PbpOptions {
 /// # Errors
 /// Returns [`PsxPbpError`] when an input cannot become an EBOOT (see its
 /// variants), when an image is not a PNG or JPEG, on I/O failure, or when
-/// `cancel` fires. Nothing is published for an EBOOT that failed.
+/// `cancel` fires. Nothing is published unless every EBOOT was written.
 pub async fn to_pbp(
     progress: &dyn ProgressReporter,
     input: &Path,
@@ -93,6 +96,28 @@ pub async fn to_pbp(
     .await
 }
 
+/// A disc as given: a cue sheet already read, or a CHD still to extract.
+enum Input {
+    Cue(DiscImage),
+    Chd(PathBuf),
+}
+
+/// What the inputs and options alone decide, settled before any CHD is
+/// extracted.
+struct Checked {
+    inputs: Vec<Input>,
+    /// One per disc; disc 1's is the EBOOT's own ID.
+    ids: Vec<DiscId>,
+    images: Images,
+}
+
+/// The fitted images an EBOOT carries.
+struct Images {
+    startdat_png: Vec<u8>,
+    icon0: Option<Vec<u8>>,
+    pic1: Option<Vec<u8>>,
+}
+
 /// [`to_pbp`] with the multi-disc table given, so both multi-disc layouts
 /// can be exercised whatever this build carries.
 async fn build_eboots(
@@ -108,48 +133,52 @@ async fn build_eboots(
     } else {
         vec![input.to_path_buf()]
     };
+    let checked = {
+        let options = options.clone();
+        spawn_blocking_with_progress(progress, move |_| check_inputs(sources, &options)).await?
+    };
 
-    std::fs::create_dir_all(output_dir)?;
-    // Extracted CHD tracks live beside the output so the space the run
-    // needs is checked on one disk; the folder goes when this returns.
-    let mut scratch = None;
-    let mut cues = Vec::with_capacity(sources.len());
-    for (i, source) in sources.iter().enumerate() {
-        if has_ext(source, "cue") {
-            cues.push(source.clone());
-        } else if has_ext(source, "chd") {
-            let dir = match &scratch {
-                Some(dir) => dir,
-                None => scratch.insert(
-                    tempfile::Builder::new()
-                        .prefix(".rom-converto-")
-                        .tempdir_in(output_dir)?,
-                ),
-            };
-            let cue = dir.path().join(format!("disc{}.cue", i + 1));
-            extract_from_chd(progress, source.clone(), cue.clone(), None, cancel.clone()).await?;
-            cues.push(cue);
-        } else {
-            return Err(PsxPbpError::UnsupportedInput(source.clone()));
-        }
+    // CHDs extract to the system temp folder, never beside the output,
+    // which may be the Memory Stick. The folder goes when this returns.
+    let chds: Vec<&Path> = checked
+        .inputs
+        .iter()
+        .filter_map(|input| match input {
+            Input::Chd(path) => Some(path.as_path()),
+            Input::Cue(_) => None,
+        })
+        .collect();
+    let scratch = if chds.is_empty() {
+        None
+    } else {
+        Some(scratch_for(&chds)?)
+    };
+    let mut discs = Vec::with_capacity(checked.inputs.len());
+    for (i, input) in checked.inputs.into_iter().enumerate() {
+        discs.push(match input {
+            Input::Cue(disc) => disc,
+            Input::Chd(chd) => {
+                let dir = scratch.as_ref().expect("a scratch folder for every CHD");
+                let cue = dir.path().join(format!("disc{}.cue", i + 1));
+                extract_from_chd(progress, chd.clone(), cue.clone(), None, cancel.clone()).await?;
+                DiscImage::open(&cue, &chd)?
+            }
+        });
     }
 
-    let title = options.title.clone().unwrap_or_else(|| {
-        input
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    });
+    let title = options.title.clone().unwrap_or_else(|| default_stem(input));
     let output_dir = output_dir.to_path_buf();
-    let options = options.clone();
+    let encoding = options.encoding;
+    let (ids, images) = (checked.ids, checked.images);
     let written = spawn_blocking_with_progress(progress, move |progress| {
         build(
             progress,
-            &cues,
+            &discs,
+            &ids,
+            &images,
             &title,
             &output_dir,
-            &options,
+            encoding,
             table,
             &cancel,
         )
@@ -159,57 +188,50 @@ async fn build_eboots(
     written
 }
 
-/// The output folder a build of `input` defaults to: `<stem>_psp` beside it.
-pub fn derive_output_dir(input: &Path) -> PathBuf {
-    let mut name = input.file_stem().unwrap_or_default().to_os_string();
-    name.push("_psp");
-    input.with_file_name(name)
-}
-
-/// Bytes a build of `input` needs on the output disk: the disc images,
-/// which the EBOOTs hold at most, plus the tracks a CHD is extracted to
-/// first. Zero for an input that cannot be read; the build reports why.
-pub fn required_bytes(input: &Path) -> u64 {
-    let sources = if has_ext(input, "m3u") {
-        read_playlist(input).unwrap_or_default()
-    } else {
-        vec![input.to_path_buf()]
+/// Reads every cue sheet, every disc ID and every image, and parses
+/// `--disc-id`, so a mistake in any of them costs no CHD extraction.
+fn check_inputs(sources: Vec<PathBuf>, options: &PbpOptions) -> PsxPbpResult<Checked> {
+    let given_id = options.disc_id.as_deref().map(DiscId::parse).transpose()?;
+    let images = Images {
+        startdat_png: match &options.splash {
+            Some(path) => images::fit(path, images::SPLASH)?,
+            None => STARTDAT_PNG.to_vec(),
+        },
+        icon0: options
+            .icon0
+            .as_deref()
+            .map(|path| images::fit(path, images::ICON0))
+            .transpose()?,
+        pic1: options
+            .pic1
+            .as_deref()
+            .map(|path| images::fit(path, images::PIC1))
+            .transpose()?,
     };
-    sources
-        .iter()
-        .map(|source| {
-            if has_ext(source, "chd") {
-                crate::disc::chd::info::read_info(source).map_or(0, |info| 2 * info.logical_bytes)
-            } else {
-                DiscImage::open(source).map_or(0, |disc| disc.image_size())
-            }
-        })
-        .sum()
-}
 
-fn build(
-    progress: &dyn ProgressReporter,
-    cues: &[PathBuf],
-    title: &str,
-    output_dir: &Path,
-    options: &PbpOptions,
-    table: Option<&[u8; MULTIDISC_TABLE_LEN]>,
-    cancel: &CancelToken,
-) -> PsxPbpResult<Vec<PathBuf>> {
-    let discs = cues
-        .iter()
-        .map(|cue| DiscImage::open(cue))
-        .collect::<PsxPbpResult<Vec<_>>>()?;
+    let mut inputs = Vec::with_capacity(sources.len());
     // Every disc is read, even under --disc-id, so a PS2 disc is refused.
-    let read_ids = discs
-        .iter()
-        .map(DiscImage::read_disc_id)
-        .collect::<PsxPbpResult<Vec<_>>>()?;
-    let first_id = match &options.disc_id {
-        Some(text) => DiscId::parse(text)?,
-        None => read_ids[0]
-            .clone()
-            .ok_or_else(|| PsxPbpError::NoDiscId(discs[0].cue.clone()))?,
+    let mut read_ids = Vec::with_capacity(sources.len());
+    for source in sources {
+        if has_ext(&source, "cue") {
+            let disc = DiscImage::open(&source, &source)?;
+            read_ids.push(disc.read_disc_id()?);
+            inputs.push(Input::Cue(disc));
+        } else if has_ext(&source, "chd") {
+            read_ids.push(read_chd_disc_id(&source)?);
+            inputs.push(Input::Chd(source));
+        } else {
+            return Err(PsxPbpError::UnsupportedInput(source));
+        }
+    }
+    let first_id = match given_id {
+        Some(id) => id,
+        None => read_ids[0].clone().ok_or_else(|| {
+            PsxPbpError::NoDiscId(match &inputs[0] {
+                Input::Cue(disc) => disc.source.clone(),
+                Input::Chd(chd) => chd.clone(),
+            })
+        })?,
     };
     let mut ids = vec![first_id.clone()];
     // A later disc without a readable ID still boots under disc 1's.
@@ -218,48 +240,109 @@ fn build(
             .iter()
             .map(|id| id.clone().unwrap_or_else(|| first_id.clone())),
     );
+    Ok(Checked {
+        inputs,
+        ids,
+        images,
+    })
+}
 
-    let startdat_png = match &options.splash {
-        Some(path) => images::fit(path, images::SPLASH)?,
-        None => STARTDAT_PNG.to_vec(),
+/// A private folder in the system temp folder with room for `chds`
+/// extracted.
+fn scratch_for(chds: &[&Path]) -> PsxPbpResult<tempfile::TempDir> {
+    let dir = tempfile::Builder::new().prefix("rom-converto-").tempdir()?;
+    let needed: u64 = chds
+        .iter()
+        .map(|chd| crate::disc::chd::info::read_info(chd).map_or(0, |info| info.logical_bytes))
+        .sum();
+    if let Ok(available) = available_space(dir.path())
+        && space_shortfall(available, needed, DEFAULT_SPACE_HEADROOM).is_some()
+    {
+        return Err(PsxPbpError::ScratchSpace {
+            dir: dir.path().to_path_buf(),
+            needed: needed.saturating_add(DEFAULT_SPACE_HEADROOM),
+            available,
+        });
+    }
+    Ok(dir)
+}
+
+/// The file stem a default title and output folder derive from, with any
+/// archive and image extension peeled: `game.cue.zip` gives `game`.
+fn default_stem(input: &Path) -> String {
+    derive_output_stem(input.file_name().unwrap_or_default())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The output folder a build of `input` defaults to: `<stem>_psp` beside it.
+pub fn derive_output_dir(input: &Path) -> PathBuf {
+    input.with_file_name(format!("{}_psp", default_stem(input)))
+}
+
+/// Bytes a build of `input` writes on the output disk at most: each disc
+/// stored uncompressed behind its 1 MiB header, plus the PSTITLEIMG and the
+/// built-in loader and boot image. Images given as options come on top.
+/// Discs that cannot be read count zero; the build reports why.
+pub fn required_bytes(input: &Path) -> u64 {
+    let sources = if has_ext(input, "m3u") {
+        read_playlist(input).unwrap_or_default()
+    } else {
+        vec![input.to_path_buf()]
     };
-    let icon0 = options
-        .icon0
-        .as_deref()
-        .map(|path| images::fit(path, images::ICON0))
-        .transpose()?;
-    let pic1 = options
-        .pic1
-        .as_deref()
-        .map(|path| images::fit(path, images::PIC1))
-        .transpose()?;
+    let discs: u64 = sources
+        .iter()
+        .map(|source| {
+            let image = if has_ext(source, "chd") {
+                crate::disc::chd::info::read_info(source).map_or(0, |info| info.logical_bytes)
+            } else {
+                DiscImage::open(source, source).map_or(0, |disc| disc.image_size())
+            };
+            writer::max_disc_bytes(image)
+        })
+        .sum();
+    discs + writer::max_fixed_bytes(DATA_PSP.len() + STARTDAT_PNG.len())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build(
+    progress: &dyn ProgressReporter,
+    discs: &[DiscImage],
+    ids: &[DiscId],
+    images: &Images,
+    title: &str,
+    output_dir: &Path,
+    encoding: BlockEncoding,
+    table: Option<&[u8; MULTIDISC_TABLE_LEN]>,
+    cancel: &CancelToken,
+) -> PsxPbpResult<Vec<PathBuf>> {
+    let first_id = &ids[0];
     let assets = Assets {
         data_psp: DATA_PSP,
-        startdat_png: &startdat_png,
-        icon0: icon0.as_deref().unwrap_or_default(),
-        pic1: pic1.as_deref().unwrap_or_default(),
+        startdat_png: &images.startdat_png,
+        icon0: images.icon0.as_deref().unwrap_or_default(),
+        pic1: images.pic1.as_deref().unwrap_or_default(),
     };
 
     let together = Eboot {
         title,
-        id: &first_id,
-        discs: discs.iter().zip(&ids).collect(),
+        id: first_id,
+        discs: discs.iter().zip(ids).collect(),
         table: table.filter(|_| (2..=MAX_DISCS).contains(&discs.len())),
-        encoding: options.encoding,
+        encoding,
         assets: &assets,
     };
     let fits_one =
         discs.len() == 1 || (together.table.is_some() && together.max_size()? <= FAT32_MAX_FILE);
     if fits_one {
         if discs.len() > 1 {
-            progress.warn(&format!(
+            log::info!(
                 "{} discs in one EBOOT; switch discs from the HOME menu",
                 discs.len()
-            ));
+            );
         }
         let path = output_dir.join(first_id.sfo()).join("EBOOT.PBP");
-        publish(&together, &path, progress, cancel)?;
-        return Ok(vec![path]);
+        return publish(vec![(together, path)], progress, cancel);
     }
 
     progress.warn(&format!(
@@ -267,41 +350,61 @@ fn build(
          then start the next disc's EBOOT",
         discs.len()
     ));
-    let mut written = Vec::with_capacity(discs.len());
-    for (n, disc) in discs.iter().enumerate() {
-        let disc_title = format!("{title} (Disc {})", n + 1);
-        let one = Eboot {
-            title: &disc_title,
-            id: &first_id,
-            discs: vec![(disc, &first_id)],
-            table: None,
-            encoding: options.encoding,
-            assets: &assets,
-        };
-        let path = output_dir
-            .join(format!("{}-DISC{}", first_id.sfo(), n + 1))
-            .join("EBOOT.PBP");
-        publish(&one, &path, progress, cancel)?;
-        written.push(path);
-    }
-    Ok(written)
+    let titles: Vec<String> = (1..=discs.len())
+        .map(|n| format!("{title} (Disc {n})"))
+        .collect();
+    let eboots = discs
+        .iter()
+        .zip(&titles)
+        .enumerate()
+        .map(|(n, (disc, disc_title))| {
+            let eboot = Eboot {
+                title: disc_title,
+                id: first_id,
+                discs: vec![(disc, first_id)],
+                table: None,
+                encoding,
+                assets: &assets,
+            };
+            let path = output_dir
+                .join(format!("{}-DISC{}", first_id.sfo(), n + 1))
+                .join("EBOOT.PBP");
+            (eboot, path)
+        })
+        .collect();
+    publish(eboots, progress, cancel)
 }
 
-/// Writes `eboot` to `path`, refusing before the first byte a file that
-/// could pass FAT32's limit.
+/// Writes every EBOOT to a scratch file beside its path, then publishes
+/// them together, so a failure leaves no EBOOT of the set behind and every
+/// earlier file in place. A file that could pass FAT32's limit is refused
+/// before the first byte.
 fn publish(
-    eboot: &Eboot<'_>,
-    path: &Path,
+    eboots: Vec<(Eboot<'_>, PathBuf)>,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
-) -> PsxPbpResult<()> {
-    let size = eboot.max_size()?;
-    if size > FAT32_MAX_FILE {
-        return Err(PsxPbpError::ExceedsFat32 { size });
+) -> PsxPbpResult<Vec<PathBuf>> {
+    for (eboot, _) in &eboots {
+        let size = eboot.max_size()?;
+        if size > FAT32_MAX_FILE {
+            return Err(PsxPbpError::ExceedsFat32 { size });
+        }
     }
-    atomic_write(path, true, |out| {
-        eboot.write(out, progress, cancel).map(|_| ())
-    })
+    let mut written = Vec::with_capacity(eboots.len());
+    for (eboot, path) in &eboots {
+        let (mut file, temp) = scratch_output_file(path)?.into_parts();
+        eboot.write(&mut file, progress, cancel)?;
+        written.push(temp);
+    }
+    publish_set(
+        written
+            .into_iter()
+            .zip(&eboots)
+            .map(|(temp, (_, path))| (temp, path.as_path()))
+            .collect(),
+        true,
+    )?;
+    Ok(eboots.into_iter().map(|(_, path)| path).collect())
 }
 
 #[cfg(test)]
@@ -559,6 +662,134 @@ mod tests {
         assert!(from_cue == from_chd);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path().join("b")).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "scratch tracks removed");
+    }
+
+    async fn chd_of(cue: &Path) -> PathBuf {
+        use crate::disc::chd::{ChdOptions, convert_to_chd};
+
+        let chd = cue.with_extension("chd");
+        convert_to_chd(
+            &NoProgress,
+            cue.to_path_buf(),
+            chd.clone(),
+            ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        chd
+    }
+
+    #[tokio::test]
+    async fn a_missing_image_fails_before_a_chd_is_extracted_and_names_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let chd = chd_of(&cue).await;
+        let icon = dir.path().join("cover.png");
+        let options = PbpOptions {
+            icon0: Some(icon.clone()),
+            ..PbpOptions::default()
+        };
+        let err = to_pbp(
+            &NoProgress,
+            &chd,
+            &dir.path().join("out"),
+            &options,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, PsxPbpError::ReadImage { path, .. } if *path == icon),
+            "{err}"
+        );
+        assert!(err.to_string().contains("cover.png"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_ps2_chd_is_refused_naming_the_chd() {
+        use super::disc::test_fixtures::ps2_cd_data_track;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "ps2", &ps2_cd_data_track(40));
+        let chd = chd_of(&cue).await;
+        let err = to_pbp(
+            &NoProgress,
+            &chd,
+            &dir.path().join("out"),
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, PsxPbpError::NotPs1Disc { path, .. } if *path == chd),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_failed_disc_publishes_none_of_its_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let discs: Vec<DiscImage> = read_playlist(&m3u)
+            .unwrap()
+            .iter()
+            .map(|cue| DiscImage::open(cue, cue).unwrap())
+            .collect();
+        std::fs::remove_file(dir.path().join("game (Disc 2).bin")).unwrap();
+        let ids = vec![DiscId::parse("SLPS-02005").unwrap(); 2];
+        let images = Images {
+            startdat_png: STARTDAT_PNG.to_vec(),
+            icon0: None,
+            pic1: None,
+        };
+        let out = dir.path().join("out");
+        let err = build(
+            &NoProgress,
+            &discs,
+            &ids,
+            &images,
+            "game",
+            &out,
+            BlockEncoding::Stored,
+            None,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Io(_)), "{err}");
+        for folder in ["SLPS02005-DISC1", "SLPS02005-DISC2"] {
+            let left: Vec<_> = std::fs::read_dir(out.join(folder))
+                .map(|entries| entries.map(|e| e.unwrap().file_name()).collect())
+                .unwrap_or_default();
+            assert!(left.is_empty(), "{folder}: {left:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn required_bytes_bounds_a_stored_eboot() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 301));
+        let options = PbpOptions {
+            encoding: BlockEncoding::Stored,
+            ..PbpOptions::default()
+        };
+        let eboot = build_one(&cue, &dir.path().join("out"), &options).await;
+        let bound = required_bytes(&cue);
+        assert!(bound >= eboot.len() as u64, "{bound} < {}", eboot.len());
+        assert!(bound > 301 * 2352 + 0x10_0000, "{bound}");
+    }
+
+    #[test]
+    fn default_output_peels_archive_and_image_extensions() {
+        assert_eq!(
+            derive_output_dir(Path::new("/roms/game.cue.zip")),
+            Path::new("/roms/game_psp")
+        );
+        assert_eq!(
+            derive_output_dir(Path::new("/roms/game.m3u")),
+            Path::new("/roms/game_psp")
+        );
     }
 
     #[tokio::test]
