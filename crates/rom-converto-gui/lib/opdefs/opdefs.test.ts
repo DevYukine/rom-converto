@@ -43,6 +43,16 @@ describe("op registry", () => {
 		expect(templated.request.options.output_dir).toBe("/roms");
 	});
 
+	it("writes PS1 game folders straight into a picked folder, like the CLI", () => {
+		const def = defs.find((def) => def.storeId === "psx-to-pbp")!;
+		const item = { ...ITEM, path: "/roms/Game.cue.zip" };
+		const store = def.useStore();
+		expect(def.buildArgs(store, item, "task-1").request.output).toBe("/roms/Game_psp");
+		store.outputDir = "/Volumes/PSP/PSP/GAME/";
+		expect(def.buildArgs(store, item, "task-1").request.output).toBe("/Volumes/PSP/PSP/GAME/");
+		expect(def.deriveOutput?.(item.path, store)).toBe("/Volumes/PSP/PSP/GAME/");
+	});
+
 	it("never sends rename for pages whose output is a directory", () => {
 		for (const id of [
 			"ctr-unbundle",

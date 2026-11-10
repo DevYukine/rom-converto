@@ -19,9 +19,9 @@ const DECOMPRESS_MAP: Record<string, string> = {
 // ("10.000 Bullets (Europe)", "Super Mario Bros. U").
 const IMAGE_EXTS = new Set([
   "3ds", "3dsx", "bcia", "bcci", "bcxi", "bin", "cci", "chd", "cia", "cso",
-  "cue", "cxi", "dax", "gcm", "gcz", "gdi", "iso", "nds", "nsp", "nsz", "pbp",
-  "pkg", "rvz", "wbfs", "wia", "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds",
-  "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
+  "cue", "cxi", "dax", "gcm", "gcz", "gdi", "iso", "m3u", "nds", "nsp", "nsz",
+  "pbp", "pkg", "rvz", "wbfs", "wia", "wua", "wud", "wux", "xci", "xcz", "xiso",
+  "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
 ]);
 
 function getExt(path: string): string {
@@ -284,7 +284,5 @@ export function deriveGodDir(input: string): string {
 // PS1 disc image -> EBOOT conversion writes one game folder per EBOOT into a
 // sibling directory, matching the runner's default.
 export function derivePbpDir(input: string): string {
-  const source = stripArchiveExt(input);
-  const stem = getExt(source) === "m3u" ? source.slice(0, source.lastIndexOf(".")) : stemOf(source);
-  return `${stem}_psp`;
+  return `${stemOf(stripArchiveExt(input))}_psp`;
 }

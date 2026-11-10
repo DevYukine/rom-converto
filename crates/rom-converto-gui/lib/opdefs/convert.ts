@@ -766,7 +766,8 @@ const psx: OpDef = {
 		"A playlist without in-game disc switching becomes one EBOOT per disc that share a memory card: save before a disc change, then start the next disc's EBOOT.",
 	outputRows: [
 		...directoryOutputRows(
-			"Where the game folders are written; copy them into PSP/GAME. Leave empty to create a folder next to the input file.",
+			"Where the game folders are written, such as PSP/GAME on the Memory Stick. Leave empty to create a <name>_psp folder next to the input file, to copy into PSP/GAME.",
+			"<name>_psp",
 		),
 		{
 			kind: "report",
@@ -780,12 +781,14 @@ const psx: OpDef = {
 	],
 	renameDisabled: true,
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
-	deriveOutput: derivePbpDir,
+	// A picked folder takes the game folders directly, as the CLI's
+	// OUTPUT_DIR does, so PSP/GAME works without nesting.
+	deriveOutput: (input, store) => store.outputDir || derivePbpDir(input),
 	buildArgs: (store, item, taskId) =>
 		runArgs(
 			"psx.to_pbp",
 			item.path,
-			withOutputDir(derivePbpDir(item.path), store.outputDir || ""),
+			store.outputDir || derivePbpDir(item.path),
 			{
 				compression: store.compression,
 				title: store.title || null,
