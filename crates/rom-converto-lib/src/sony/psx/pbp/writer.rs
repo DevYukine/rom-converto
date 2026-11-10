@@ -2,12 +2,13 @@
 //! loader, then `DATA.PSAR` with one PSISOIMG per disc and the STARTDAT
 //! boot image after the last.
 //!
-//! The disc data streams through once. Each PSISOIMG header, whose index
-//! depends on the encoded block sizes, is written after its disc's data by
-//! seeking back; the gaps the seeks leave are zeros.
+//! The disc data streams through once, its blocks encoded on a worker pool.
+//! Each PSISOIMG header, whose index depends on the encoded block sizes, is
+//! written after its disc's data by seeking back; the gaps the seeks leave
+//! are zeros.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 
 use super::blocks::{BlockEncoder, BlockEncoding, STORED_BLOCK_LEN};
 use super::disc::{DiscId, DiscImage};
@@ -19,7 +20,9 @@ use super::format::{
 };
 use crate::sony::psp::pbp::{self, DATA_PSAR, SEGMENT_COUNT};
 use crate::util::sfo::{self, SfoEntry, SfoValue};
+use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::template::truncate_bytes;
+use crate::util::worker_pool::{Pool, PoolChannelClosed, drive, parallelism, with_writer_thread};
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
 
 /// Largest file a FAT32 Memory Stick holds.
@@ -78,10 +81,10 @@ impl Eboot<'_> {
         Ok(self.layout()?[DATA_PSAR] + end + startdat_len(self.assets.startdat_png.len()))
     }
 
-    /// Writes the EBOOT to `out`, an empty file, and returns its size.
+    /// Writes the EBOOT to `file`, an empty file, and returns its size.
     pub fn write(
         &self,
-        out: &mut File,
+        file: &mut File,
         progress: &dyn ProgressReporter,
         cancel: &CancelToken,
     ) -> PsxPbpResult<u64> {
@@ -89,6 +92,7 @@ impl Eboot<'_> {
         let offsets = self.layout()?;
         let header = pbp::write_header(pbp::VERSION, &offsets).map_err(io::Error::other)?;
         let assets = self.assets;
+        let mut out = BufWriter::with_capacity(IO_BUFFER_SIZE, file);
         for part in [
             &header[..],
             &sfo,
@@ -102,48 +106,13 @@ impl Eboot<'_> {
 
         let total: u64 = self.discs.iter().map(|(disc, _)| disc.image_size()).sum();
         progress.start(total, "Building EBOOT.PBP");
-        let mut encoder = BlockEncoder::new(self.encoding);
-        let mut block = vec![0u8; BLOCK_SIZE];
-        let mut disc_offsets = Vec::with_capacity(self.discs.len());
-        let mut disc_offset = self.first_disc_offset();
-        let mut stored_len = 0;
-        for (disc, id) in &self.discs {
-            let blocks = self.checked_blocks(disc)?;
-            let base = psar + disc_offset;
-            out.seek(SeekFrom::Start(base + DISC_DATA_START))?;
-            let mut reader = disc.reader();
-            let mut remaining = disc.image_size();
-            let mut entries = Vec::with_capacity(blocks as usize);
-            stored_len = 0;
-            for _ in 0..blocks {
-                if cancel.is_cancelled() {
-                    return Err(Cancelled.into());
-                }
-                let take = remaining.min(BLOCK_SIZE as u64) as usize;
-                reader.read_exact(&mut block[..take])?;
-                block[take..].fill(0);
-                let encoded = encoder.encode(&block);
-                out.write_all(encoded)?;
-                entries.push(IndexEntry {
-                    offset: stored_len as u32,
-                    size: encoded.len() as u16,
-                });
-                stored_len += encoded.len() as u64;
-                remaining -= take as u64;
-                progress.inc(take as u64);
-            }
-            out.seek(SeekFrom::Start(base))?;
-            out.write_all(&psisoimg_header(
-                disc,
-                id,
-                self.title,
-                &entries,
-                stored_len,
-                startdat_len(assets.startdat_png.len()),
-            )?)?;
-            disc_offsets.push(disc_offset);
-            disc_offset = (disc_offset + data_end(stored_len)).next_multiple_of(DISC_ALIGN);
-        }
+        let workers: Vec<BlockEncoder> = (0..parallelism())
+            .map(|_| BlockEncoder::new(self.encoding))
+            .collect();
+        let pool: Pool<Vec<u8>, Vec<u8>, PsxPbpError> = Pool::spawn(workers);
+        let discs = self.write_discs(&mut out, psar, &pool, progress, cancel);
+        pool.shutdown();
+        let (disc_offsets, stored_len) = discs?;
 
         let last_offset = disc_offsets.last().copied().unwrap_or_default();
         out.seek(SeekFrom::Start(psar + last_offset + data_end(stored_len)))?;
@@ -161,8 +130,90 @@ impl Eboot<'_> {
                 table,
             )?)?;
         }
+        out.flush()?;
         progress.finish();
         Ok(size)
+    }
+
+    /// Writes every disc's blocks and PSISOIMG header into `out`, whose
+    /// `DATA.PSAR` starts at `psar`. Returns each disc's offset in
+    /// `DATA.PSAR` and the last disc's stored length.
+    fn write_discs(
+        &self,
+        out: &mut BufWriter<&mut File>,
+        psar: u64,
+        pool: &Pool<Vec<u8>, Vec<u8>, PsxPbpError>,
+        progress: &dyn ProgressReporter,
+        cancel: &CancelToken,
+    ) -> PsxPbpResult<(Vec<u64>, u64)> {
+        let max_in_flight = parallelism() * 2;
+        let mut disc_offsets = Vec::with_capacity(self.discs.len());
+        let mut disc_offset = self.first_disc_offset();
+        let mut stored_len = 0;
+        for (disc, id) in &self.discs {
+            let blocks = self.checked_blocks(disc)?;
+            let base = psar + disc_offset;
+            out.seek(SeekFrom::Start(base + DISC_DATA_START))?;
+            let mut reader = disc.reader();
+            let mut remaining = disc.image_size();
+            let mut entries = Vec::with_capacity(blocks as usize);
+            stored_len = 0;
+            with_writer_thread(
+                out,
+                max_in_flight * 2,
+                PsxPbpError::WorkerPoolPanic,
+                |write_tx| {
+                    drive(
+                        pool,
+                        blocks,
+                        max_in_flight,
+                        |_| -> PsxPbpResult<Vec<u8>> {
+                            if cancel.is_cancelled() {
+                                return Err(Cancelled.into());
+                            }
+                            let take = remaining.min(BLOCK_SIZE as u64) as usize;
+                            let mut block = vec![0u8; BLOCK_SIZE];
+                            reader.read_exact(&mut block[..take])?;
+                            remaining -= take as u64;
+                            progress.inc(take as u64);
+                            Ok(block)
+                        },
+                        |_, encoded: Vec<u8>| -> PsxPbpResult<()> {
+                            entries.push(IndexEntry {
+                                offset: u32::try_from(stored_len).map_err(|_| {
+                                    PsxPbpError::HeaderFieldOverflow {
+                                        field: "PSISOIMG block offset",
+                                        value: stored_len,
+                                    }
+                                })?,
+                                size: u16::try_from(encoded.len()).map_err(|_| {
+                                    PsxPbpError::HeaderFieldOverflow {
+                                        field: "PSISOIMG block size",
+                                        value: encoded.len() as u64,
+                                    }
+                                })?,
+                            });
+                            stored_len += encoded.len() as u64;
+                            write_tx
+                                .send(encoded)
+                                .map_err(|_| PsxPbpError::WorkerPoolClosed(PoolChannelClosed))
+                        },
+                    )
+                },
+            )?;
+            out.seek(SeekFrom::Start(base))?;
+            out.write_all(&psisoimg_header(
+                disc,
+                id,
+                self.title,
+                &entries,
+                stored_len,
+                startdat_len(self.assets.startdat_png.len()),
+            )?)?;
+            disc_offsets.push(disc_offset);
+            disc_offset = (disc_offset + data_end(stored_len)).next_multiple_of(DISC_ALIGN);
+        }
+        Ok((disc_offsets, stored_len))
     }
 
     fn first_disc_offset(&self) -> u64 {

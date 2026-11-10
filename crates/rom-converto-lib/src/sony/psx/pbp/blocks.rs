@@ -5,7 +5,9 @@
 
 use flate2::{Compress, Compression, FlushCompress, Status};
 
+use super::error::{PsxPbpError, PsxPbpResult};
 use super::format::BLOCK_SIZE;
+use crate::util::worker_pool::Worker;
 
 /// A final, uncompressed deflate block of `BLOCK_SIZE` bytes: `BFINAL = 1`,
 /// `BTYPE = 00`, then `LEN` and `NLEN` little-endian.
@@ -73,6 +75,13 @@ impl BlockEncoder {
         self.out.extend_from_slice(&STORED_HEADER);
         self.out.extend_from_slice(block);
         &self.out
+    }
+}
+
+/// One encoder per pool worker, so each keeps its compressor across blocks.
+impl Worker<Vec<u8>, Vec<u8>, PsxPbpError> for BlockEncoder {
+    fn process(&mut self, block: Vec<u8>) -> PsxPbpResult<Vec<u8>> {
+        Ok(self.encode(&block).to_vec())
     }
 }
 

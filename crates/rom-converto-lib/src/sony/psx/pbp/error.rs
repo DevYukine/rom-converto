@@ -154,6 +154,14 @@ pub enum PsxPbpError {
         source: anyhow::Error,
     },
 
+    /// The worker pool's channel closed before a block could be handed on.
+    #[error(transparent)]
+    WorkerPoolClosed(#[from] crate::util::worker_pool::PoolChannelClosed),
+
+    /// The worker pool's writer thread panicked.
+    #[error("worker pool writer thread panicked")]
+    WorkerPoolPanic,
+
     /// The operation was cancelled by the caller.
     #[error("{0}")]
     Cancelled(#[from] crate::util::Cancelled),
