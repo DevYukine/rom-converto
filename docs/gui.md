@@ -161,8 +161,9 @@ CLI rejects `--title` with `-R`.
 
 ### PS1 EBOOT conversion
 
-**PS1** under Convert takes a `.cue`, a CD-mode `.chd`, or an `.m3u` playlist, plain or
-inside an archive, and writes one game folder per EBOOT into `<stem>_psp` by default.
+**PS1** under Convert takes a `.cue` or a CD-mode `.chd`, plain or inside an archive, or
+a plain `.m3u` playlist (one inside an archive is refused), and writes one game folder per
+EBOOT into `<stem>_psp` by default.
 Copy those folders into `PSP/GAME`. The page offers the same options as `psx to-pbp`:
 compression, title, disc ID, and the boot image, icon, and background, as PNG or JPEG
 files of any size. It has no

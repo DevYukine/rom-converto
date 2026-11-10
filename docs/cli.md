@@ -974,7 +974,9 @@ rom-converto psx to-pbp <INPUT> [OUTPUT_DIR] [--compression deflate|stored] [--t
 
 `to-pbp` builds the `EBOOT.PBP` that the PSP's built-in PS1 emulator runs on custom
 firmware. `INPUT` is a `.cue` with raw 2352-byte sectors, a CD-mode `.chd`, or an `.m3u`
-playlist of either. It writes one game folder per EBOOT, named after the disc ID, into
+playlist of either. A playlist entry is relative to the playlist's folder (`..` included) or
+an absolute path. A cue or CHD may sit inside an archive; a playlist may not, since only
+one member and a cue sheet's tracks are extracted from an archive. It writes one game folder per EBOOT, named after the disc ID, into
 `OUTPUT_DIR` (default `<INPUT>_psp` next to the input). Copy those folders into `PSP/GAME`
 on the Memory Stick. To write into `PSP/GAME` directly, pass it as `OUTPUT_DIR` with
 `--on-conflict overwrite`: the folder is not emptied, only the EBOOTs are replaced.

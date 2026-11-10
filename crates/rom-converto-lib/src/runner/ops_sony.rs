@@ -5,8 +5,10 @@ use super::models::{RunRequest, RunResponse};
 use super::ops::{
     ConvertTarget, convert_op, dir_op, required_input, required_output_dir, skipped_already_done,
 };
+use std::path::Path;
+
 use crate::sony::ps3::Ps3Error;
-use crate::util::fs::file_len;
+use crate::util::fs::{file_len, has_ext};
 use crate::util::{CancelToken, OutputVerify, ProgressReporter, spawn_blocking_with_progress};
 use anyhow::Result;
 
@@ -126,6 +128,7 @@ pub(crate) async fn psx_to_pbp(
     use crate::sony::psx::pbp::{BlockEncoding, PbpOptions, derive_output_dir, required_bytes};
 
     let input = required_input(&req)?;
+    refuse_archived_playlist(&input).await?;
     let desired = req
         .output
         .clone()
@@ -155,6 +158,28 @@ pub(crate) async fn psx_to_pbp(
         },
     )
     .await
+}
+
+/// Refuses an archive holding an `.m3u`: staging extracts one member and
+/// the sidecars of a cue sheet, never the discs a playlist names.
+async fn refuse_archived_playlist(input: &Path) -> Result<()> {
+    if !crate::util::is_archive_path(input) {
+        return Ok(());
+    }
+    let archive = input.to_path_buf();
+    let members =
+        tokio::task::spawn_blocking(move || crate::util::archive::list_members(&archive)).await??;
+    if let Some(playlist) = members
+        .iter()
+        .find(|member| has_ext(Path::new(&member.name), "m3u"))
+    {
+        return Err(invalid_arg(format!(
+            "{}: {} is a playlist inside an archive; extract the archive and pass the .m3u",
+            input.display(),
+            playlist.name
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) async fn vita_extract(
@@ -236,6 +261,33 @@ mod tests {
         .await;
         assert_eq!(res.status, 2);
         assert!(res.message.contains("unknown block encoding"), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn psx_to_pbp_refuses_a_playlist_inside_an_archive() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("game.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, body) in [
+            ("game (Disc 1).cue", "FILE \"game (Disc 1).bin\" BINARY\n"),
+            ("game.m3u", "game (Disc 1).cue\n"),
+        ] {
+            zip.start_file(name, opts).unwrap();
+            zip.write_all(body.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let req = json!({ "operation": "psx.to_pbp", "input": archive });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, 2, "{res:?}");
+        assert!(
+            res.message.contains("game.m3u is a playlist inside an archive"),
+            "{res:?}"
+        );
     }
 
     #[tokio::test]
