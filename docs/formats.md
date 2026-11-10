@@ -42,7 +42,7 @@ PSPs on custom firmware such as ARK; the layout was tested on a PSP-1000 with AR
 
 | Topic | Behaviour |
 |---|---|
-| Inputs | Tracks must be raw 2352-byte sectors (`MODE2/2352`, `MODE1/2352`, `AUDIO`). `MODE1/2048` images, non-`BINARY` files, and `PREGAP`/`POSTGAP` silence that is not in the files are refused. The first track must be data |
+| Inputs | PS1 discs only: PS2 and PSP discs are refused. Tracks must be raw 2352-byte sectors (`MODE2/2352`, `MODE1/2352`, `AUDIO`). `MODE1/2048` images, non-`BINARY` files, and `PREGAP`/`POSTGAP` silence that is not in the files are refused. The first track must be data and start the image, so a stored pregap before it is refused. At most 99 tracks, numbered 1 to 99, and 99:59:74 (449,849 sectors) |
 | Disc ID | Read from `SYSTEM.CNF`. Discs whose boot file is not named like a serial (homebrew `PSX.EXE`) need `--disc-id`. The PSP names the save folder after it |
 | Encoding | Deflate (default) or stored. Both are deflate-framed: a block stored raw never boots. A block deflate cannot shrink is written stored |
 | Audio tracks | Kept as raw CD audio in the image. Custom firmware such as ARK re-enables it; without that patch, the PSP's emulator plays silence in its place in homemade EBOOTs. The lead-out sits at the true end of the disc, so the last track plays to its end |
