@@ -11,7 +11,8 @@ use crate::disc::cd::SECTOR_SIZE;
 use crate::disc::chd::gdi::{TrackChain, TrackSource};
 use crate::disc::cue::CueParser;
 use crate::disc::cue::models::{FileType, TrackType};
-use crate::sony::read_psx_info;
+use crate::sony::disc_source::CueSectors;
+use crate::util::iso9660::read_volume;
 
 /// One track of a disc, positioned in the whole image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,12 +142,15 @@ impl DiscImage {
     }
 
     /// Reads the disc ID from the boot executable `SYSTEM.CNF` names.
-    /// `Ok(None)` when the boot file is not named like a serial.
+    /// `Ok(None)` when the data track has no ISO9660 file system, no
+    /// `SYSTEM.CNF` (the BIOS then boots `PSX.EXE`), or a boot file not
+    /// named like a serial.
     pub fn read_disc_id(&self) -> PsxPbpResult<Option<DiscId>> {
-        let info = read_psx_info(&self.cue).map_err(|source| PsxPbpError::DiscInfo {
-            path: self.cue.clone(),
-            source,
-        })?;
+        let mut src = CueSectors::open(&self.cue)?;
+        let Some(volume) = read_volume(&mut src)? else {
+            return Ok(None);
+        };
+        let info = crate::sony::psx::read(&mut src, &volume)?;
         info.title_id.as_deref().map(DiscId::parse).transpose()
     }
 }
@@ -233,12 +237,34 @@ pub(crate) mod test_fixtures {
     /// sectors, `sectors` long.
     pub fn ps1_data_track(boot: &str, sectors: u32) -> Vec<u8> {
         let cnf = format!("BOOT = cdrom:\\{boot};1\r\nTCB = 4\r\n");
-        let iso = make_iso(&IsoSpec {
-            system_id: b"PLAYSTATION",
-            volume_sectors: sectors,
-            root_entries: &[(b"SYSTEM.CNF;1", false)],
-            file_content: cnf.as_bytes(),
-        });
+        raw_track(
+            &make_iso(&IsoSpec {
+                system_id: b"PLAYSTATION",
+                volume_sectors: sectors,
+                root_entries: &[(b"SYSTEM.CNF;1", false)],
+                file_content: cnf.as_bytes(),
+            }),
+            sectors,
+        )
+    }
+
+    /// A data track with no `SYSTEM.CNF`, which the BIOS boots through
+    /// `PSX.EXE`, as raw MODE2 sectors, `sectors` long.
+    pub fn data_track_without_system_cnf(sectors: u32) -> Vec<u8> {
+        raw_track(
+            &make_iso(&IsoSpec {
+                system_id: b"PLAYSTATION",
+                volume_sectors: sectors,
+                root_entries: &[],
+                file_content: &[],
+            }),
+            sectors,
+        )
+    }
+
+    /// `iso` as raw MODE2 sectors, `sectors` long, with deterministic filler
+    /// past its end.
+    fn raw_track(iso: &[u8], sectors: u32) -> Vec<u8> {
         let mut raw = Vec::with_capacity(sectors as usize * 2352);
         for lba in 0..sectors as usize {
             let mut sector = vec![0u8; 2352];
@@ -275,7 +301,7 @@ pub(crate) mod test_fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixtures::{ps1_data_track, write_disc};
+    use super::test_fixtures::{data_track_without_system_cnf, ps1_data_track, write_disc};
     use super::*;
 
     #[test]
@@ -296,6 +322,13 @@ mod tests {
     fn a_boot_file_that_is_not_a_serial_has_no_disc_id() {
         let dir = tempfile::tempdir().unwrap();
         let cue = write_disc(dir.path(), "game", &ps1_data_track("PSX.EXE", 64));
+        assert_eq!(DiscImage::open(&cue).unwrap().read_disc_id().unwrap(), None);
+    }
+
+    #[test]
+    fn a_disc_without_system_cnf_has_no_disc_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &data_track_without_system_cnf(64));
         assert_eq!(DiscImage::open(&cue).unwrap().read_disc_id().unwrap(), None);
     }
 

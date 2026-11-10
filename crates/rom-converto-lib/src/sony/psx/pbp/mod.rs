@@ -404,6 +404,33 @@ mod tests {
         assert_eq!(&eboot[startdat + 0x50..], STARTDAT_PNG);
     }
 
+    #[tokio::test]
+    async fn a_later_disc_without_system_cnf_boots_under_disc_1s_id() {
+        use super::disc::test_fixtures::data_track_without_system_cnf;
+
+        static STAND_IN: [u8; MULTIDISC_TABLE_LEN] = [0x5A; MULTIDISC_TABLE_LEN];
+        let dir = tempfile::tempdir().unwrap();
+        write_disc(dir.path(), "game (Disc 1)", &ps1_data_track("SLPS_020.05", 40));
+        write_disc(dir.path(), "game (Disc 2)", &data_track_without_system_cnf(50));
+        let m3u = dir.path().join("game.m3u");
+        std::fs::write(&m3u, "game (Disc 1).cue\ngame (Disc 2).cue\n").unwrap();
+
+        let written = build_eboots(
+            &NoProgress,
+            &m3u,
+            &dir.path().join("out"),
+            &PbpOptions::default(),
+            Some(&STAND_IN),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        let eboot = std::fs::read(&written[0]).unwrap();
+        let psar = word(&eboot, 0x24) as usize;
+        let disc2 = psar + word(&eboot, psar + 0x204) as usize;
+        assert_eq!(&eboot[disc2 + 0x400..disc2 + 0x40C], b"_SLPS_02005\0");
+    }
+
     async fn build_one(input: &Path, out: &Path, options: &PbpOptions) -> Vec<u8> {
         let written = to_pbp(&NoProgress, input, out, options, CancelToken::new())
             .await

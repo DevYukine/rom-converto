@@ -58,13 +58,6 @@ pub enum PsxPbpError {
     #[error("{0}: the first track is not a data track")]
     NoDataTrack(PathBuf),
 
-    /// The disc's ISO9660 file system or `SYSTEM.CNF` could not be read.
-    #[error("{path}: {source:#}")]
-    DiscInfo {
-        path: PathBuf,
-        source: anyhow::Error,
-    },
-
     /// No disc ID could be read from `SYSTEM.CNF` and none was given.
     #[error("{0}: SYSTEM.CNF names no disc ID; pass one with --disc-id")]
     NoDiscId(PathBuf),
