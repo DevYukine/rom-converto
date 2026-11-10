@@ -264,8 +264,9 @@ impl DiscId {
     }
 }
 
-/// Reads the discs an `.m3u` playlist lists, in order, relative to its
-/// folder.
+/// Reads the discs an `.m3u` playlist lists, in order. A relative entry,
+/// `..` included, is relative to the playlist's folder; an absolute one is
+/// kept as it is.
 pub(crate) fn read_playlist(path: &Path) -> PsxPbpResult<Vec<PathBuf>> {
     let text = std::fs::read_to_string(path)?;
     let folder = path.parent().unwrap_or(Path::new("."));
@@ -274,12 +275,6 @@ pub(crate) fn read_playlist(path: &Path) -> PsxPbpResult<Vec<PathBuf>> {
         let entry = line.trim();
         if entry.is_empty() || entry.starts_with('#') {
             continue;
-        }
-        if !crate::util::is_safe_relative_path(entry) {
-            return Err(PsxPbpError::UnsafePlaylistEntry {
-                path: path.to_path_buf(),
-                entry: entry.to_string(),
-            });
         }
         discs.push(folder.join(entry));
     }
@@ -582,11 +577,16 @@ mod tests {
             ]
         );
 
-        std::fs::write(&m3u, "../elsewhere.cue\n").unwrap();
-        assert!(matches!(
-            read_playlist(&m3u),
-            Err(PsxPbpError::UnsafePlaylistEntry { .. })
-        ));
+        let elsewhere = dir.path().join("elsewhere/game.cue");
+        std::fs::write(
+            &m3u,
+            format!("../up.cue\n{}\n", elsewhere.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            read_playlist(&m3u).unwrap(),
+            vec![dir.path().join("../up.cue"), elsewhere]
+        );
         std::fs::write(&m3u, "# nothing\n").unwrap();
         assert!(matches!(
             read_playlist(&m3u),

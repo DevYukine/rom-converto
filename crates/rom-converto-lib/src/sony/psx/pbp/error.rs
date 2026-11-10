@@ -101,10 +101,6 @@ pub enum PsxPbpError {
     #[error("{0}: the playlist names no discs")]
     EmptyPlaylist(PathBuf),
 
-    /// A playlist entry is absolute or leaves the playlist's folder.
-    #[error("{path}: entry {entry:?} must name a file inside the playlist's folder")]
-    UnsafePlaylistEntry { path: PathBuf, entry: String },
-
     /// An input that is neither a cue sheet, a CHD, nor a playlist.
     #[error("{0}: expected a .cue, .chd or .m3u file")]
     UnsupportedInput(PathBuf),
