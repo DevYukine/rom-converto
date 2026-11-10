@@ -217,7 +217,7 @@ fn disc_id_of<S: SectorSource>(src: &mut S, source: &Path) -> PsxPbpResult<Optio
     info.title_id.as_deref().map(DiscId::parse).transpose()
 }
 
-/// A PS1 disc ID: four letters and five digits, such as `SLUS00001`.
+/// A PS1 disc ID: four letters and five digits, such as `SLUS99999`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiscId {
     prefix: String,
@@ -225,7 +225,7 @@ pub struct DiscId {
 }
 
 impl DiscId {
-    /// Parses `SLUS-00001`, `SLUS_000.01` or `SLUS00001`, in any case.
+    /// Parses `SLUS-99999`, `SLUS_999.99` or `SLUS99999`, in any case.
     ///
     /// # Errors
     /// Returns [`PsxPbpError::InvalidDiscId`] for any other shape.
@@ -253,12 +253,12 @@ impl DiscId {
         })
     }
 
-    /// The `PARAM.SFO` form, `SLUS00001`.
+    /// The `PARAM.SFO` form, `SLUS99999`.
     pub fn sfo(&self) -> String {
         format!("{}{}", self.prefix, self.number)
     }
 
-    /// The PSISOIMG and PSTITLEIMG form, `_SLUS_00001`.
+    /// The PSISOIMG and PSTITLEIMG form, `_SLUS_99999`.
     pub fn image(&self) -> String {
         format!("_{}_{}", self.prefix, self.number)
     }
@@ -545,16 +545,16 @@ mod tests {
 
     #[test]
     fn parses_disc_ids_in_every_written_form() {
-        for text in ["SLUS-00001", "slus_000.01", "SLUS00001", " SLUS 00001 "] {
-            assert_eq!(DiscId::parse(text).unwrap().sfo(), "SLUS00001", "{text}");
+        for text in ["SLUS-99999", "slus_999.99", "SLUS99999", " SLUS 99999 "] {
+            assert_eq!(DiscId::parse(text).unwrap().sfo(), "SLUS99999", "{text}");
         }
         for text in [
-            "SLUS-0001",
-            "SL1S-00001",
-            "SLUS_0000.1",
+            "SLUS-9999",
+            "SL1S-99999",
+            "SLUS_9999.9",
             "SLUS",
             "",
-            "SLUS-0000A",
+            "SLUS-9999A",
         ] {
             assert!(DiscId::parse(text).is_err(), "{text}");
         }

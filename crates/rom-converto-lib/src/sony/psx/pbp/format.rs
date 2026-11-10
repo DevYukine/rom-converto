@@ -269,6 +269,38 @@ mod tests {
         );
     }
 
+    /// A data track and an audio track in separate files, the audio one
+    /// with a stored two-second INDEX 00: the audio control nibble, the last
+    /// track and the lead-out all follow the audio track.
+    #[test]
+    fn toc_of_a_data_and_an_audio_track() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("t1.bin"), vec![0u8; 2352 * 100]).unwrap();
+        std::fs::write(dir.path().join("t2.bin"), vec![0u8; 2352 * 200]).unwrap();
+        let cue = dir.path().join("game.cue");
+        std::fs::write(
+            &cue,
+            "FILE \"t1.bin\" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n\
+             FILE \"t2.bin\" BINARY\n TRACK 02 AUDIO\n  INDEX 00 00:00:00\n  INDEX 01 00:02:00\n",
+        )
+        .unwrap();
+        let disc = DiscImage::open(&cue, &cue).unwrap();
+        assert_eq!(
+            table_of_contents(&disc).unwrap(),
+            [
+                [0x41, 0, 0xA0, 0, 0, 0, 0, 0x01, 0x20, 0x00],
+                // Last track 2, audio.
+                [0x01, 0, 0xA1, 0, 0, 0, 0, 0x02, 0x00, 0x00],
+                // 300 sectors + 150 = 450 frames, 00:06:00.
+                [0x01, 0, 0xA2, 0, 0, 0, 0, 0x00, 0x06, 0x00],
+                [0x41, 0, 0x01, 0, 0, 0, 0, 0x00, 0x02, 0x00],
+                // INDEX 01 at 100 + 150 sectors, + 150 = 400 frames, 00:05:25.
+                [0x01, 0, 0x02, 0, 0, 0, 0, 0x00, 0x05, 0x25],
+            ]
+            .concat()
+        );
+    }
+
     #[test]
     fn the_longest_disc_ends_its_lead_out_on_99_59_74() {
         assert_eq!(MAX_SECTORS, 449_849);
@@ -314,7 +346,7 @@ mod tests {
 
     #[test]
     fn pstitleimg_header_points_at_discs_and_the_one_startdat() {
-        let id = DiscId::parse("SLPS-02005").unwrap();
+        let id = DiscId::parse("SLPS-99998").unwrap();
         let table = [0xA5u8; MULTIDISC_TABLE_LEN];
         let header =
             pstitleimg_header(&id, "Two", &[0x8000, 0x30_0000], 0x1000, 0x60, &table).unwrap();
@@ -326,7 +358,7 @@ mod tests {
             (word(0x200), word(0x204), word(0x208)),
             (0x8000, 0x30_0000, 0)
         );
-        assert_eq!(&header[0x264..0x270], b"_SLPS_02005\0");
+        assert_eq!(&header[0x264..0x270], b"_SLPS_99998\0");
         assert_eq!(word(0x284), startdat + 0x60);
         assert_eq!(&header[0x28C..0x2CC], &table);
         assert!(header[0x2CC..0x30C].iter().all(|&b| b == 0));

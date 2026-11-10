@@ -94,7 +94,7 @@ pub enum PsxPbpError {
     NoDiscId(PathBuf),
 
     /// A disc ID is not four letters and five digits.
-    #[error("invalid disc ID {0:?}: expected four letters and five digits, such as SLUS-00001")]
+    #[error("invalid disc ID {0:?}: expected four letters and five digits, such as SLUS-99999")]
     InvalidDiscId(String),
 
     /// A playlist names no discs.

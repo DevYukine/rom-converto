@@ -484,8 +484,8 @@ mod tests {
 
     /// Two discs with their own IDs and a playlist naming them, in `dir`.
     fn two_disc_playlist(dir: &Path) -> (PathBuf, Vec<u8>, Vec<u8>) {
-        let disc1 = ps1_data_track("SLPS_020.05", 40);
-        let disc2 = ps1_data_track("SLPS_020.06", 50);
+        let disc1 = ps1_data_track("SLPS_999.98", 40);
+        let disc2 = ps1_data_track("SLPS_999.97", 50);
         write_disc(dir, "game (Disc 1)", &disc1);
         write_disc(dir, "game (Disc 2)", &disc2);
         let m3u = dir.join("game.m3u");
@@ -509,15 +509,15 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(written, vec![dir.path().join("out/SLPS02005/EBOOT.PBP")]);
+        assert_eq!(written, vec![dir.path().join("out/SLPS99998/EBOOT.PBP")]);
 
         let eboot = std::fs::read(&written[0]).unwrap();
         let sfo = sfo_of(&eboot);
-        assert_eq!(sfo.get_str("DISC_ID"), Some("SLPS02005"));
+        assert_eq!(sfo.get_str("DISC_ID"), Some("SLPS99998"));
         assert_eq!(sfo.get_str("TITLE"), Some("game"));
         let psar = word(&eboot, 0x24) as usize;
         assert_eq!(&eboot[psar..psar + 16], b"PSTITLEIMG000000");
-        assert_eq!(&eboot[psar + 0x264..psar + 0x270], b"_SLPS_02005\0");
+        assert_eq!(&eboot[psar + 0x264..psar + 0x270], b"_SLPS_99998\0");
         assert_eq!(&eboot[psar + 0x28C..psar + 0x2CC], &STAND_IN);
         assert!(eboot[psar + 0x2CC..psar + 0x30C].iter().all(|&b| b == 0));
 
@@ -529,7 +529,7 @@ mod tests {
         assert_eq!(&offsets[2..], &[0, 0, 0]);
         for (offset, (image, id)) in offsets
             .iter()
-            .zip([(&disc1, "_SLPS_02005"), (&disc2, "_SLPS_02006")])
+            .zip([(&disc1, "_SLPS_99998"), (&disc2, "_SLPS_99997")])
         {
             let iso = psar + offset;
             assert_eq!(&eboot[iso..iso + 12], b"PSISOIMG0000");
@@ -547,7 +547,7 @@ mod tests {
 
         static STAND_IN: [u8; MULTIDISC_TABLE_LEN] = [0x5A; MULTIDISC_TABLE_LEN];
         let dir = tempfile::tempdir().unwrap();
-        write_disc(dir.path(), "game (Disc 1)", &ps1_data_track("SLPS_020.05", 40));
+        write_disc(dir.path(), "game (Disc 1)", &ps1_data_track("SLPS_999.98", 40));
         write_disc(dir.path(), "game (Disc 2)", &data_track_without_system_cnf(50));
         let m3u = dir.path().join("game.m3u");
         std::fs::write(&m3u, "game (Disc 1).cue\ngame (Disc 2).cue\n").unwrap();
@@ -565,7 +565,7 @@ mod tests {
         let eboot = std::fs::read(&written[0]).unwrap();
         let psar = word(&eboot, 0x24) as usize;
         let disc2 = psar + word(&eboot, psar + 0x204) as usize;
-        assert_eq!(&eboot[disc2 + 0x400..disc2 + 0x40C], b"_SLPS_02005\0");
+        assert_eq!(&eboot[disc2 + 0x400..disc2 + 0x40C], b"_SLPS_99998\0");
     }
 
     async fn build_one(input: &Path, out: &Path, options: &PbpOptions) -> Vec<u8> {
@@ -610,23 +610,23 @@ mod tests {
     #[tokio::test]
     async fn deflate_eboot_reads_back_to_the_disc() {
         let dir = tempfile::tempdir().unwrap();
-        let image = ps1_data_track("SCES_123.45", 700);
+        let image = ps1_data_track("SCES_999.96", 700);
         let cue = write_disc(dir.path(), "My Game", &image);
         let eboot = build_one(&cue, &dir.path().join("out"), &PbpOptions::default()).await;
 
         let sfo = sfo_of(&eboot);
         assert_eq!(sfo.get_str("CATEGORY"), Some("ME"));
-        assert_eq!(sfo.get_str("DISC_ID"), Some("SCES12345"));
+        assert_eq!(sfo.get_str("DISC_ID"), Some("SCES99996"));
         assert_eq!(sfo.get_str("TITLE"), Some("My Game"));
         assert_eq!(sfo.get_u32("BOOTABLE"), Some(1));
 
-        let path = dir.path().join("out/SCES12345/EBOOT.PBP");
+        let path = dir.path().join("out/SCES99996/EBOOT.PBP");
         assert_eq!(
             read_info(&path).unwrap().psar_kind,
             Some(PsarKind::Psisoimg)
         );
         let psar = Pbp::read(&mut Cursor::new(&eboot)).unwrap().segments[DATA_PSAR].offset as usize;
-        assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SCES_12345\0");
+        assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SCES_99996\0");
         assert!(read_back(&eboot, psar, image.len()) == image);
     }
 
@@ -648,41 +648,46 @@ mod tests {
         assert_eq!(
             written,
             vec![
-                dir.path().join("out/SLPS02005-DISC1/EBOOT.PBP"),
-                dir.path().join("out/SLPS02005-DISC2/EBOOT.PBP"),
+                dir.path().join("out/SLPS99998-DISC1/EBOOT.PBP"),
+                dir.path().join("out/SLPS99998-DISC2/EBOOT.PBP"),
             ]
         );
         for (n, (path, image)) in written.iter().zip([&disc1, &disc2]).enumerate() {
             let eboot = std::fs::read(path).unwrap();
             let sfo = sfo_of(&eboot);
-            assert_eq!(sfo.get_str("DISC_ID"), Some("SLPS02005"));
+            assert_eq!(sfo.get_str("DISC_ID"), Some("SLPS99998"));
             assert_eq!(
                 sfo.get_str("TITLE").unwrap(),
                 format!("game (Disc {})", n + 1)
             );
             let psar = word(&eboot, 0x24) as usize;
             assert_eq!(&eboot[psar..psar + 12], b"PSISOIMG0000");
-            assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SLPS_02005\0");
+            assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SLPS_99998\0");
             assert!(read_back(&eboot, psar, image.len()) == *image);
         }
     }
 
+    /// 301 data sectors are not a multiple of the CHD's 4-frame track
+    /// padding, and the audio track stores a two-second INDEX 00, so both
+    /// layout rules of the CHD round trip show up in the EBOOT.
     #[tokio::test]
     async fn a_chd_builds_the_same_eboot_as_its_cue() {
-        use crate::disc::chd::{ChdOptions, convert_to_chd};
-
         let dir = tempfile::tempdir().unwrap();
-        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_000.01", 300));
-        let chd = dir.path().join("game.chd");
-        convert_to_chd(
-            &NoProgress,
-            cue.clone(),
-            chd.clone(),
-            ChdOptions::default(),
-            CancelToken::new(),
+        std::fs::write(
+            dir.path().join("game (Track 1).bin"),
+            ps1_data_track("SLUS_999.99", 301),
         )
-        .await
         .unwrap();
+        let audio: Vec<u8> = (0..2352 * 200).map(|i| (i * 7 % 251) as u8).collect();
+        std::fs::write(dir.path().join("game (Track 2).bin"), &audio).unwrap();
+        let cue = dir.path().join("game.cue");
+        std::fs::write(
+            &cue,
+            "FILE \"game (Track 1).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n\
+             FILE \"game (Track 2).bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n",
+        )
+        .unwrap();
+        let chd = chd_of(&cue).await;
 
         let from_cue = build_one(&cue, &dir.path().join("a"), &PbpOptions::default()).await;
         let from_chd = build_one(&chd, &dir.path().join("b"), &PbpOptions::default()).await;
@@ -765,7 +770,7 @@ mod tests {
             .map(|cue| DiscImage::open(cue, cue).unwrap())
             .collect();
         std::fs::remove_file(dir.path().join("game (Disc 2).bin")).unwrap();
-        let ids = vec![DiscId::parse("SLPS-02005").unwrap(); 2];
+        let ids = vec![DiscId::parse("SLPS-99998").unwrap(); 2];
         let images = Images {
             startdat_png: STARTDAT_PNG.to_vec(),
             icon0: None,
@@ -785,7 +790,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PsxPbpError::Io(_)), "{err}");
-        for folder in ["SLPS02005-DISC1", "SLPS02005-DISC2"] {
+        for folder in ["SLPS99998-DISC1", "SLPS99998-DISC2"] {
             let left: Vec<_> = std::fs::read_dir(out.join(folder))
                 .map(|entries| entries.map(|e| e.unwrap().file_name()).collect())
                 .unwrap_or_default();
@@ -876,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_publishes_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_000.01", 40));
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
         let cancel = CancelToken::new();
         cancel.cancel();
         let out = dir.path().join("out");
@@ -884,7 +889,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
-        assert!(!out.join("SLUS00001/EBOOT.PBP").exists());
+        let eboot = out.join("SLUS99999/EBOOT.PBP");
+        assert!(!eboot.exists());
+        assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_existing_eboot_survives_a_failed_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let out = dir.path().join("out");
+        let eboot = out.join("SLUS99999/EBOOT.PBP");
+        std::fs::create_dir_all(eboot.parent().unwrap()).unwrap();
+        let original = vec![0x5Au8; 128];
+        std::fs::write(&eboot, &original).unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let err = to_pbp(&NoProgress, &cue, &out, &PbpOptions::default(), cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert_eq!(std::fs::read(&eboot).unwrap(), original);
+        assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
     }
 
     #[tokio::test]
@@ -894,7 +920,7 @@ mod tests {
         use super::images::test_fixtures::{jpeg, png};
 
         let dir = tempfile::tempdir().unwrap();
-        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_000.01", 40));
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
         let cover = dir.path().join("cover.jpg");
         std::fs::write(&cover, jpeg(500, 500, Rgb([0x20, 0x40, 0x80]))).unwrap();
         let backdrop = dir.path().join("backdrop.png");
@@ -920,7 +946,7 @@ mod tests {
                 "segment {segment} decodes"
             );
         }
-        let icon = read_info(&dir.path().join("out/SLUS00001/EBOOT.PBP"))
+        let icon = read_info(&dir.path().join("out/SLUS99999/EBOOT.PBP"))
             .unwrap()
             .icon
             .expect("info reads the icon back");
@@ -930,7 +956,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_splash_that_is_not_an_image() {
         let dir = tempfile::tempdir().unwrap();
-        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_000.01", 40));
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
         let splash = dir.path().join("splash.jpg");
         std::fs::write(&splash, b"\xFF\xD8\xFF\xE0 not a jpeg").unwrap();
         let options = PbpOptions {
