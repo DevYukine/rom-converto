@@ -982,7 +982,7 @@ on the Memory Stick. To write into `PSP/GAME` directly, pass it as `OUTPUT_DIR` 
 | Option | Description |
 |---|---|
 | `--compression <deflate\|stored>` | `deflate` (default) writes a smaller EBOOT. `stored` keeps every sector unchanged, so the EBOOT is about the size of the disc image |
-| `--title <TITLE>` | Name the XMB shows. Defaults to the input file name |
+| `--title <TITLE>` | Name the XMB shows. Defaults to the input file name without its extensions |
 | `--disc-id <ID>` | Disc ID such as `SLUS-00001`, for a disc whose `SYSTEM.CNF` names none. It also overrides the one `SYSTEM.CNF` names |
 | `--splash <IMAGE>` | Image shown while the game starts (480x272), in place of the built-in one |
 | `--icon0 <IMAGE>` | XMB icon (144x80), such as the game's cover |
@@ -996,9 +996,12 @@ transparent icon, or on black for the two full-screen images.
 A playlist of 2 to 5 discs becomes one EBOOT with **Switch Discs** in the HOME menu when
 this build carries the multi-disc table and the discs fit in 4 GiB. Otherwise every disc
 becomes its own EBOOT, titled `<TITLE> (Disc N)`, all carrying disc 1's ID, so they share
-one memory card: save before a disc change, quit, and start the next disc's EBOOT. The
-command prints which of the two it chose. A CHD is extracted to a scratch `.cue`/`.bin`
-inside `OUTPUT_DIR` first and removed afterwards.
+one memory card: save before a disc change, quit, and start the next disc's EBOOT; the
+command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is
+written and existing ones stay as they were. A CHD is extracted to a private folder in the
+system temp folder (`TMPDIR`) first and removed afterwards; the run stops before extracting
+when that disk lacks the room. The disc IDs, `--disc-id` and the images are all checked
+before any CHD is extracted.
 
 Only the sectors are converted. Subchannel data, such as the LibCrypt `.sbi` files some
 PAL discs need, is not read, so a game that checks for LibCrypt may fail after it boots.
