@@ -121,7 +121,8 @@ pub enum PsxPbpError {
     #[error("{field} {value} is past the 4 GiB a PS1 EBOOT header can address")]
     HeaderFieldOverflow { field: &'static str, value: u64 },
 
-    /// The system temp folder has no room for the CHDs' extracted tracks.
+    /// The system temp folder has no room for the CHDs' extracted tracks,
+    /// and for the EBOOTs too when they share its disk.
     #[error(
         "not enough free space in {dir} to extract the CHDs: need about {needed} bytes, {available} available; point TMPDIR at a disk with more room"
     )]

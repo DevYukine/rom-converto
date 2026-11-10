@@ -151,7 +151,7 @@ async fn build_eboots(
     let scratch = if chds.is_empty() {
         None
     } else {
-        Some(scratch_for(&chds)?)
+        Some(scratch_for(&chds, output_dir, required_bytes(input))?)
     };
     let mut discs = Vec::with_capacity(checked.inputs.len());
     for (i, input) in checked.inputs.into_iter().enumerate() {
@@ -248,13 +248,23 @@ fn check_inputs(sources: Vec<PathBuf>, options: &PbpOptions) -> PsxPbpResult<Che
 }
 
 /// A private folder in the system temp folder with room for `chds`
-/// extracted.
-fn scratch_for(chds: &[&Path]) -> PsxPbpResult<tempfile::TempDir> {
+/// extracted, and for the `eboot_bytes` written to `output_dir` too when
+/// both share a disk, since the tracks stay until every EBOOT is written.
+fn scratch_for(
+    chds: &[&Path],
+    output_dir: &Path,
+    eboot_bytes: u64,
+) -> PsxPbpResult<tempfile::TempDir> {
     let dir = tempfile::Builder::new().prefix("rom-converto-").tempdir()?;
-    let needed: u64 = chds
+    let tracks: u64 = chds
         .iter()
         .map(|chd| crate::disc::chd::info::read_info(chd).map_or(0, |info| info.logical_bytes))
         .sum();
+    let needed = if shares_disk(dir.path(), output_dir) {
+        tracks + eboot_bytes
+    } else {
+        tracks
+    };
     if let Ok(available) = available_space(dir.path())
         && space_shortfall(available, needed, DEFAULT_SPACE_HEADROOM).is_some()
     {
@@ -265,6 +275,35 @@ fn scratch_for(chds: &[&Path]) -> PsxPbpResult<tempfile::TempDir> {
         });
     }
     Ok(dir)
+}
+
+/// Whether `scratch` and `output`, or its nearest existing ancestor, are on
+/// one disk. Assumed so when that cannot be told.
+fn shares_disk(scratch: &Path, output: &Path) -> bool {
+    let existing = output
+        .ancestors()
+        .find(|path| path.exists())
+        .unwrap_or(output);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(scratch), std::fs::metadata(existing)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev(),
+            _ => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let volume = |path: &Path| {
+            std::fs::canonicalize(path)
+                .ok()
+                .and_then(|path| path.components().next().map(|c| c.as_os_str().to_owned()))
+        };
+        match (volume(scratch), volume(existing)) {
+            (Some(a), Some(b)) => a.eq_ignore_ascii_case(&b),
+            _ => true,
+        }
+    }
 }
 
 /// The file stem a default title and output folder derive from, with any
@@ -778,6 +817,12 @@ mod tests {
         let bound = required_bytes(&cue);
         assert!(bound >= eboot.len() as u64, "{bound} < {}", eboot.len());
         assert!(bound > 301 * 2352 + 0x10_0000, "{bound}");
+    }
+
+    #[test]
+    fn an_output_not_yet_made_shares_the_disk_of_its_existing_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(shares_disk(dir.path(), &dir.path().join("not/yet/made")));
     }
 
     #[test]
