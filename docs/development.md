@@ -118,15 +118,20 @@ the binary. Regenerate it from the `encr_data` literals in devkitPro
 
 - `DATA.PSP` is the loader every PS1 EBOOT starts: a 2,186-byte PSP module that asks the
   firmware to start the PS1 emulator on its own EBOOT. Its source is in
-  `resources/psx/data_psp/`. Rebuild it with `bash resources/psx/data_psp/build.sh`, which
-  uses the pinned `pspdev/pspdev:v20261001` image and needs Docker. Its SHA-256 is
-  `30c0517dd5463dcb43ce768485fc8e9d756b41b7b7e831966dfcadf5bef94db3`.
-- `startdat.png` is the boot image shown while a game starts, rendered from
-  `startdat.svg`. Rebuild it with `uv run resources/psx/render_startdat.py`, which fetches the
-  two OFL fonts the artwork uses from a pinned commit. Its SHA-256 is
-  `048ae127729352dd099faff77cc32efb7421c5afc022081894e9d2193004a73b`.
+  `resources/psx/data_psp/`. Rebuild it from the repository root in the pinned pspdev image
+  (needs Docker); the build is reproducible, and its SHA-256 is
+  `30c0517dd5463dcb43ce768485fc8e9d756b41b7b7e831966dfcadf5bef94db3`:
 
-Both builds are reproducible: a rebuild gives the same bytes.
+  ```sh
+  docker run --rm --platform linux/amd64 --user "$(id -u):$(id -g)" -v "$PWD/resources/psx:/psx" \
+    pspdev/pspdev:v20261001@sha256:54895e6f5afb71b8f4f6915ee6d5023e1e087ca7afdf2dcb1d7a694a5233e45f \
+    sh -c 'cp -R /psx/data_psp /tmp/build && make -s -C /tmp/build && cp /tmp/build/DATA.prx /psx/DATA.PSP'
+  ```
+
+- `startdat.png` is the boot image shown while a game starts: `startdat.svg` rendered at
+  480x272 as 8-bit greyscale with resvg, using the OFL fonts Space Grotesk and JetBrains Mono.
+  Any 480x272 PNG works in its place. Its SHA-256 is
+  `048ae127729352dd099faff77cc32efb7421c5afc022081894e9d2193004a73b`.
 
 ### Multi-disc table
 

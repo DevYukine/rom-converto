@@ -36,9 +36,8 @@ APS and PPF 2.0 check the source size. IPS has no source check.
 
 ## PS1 EBOOTs for the PSP
 
-`psx to-pbp` builds the `EBOOT.PBP` the PSP's built-in PS1 emulator runs. It targets real
-PSPs on custom firmware such as ARK; the layout was tested on a PSP-1000 with ARK on firmware
-6.61 and the stock emulator. PPSSPP is not a reliable check for these files.
+`psx to-pbp` builds the `EBOOT.PBP` the PSP's built-in PS1 emulator runs on custom firmware
+such as ARK.
 
 | Topic | Behaviour |
 |---|---|
@@ -51,7 +50,7 @@ PSPs on custom firmware such as ARK; the layout was tested on a PSP-1000 with AR
 | Not written | Sony's boot logo, encrypted footer, `KEYS.BIN`, and the per-block SHA-1. None is needed on custom firmware |
 
 The [POPS and EBOOT reference](https://github.com/chiva/skiff/blob/main/docs/development/pops.md)
-describes the format, the hardware tests behind it, and the multi-disc table.
+describes the format and the multi-disc table.
 
 ## Large files and memory
 
