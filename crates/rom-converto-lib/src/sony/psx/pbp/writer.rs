@@ -127,7 +127,7 @@ impl Eboot<'_> {
                 &entries,
                 stored_len,
                 startdat_len(assets.startdat_png.len()),
-            ))?;
+            )?)?;
             disc_offsets.push(disc_offset);
             disc_offset = (disc_offset + data_end(stored_len)).next_multiple_of(DISC_ALIGN);
         }
@@ -146,7 +146,7 @@ impl Eboot<'_> {
                 stored_len,
                 startdat_len(assets.startdat_png.len()),
                 table,
-            ))?;
+            )?)?;
         }
         progress.finish();
         Ok(size)

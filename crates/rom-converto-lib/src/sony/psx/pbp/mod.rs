@@ -200,17 +200,24 @@ fn build(
         .iter()
         .map(|cue| DiscImage::open(cue))
         .collect::<PsxPbpResult<Vec<_>>>()?;
+    // Every disc is read, even under --disc-id, so a PS2 disc is refused.
+    let read_ids = discs
+        .iter()
+        .map(DiscImage::read_disc_id)
+        .collect::<PsxPbpResult<Vec<_>>>()?;
     let first_id = match &options.disc_id {
         Some(text) => DiscId::parse(text)?,
-        None => discs[0]
-            .read_disc_id()?
+        None => read_ids[0]
+            .clone()
             .ok_or_else(|| PsxPbpError::NoDiscId(discs[0].cue.clone()))?,
     };
     let mut ids = vec![first_id.clone()];
-    for disc in &discs[1..] {
-        // A later disc without a readable ID still boots under disc 1's.
-        ids.push(disc.read_disc_id()?.unwrap_or_else(|| first_id.clone()));
-    }
+    // A later disc without a readable ID still boots under disc 1's.
+    ids.extend(
+        read_ids[1..]
+            .iter()
+            .map(|id| id.clone().unwrap_or_else(|| first_id.clone())),
+    );
 
     let startdat_png = match &options.splash {
         Some(path) => images::fit(path, images::SPLASH)?,
@@ -575,6 +582,31 @@ mod tests {
         };
         let eboot = build_one(&cue, &dir.path().join("out"), &options).await;
         assert_eq!(sfo_of(&eboot).get_str("DISC_ID"), Some("HBRW00001"));
+    }
+
+    #[tokio::test]
+    async fn refuses_a_ps2_cd_even_with_a_disc_id() {
+        use super::disc::test_fixtures::ps2_cd_data_track;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "ps2", &ps2_cd_data_track(40));
+        let options = PbpOptions {
+            disc_id: Some("SLUS-99999".to_string()),
+            ..PbpOptions::default()
+        };
+        let err = to_pbp(
+            &NoProgress,
+            &cue,
+            &dir.path().join("out"),
+            &options,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, PsxPbpError::NotPs1Disc { kind: "PS2 (CD)", .. }),
+            "{err}"
+        );
     }
 
     #[tokio::test]

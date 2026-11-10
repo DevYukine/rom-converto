@@ -46,6 +46,33 @@ pub enum PsxPbpError {
     )]
     PregapNotStored { path: PathBuf, track: u8 },
 
+    /// A track names no `FILE` line before it.
+    #[error("{path}: track {track} comes before any FILE line")]
+    TrackWithoutFile { path: PathBuf, track: u8 },
+
+    /// More tracks than a CD's table of contents holds.
+    #[error("{path}: {count} tracks; a CD holds at most 99")]
+    TooManyTracks { path: PathBuf, count: usize },
+
+    /// A track number a CD's table of contents cannot hold.
+    #[error("{path}: track number {track} is outside 1 to 99")]
+    TrackNumberOutOfRange { path: PathBuf, track: u8 },
+
+    /// The data track has a stored pregap, so its file system does not
+    /// start the image where the PS1 emulator reads it.
+    #[error(
+        "{path}: track 1 starts {start} sectors into its file; a PS1 EBOOT needs the data track at the start of the image"
+    )]
+    DataTrackNotAtStart { path: PathBuf, start: u32 },
+
+    /// A disc longer than a table of contents can address.
+    #[error("{path}: {sectors} sectors; a CD's table of contents ends at 99:59:74 ({max} sectors)")]
+    DiscTooLong {
+        path: PathBuf,
+        sectors: u64,
+        max: u64,
+    },
+
     /// A `.bin` holds a partial sector.
     #[error("{path}: {size} bytes is not a whole number of 2352-byte sectors")]
     PartialSector { path: PathBuf, size: u64 },
@@ -57,6 +84,10 @@ pub enum PsxPbpError {
     /// The first track carries no data, so there is no PS1 file system.
     #[error("{0}: the first track is not a data track")]
     NoDataTrack(PathBuf),
+
+    /// The disc is a PS2 or PSP disc, which the PS1 emulator cannot run.
+    #[error("{path}: a {kind} disc; a PS1 EBOOT needs a PS1 disc")]
+    NotPs1Disc { path: PathBuf, kind: &'static str },
 
     /// No disc ID could be read from `SYSTEM.CNF` and none was given.
     #[error("{0}: SYSTEM.CNF names no disc ID; pass one with --disc-id")]
@@ -85,6 +116,10 @@ pub enum PsxPbpError {
         blocks: u64,
         max: u64,
     },
+
+    /// A header offset past what its 32-bit field can address.
+    #[error("{field} {value} is past the 4 GiB a PS1 EBOOT header can address")]
+    HeaderFieldOverflow { field: &'static str, value: u64 },
 
     /// The EBOOT would not fit a FAT32 Memory Stick.
     #[error("the EBOOT would be {size} bytes, over the 4 GiB a FAT32 file can hold")]

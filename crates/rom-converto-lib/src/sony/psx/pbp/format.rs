@@ -6,6 +6,8 @@
 //! accepts on custom firmware.
 
 use super::disc::{DiscId, DiscImage};
+use super::error::{PsxPbpError, PsxPbpResult};
+use crate::disc::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
 use crate::disc::cue::models::Msf;
 use crate::util::template::truncate_bytes;
 
@@ -67,6 +69,10 @@ const TOC_DISC_TYPE_XA: u8 = 0x20;
 /// lead-out, so one placed earlier cuts the end off a disc's last audio
 /// track.
 const LEAD_IN_FRAMES: u32 = 150;
+/// The last position a TOC's BCD minutes:seconds:frames can name, 99:59:74.
+const LAST_TOC_FRAME: u32 = (99 * SECONDS_PER_MINUTE + 59) * FRAMES_PER_SECOND + 74;
+/// Sectors a disc may hold so its lead-out still falls on [`LAST_TOC_FRAME`].
+pub(crate) const MAX_SECTORS: u64 = (LAST_TOC_FRAME - LEAD_IN_FRAMES) as u64;
 
 /// One block of the PSISOIMG index: where the stored block starts after
 /// PSISOIMG+0x100000, and its stored size.
@@ -101,16 +107,16 @@ pub(crate) fn psisoimg_header(
     entries: &[IndexEntry],
     stored_len: u64,
     startdat_len: u64,
-) -> Vec<u8> {
+) -> PsxPbpResult<Vec<u8>> {
     let mut header = vec![0u8; DISC_DATA_START as usize];
     let end = data_end(stored_len);
     header[..PSISOIMG_MAGIC.len()].copy_from_slice(PSISOIMG_MAGIC);
-    put_u32(&mut header, ISO_END_OF_DATA, end);
+    put_u32(&mut header, ISO_END_OF_DATA, end)?;
     put_text(&mut header, ISO_DISC_ID, DISC_ID_SLOT, &id.image());
-    let toc = table_of_contents(disc);
+    let toc = table_of_contents(disc)?;
     header[ISO_TOC..ISO_TOC + toc.len()].copy_from_slice(&toc);
-    put_u32(&mut header, ISO_DATA_START, DISC_DATA_START);
-    put_u32(&mut header, ISO_AFTER_STARTDAT, end + startdat_len);
+    put_u32(&mut header, ISO_DATA_START, DISC_DATA_START)?;
+    put_u32(&mut header, ISO_AFTER_STARTDAT, end + startdat_len)?;
     header[ISO_CONSTANT_07FF..ISO_CONSTANT_07FF + 2].copy_from_slice(&0x07FFu16.to_le_bytes());
     put_text(&mut header, ISO_TITLE, TITLE_SLOT, title);
     for (i, entry) in entries.iter().enumerate() {
@@ -120,7 +126,7 @@ pub(crate) fn psisoimg_header(
         header[at..at + 4].copy_from_slice(&entry.offset.to_le_bytes());
         header[at + 4..at + 6].copy_from_slice(&entry.size.to_le_bytes());
     }
-    header
+    Ok(header)
 }
 
 /// The PSTITLEIMG header for discs at `disc_offsets` (relative to
@@ -132,21 +138,21 @@ pub(crate) fn pstitleimg_header(
     last_stored_len: u64,
     startdat_len: u64,
     table: &[u8; MULTIDISC_TABLE_LEN],
-) -> Vec<u8> {
+) -> PsxPbpResult<Vec<u8>> {
     let mut header = vec![0u8; PSTITLEIMG_LEN as usize];
     let startdat = disc_offsets.last().copied().unwrap_or_default() + data_end(last_stored_len);
     header[..PSTITLEIMG_MAGIC.len()].copy_from_slice(PSTITLEIMG_MAGIC);
-    put_u32(&mut header, TITLE_STARTDAT, startdat);
+    put_u32(&mut header, TITLE_STARTDAT, startdat)?;
     for (i, offset) in disc_offsets.iter().enumerate() {
-        put_u32(&mut header, TITLE_DISC_OFFSETS + i * 4, *offset);
+        put_u32(&mut header, TITLE_DISC_OFFSETS + i * 4, *offset)?;
     }
     put_text(&mut header, TITLE_DISC_ID, DISC_ID_SLOT, &first_id.image());
-    put_u32(&mut header, TITLE_AFTER_STARTDAT, startdat + startdat_len);
+    put_u32(&mut header, TITLE_AFTER_STARTDAT, startdat + startdat_len)?;
     // The table's slot is 0x80 bytes; only the first 64 are ever read.
     header[TITLE_MULTIDISC_TABLE..TITLE_MULTIDISC_TABLE + MULTIDISC_TABLE_LEN]
         .copy_from_slice(table);
     put_text(&mut header, TITLE_TITLE, TITLE_SLOT, title);
-    header
+    Ok(header)
 }
 
 /// The STARTDAT header that precedes a `png_len`-byte boot image.
@@ -162,7 +168,7 @@ pub(crate) fn startdat_header(png_len: usize) -> [u8; STARTDAT_HEADER_LEN] {
 
 /// CD lead-in entries: first track, last track, lead-out, then one per
 /// track at its `INDEX 01`.
-fn table_of_contents(disc: &DiscImage) -> Vec<u8> {
+fn table_of_contents(disc: &DiscImage) -> PsxPbpResult<Vec<u8>> {
     let control = |audio: bool| {
         let control = if audio {
             TOC_CONTROL_AUDIO
@@ -173,20 +179,19 @@ fn table_of_contents(disc: &DiscImage) -> Vec<u8> {
     };
     let first = disc.tracks[0];
     let last = disc.tracks[disc.tracks.len() - 1];
-    let disc_type = if disc.tracks.iter().any(|t| t.mode2) {
-        TOC_DISC_TYPE_XA
-    } else {
-        0
-    };
     let entry = |control: u8, point: u8, p: [u8; 3]| -> [u8; TOC_ENTRY_LEN] {
         [control, 0, point, 0, 0, 0, 0, p[0], p[1], p[2]]
     };
-    // The cue parser caps a disc at 99 tracks: 102 entries fill the slot.
+    let sectors = u32::try_from(disc.sectors()).map_err(|_| PsxPbpError::DiscTooLong {
+        path: disc.cue.clone(),
+        sectors: disc.sectors(),
+        max: MAX_SECTORS,
+    })?;
     let mut toc = Vec::with_capacity(ISO_TOC_LEN);
     toc.extend_from_slice(&entry(
         control(first.audio),
         TOC_FIRST_TRACK,
-        [bcd(first.number.into()), disc_type, 0],
+        [bcd(first.number.into()), TOC_DISC_TYPE_XA, 0],
     ));
     toc.extend_from_slice(&entry(
         control(last.audio),
@@ -196,7 +201,7 @@ fn table_of_contents(disc: &DiscImage) -> Vec<u8> {
     toc.extend_from_slice(&entry(
         control(last.audio),
         TOC_LEAD_OUT,
-        msf_bcd(disc.sectors() as u32 + LEAD_IN_FRAMES),
+        msf_bcd(sectors + LEAD_IN_FRAMES),
     ));
     for track in &disc.tracks {
         toc.extend_from_slice(&entry(
@@ -205,7 +210,7 @@ fn table_of_contents(disc: &DiscImage) -> Vec<u8> {
             msf_bcd(track.start + LEAD_IN_FRAMES),
         ));
     }
-    toc
+    Ok(toc)
 }
 
 fn bcd(value: u32) -> u8 {
@@ -221,9 +226,14 @@ fn msf_bcd(frames: u32) -> [u8; 3] {
     ]
 }
 
-/// Writes a header offset; every offset inside a PS1 EBOOT is below 4 GiB.
-fn put_u32(buf: &mut [u8], at: usize, value: u64) {
-    buf[at..at + 4].copy_from_slice(&(value as u32).to_le_bytes());
+/// Writes a header offset, refusing one past what 32 bits address.
+fn put_u32(buf: &mut [u8], at: usize, value: u64) -> PsxPbpResult<()> {
+    let word = u32::try_from(value).map_err(|_| PsxPbpError::HeaderFieldOverflow {
+        field: "PSAR header offset",
+        value,
+    })?;
+    buf[at..at + 4].copy_from_slice(&word.to_le_bytes());
+    Ok(())
 }
 
 /// Writes `text` into a `slot`-byte field, cut at a character boundary so
@@ -250,7 +260,7 @@ mod tests {
     #[test]
     fn toc_of_one_data_track() {
         let (_dir, disc) = disc(1054);
-        let toc = table_of_contents(&disc);
+        let toc = table_of_contents(&disc).unwrap();
         assert_eq!(
             toc,
             [
@@ -264,6 +274,13 @@ mod tests {
     }
 
     #[test]
+    fn the_longest_disc_ends_its_lead_out_on_99_59_74() {
+        assert_eq!(MAX_SECTORS, 449_849);
+        let lead_out = u32::try_from(MAX_SECTORS).unwrap() + LEAD_IN_FRAMES;
+        assert_eq!(msf_bcd(lead_out), [0x99, 0x59, 0x74]);
+    }
+
+    #[test]
     fn psisoimg_header_places_every_field() {
         let (_dir, disc) = disc(1054);
         let id = DiscId::parse("SLUS-99999").unwrap();
@@ -274,7 +291,8 @@ mod tests {
             })
             .collect();
         let stored = 66 * 0x9305;
-        let header = psisoimg_header(&disc, &id, "Test", &entries, stored, startdat_len(486));
+        let header =
+            psisoimg_header(&disc, &id, "Test", &entries, stored, startdat_len(486)).unwrap();
 
         assert_eq!(&header[..12], b"PSISOIMG0000");
         assert_eq!(
@@ -302,7 +320,8 @@ mod tests {
     fn pstitleimg_header_points_at_discs_and_the_one_startdat() {
         let id = DiscId::parse("SLPS-02005").unwrap();
         let table = [0xA5u8; MULTIDISC_TABLE_LEN];
-        let header = pstitleimg_header(&id, "Two", &[0x8000, 0x30_0000], 0x1000, 0x60, &table);
+        let header =
+            pstitleimg_header(&id, "Two", &[0x8000, 0x30_0000], 0x1000, 0x60, &table).unwrap();
         let word = |at: usize| u32::from_le_bytes(header[at..at + 4].try_into().unwrap());
         let startdat = 0x30_0000 + data_end(0x1000) as u32;
         assert_eq!(&header[..16], b"PSTITLEIMG000000");
