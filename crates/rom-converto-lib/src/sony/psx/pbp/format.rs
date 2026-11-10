@@ -1,6 +1,8 @@
 //! The fixed structures of a PS1 EBOOT's `DATA.PSAR`: PSISOIMG and
 //! PSTITLEIMG headers, the table of contents, the block index, STARTDAT.
 
+use hex_literal::hex;
+
 use super::disc::{DiscId, DiscImage};
 use super::error::{PsxPbpError, PsxPbpResult};
 use crate::disc::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
@@ -21,6 +23,12 @@ pub(crate) const PSAR_ALIGN: u64 = 0x1_0000;
 pub(crate) const MAX_DISCS: usize = 5;
 /// Bytes of the multi-disc table the emulator reads at PSTITLEIMG+0x28C.
 pub(crate) const MULTIDISC_TABLE_LEN: usize = 64;
+/// The multi-disc table: the key to the emulator's disc-switch menu text,
+/// the same for every game. Without it a multi-disc file freezes at boot.
+pub(crate) const POPS_MULTIDISC_TABLE: [u8; MULTIDISC_TABLE_LEN] = hex!(
+    "8C0EAE9D398CFE246521AD2D65A961DFD44A1303B4CD325FBDB0F4F98A70BE1E"
+    "392C7DC0C1C66B81AA3C0653941BCEE54416CFDBB1E3897BA2D2E7D6C1266B58"
+);
 /// Bytes of the PSTITLEIMG header; disc 1's PSISOIMG follows it.
 pub(crate) const PSTITLEIMG_LEN: u64 = DISC_ALIGN;
 

@@ -6,7 +6,6 @@ mod disc;
 mod error;
 mod format;
 mod images;
-mod multidisc;
 mod writer;
 
 use std::path::{Path, PathBuf};
@@ -16,7 +15,7 @@ pub use disc::DiscId;
 pub use error::{PsxPbpError, PsxPbpResult};
 
 use disc::{DiscImage, read_chd_disc_id, read_playlist};
-use format::{MAX_DISCS, MULTIDISC_TABLE_LEN};
+use format::{MAX_DISCS, MULTIDISC_TABLE_LEN, POPS_MULTIDISC_TABLE};
 use writer::{Assets, Eboot, FAT32_MAX_FILE};
 
 use crate::disc::chd::extract_from_chd;
@@ -78,7 +77,7 @@ pub async fn to_pbp(
         input,
         output_dir,
         options,
-        multidisc::table(),
+        Some(&POPS_MULTIDISC_TABLE),
         cancel,
     )
     .await
@@ -106,8 +105,8 @@ struct Images {
     pic1: Option<Vec<u8>>,
 }
 
-/// [`to_pbp`] with the multi-disc table given, so both multi-disc layouts
-/// can be exercised whatever this build carries.
+/// [`to_pbp`] with the multi-disc table given, so tests can exercise the
+/// one-EBOOT-per-disc layout with `None`.
 async fn build_eboots(
     progress: &dyn ProgressReporter,
     input: &Path,

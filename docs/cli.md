@@ -996,7 +996,7 @@ as it is; any other image is scaled to fit, keeping its aspect ratio, and centre
 transparent icon, or on black for the two full-screen images.
 
 A playlist of 2 to 5 discs becomes one EBOOT with **Switch Discs** in the HOME menu when
-this build carries the multi-disc table and the discs fit in 4 GiB. Otherwise every disc
+the discs fit in 4 GiB. Otherwise every disc
 becomes its own EBOOT, titled `<TITLE> (Disc N)`, all carrying disc 1's ID, so they share
 one memory card: save before a disc change, quit, and start the next disc's EBOOT; the
 command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is

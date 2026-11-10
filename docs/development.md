@@ -137,17 +137,11 @@ Discs**. The table is the same for every game and PSP model, but it is derived f
 firmware (Sony's scrambled strings combined with Sony's text), and no working table can be
 made from facts about the format alone.
 
-It lives in `crates/rom-converto-lib/src/sony/psx/pbp/multidisc/table.rs`, behind the
-`pops-multidisc-table` feature, which is on by default. It was read from a reference two-disc
-EBOOT whose 128-byte slot has the SHA-256 the
+It is the `POPS_MULTIDISC_TABLE` const in `crates/rom-converto-lib/src/sony/psx/pbp/format.rs`,
+read from a reference two-disc EBOOT whose 128-byte slot has the SHA-256 the
 [POPS reference](https://github.com/chiva/skiff/blob/main/docs/development/pops.md#how-pops-uses-it)
 publishes, `70c0b99a16396068390533fa061a52493396596dca414a89a45cef8f63fb56b7`; the table is that
-slot's first 64 bytes, SHA-256 `246a68a915cdb6b329de09ce51e340a985c1b49065a5f685f1b28c958ea7ec38`,
-which a test pins.
-
-Whether the project carries Sony-derived data is the maintainer's call. Build with
-`--no-default-features` to leave it out: every multi-disc playlist then becomes one EBOOT per
-disc, sharing one memory card, with no other change.
+slot's first 64 bytes, SHA-256 `246a68a915cdb6b329de09ce51e340a985c1b49065a5f685f1b28c958ea7ec38`.
 
 ## Documentation and releases
 
