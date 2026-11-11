@@ -440,6 +440,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 let resolved = rom_converto_lib::util::resolve_input(
                     &cmd.input,
                     &["iso", "gcm", "gcz", "rvz"],
+                    &cancel,
                 )?;
                 let input = resolved.path();
                 verify_gate(input, DOL_MIGRATE_FORMATS)?;
@@ -473,7 +474,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::nintendo::dol::info::read_info(resolved.path())?;
             if let Some(dir) = &cmd.save_icon {
                 save_dol_banner(&info, dir)?;

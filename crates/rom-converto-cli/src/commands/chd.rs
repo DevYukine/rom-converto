@@ -504,7 +504,8 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                         cmd.input.display()
                     );
                 }
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["chd"])?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, &["chd"], &cancel)?;
                 verify_chd(
                     &progress,
                     resolved.path().to_path_buf(),
@@ -553,7 +554,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::disc::chd::info::read_info(resolved.path())?;
             info_print::print(&rom_converto_lib::info::InfoResult::Chd(info), cmd.json)?;
         }

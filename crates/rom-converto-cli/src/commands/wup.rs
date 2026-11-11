@@ -344,7 +344,8 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .await?
             } else {
                 ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["wud", "wux"])?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, &["wud", "wux"], &cancel)?;
                 let result = verify_wup_async(
                     resolved.path().to_path_buf(),
                     cmd.key,
@@ -372,7 +373,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         WupCommands::Info(cmd) => {
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::nintendo::wup::info::read_info(
                 resolved.path(),
                 cmd.keys.as_deref(),

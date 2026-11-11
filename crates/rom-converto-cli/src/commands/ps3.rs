@@ -119,7 +119,7 @@ pub async fn run(command: Ps3Commands, ctx: DispatchCtx<'_>) -> Result<()> {
         Ps3Commands::Info(cmd) => {
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, &["iso"])?;
+            let resolved = rom_converto_lib::util::resolve_input(input, &["iso"], &cancel)?;
             let input = resolved.path();
             let size = file_len(input);
             let key = resolve_ps3_key(input, resolved.output_basis(), cmd.keys.as_deref());

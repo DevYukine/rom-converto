@@ -59,9 +59,11 @@ pub async fn run(cmd: crate::commands::hash::HashCommand, ctx: DispatchCtx<'_>) 
     } else {
         ensure_input_exists(&cmd.input)?;
         let input = cmd.input.clone();
-        let resolved =
-            tokio::task::spawn_blocking(move || resolve_for_hash(&input, &HASH_MEMBER_EXTS))
-                .await??;
+        let token = cancel.clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            resolve_for_hash(&input, &HASH_MEMBER_EXTS, &token)
+        })
+        .await??;
         // A staged member lives in a temp dir and its digests are the
         // member's, not the archive's: the path-keyed cache must neither
         // answer for nor record it. `None` hashed the raw bytes at the

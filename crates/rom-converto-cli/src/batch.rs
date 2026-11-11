@@ -409,18 +409,20 @@ fn fail_unreadable(path: &Path, reason: &str, failed: &mut usize) {
 }
 
 /// Stages one walked input off the async runtime. A staging failure counts
-/// the file as failed instead of aborting the batch.
+/// the file as failed instead of aborting the batch; a cancel aborts it.
 async fn stage_or_fail(
     path: &Path,
     exts: &'static [&'static str],
     failed: &mut usize,
-) -> Option<ResolvedInput> {
-    match resolve_input_off_runtime(path.to_path_buf(), exts).await {
-        Ok(resolved) => Some(resolved),
+    cancel: &CancelToken,
+) -> Result<Option<ResolvedInput>> {
+    match resolve_input_off_runtime(path.to_path_buf(), exts, cancel).await {
+        Ok(resolved) => Ok(Some(resolved)),
+        Err(_) if cancel.is_cancelled() => Err(Cancelled.into()),
         Err(e) => {
             *failed += 1;
             warn!("[FAIL] {}: {e}", path.display());
-            None
+            Ok(None)
         }
     }
 }
@@ -454,7 +456,7 @@ pub async fn cso_verify(
             total_progress.advance(bytes);
             continue;
         }
-        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed, cancel).await? else {
             total_progress.advance(bytes);
             continue;
         };
@@ -514,7 +516,7 @@ pub async fn dol_verify(
             total_progress.advance(bytes);
             continue;
         }
-        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed, cancel).await? else {
             total_progress.advance(bytes);
             continue;
         };
@@ -575,7 +577,7 @@ pub async fn rvl_verify(
             total_progress.advance(bytes);
             continue;
         }
-        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed, cancel).await? else {
             total_progress.advance(bytes);
             continue;
         };
@@ -634,7 +636,7 @@ pub async fn nx_verify(
             total_progress.advance(bytes);
             continue;
         }
-        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed).await else {
+        let Some(resolved) = stage_or_fail(&path, EXTS, &mut failed, cancel).await? else {
             total_progress.advance(bytes);
             continue;
         };
@@ -765,7 +767,7 @@ pub async fn wup_verify(
         let staging = if path.is_dir() {
             None
         } else {
-            match stage_or_fail(&path, FILE_EXTS, &mut failed).await {
+            match stage_or_fail(&path, FILE_EXTS, &mut failed, cancel).await? {
                 Some(resolved) => Some(resolved),
                 None => {
                     total_progress.advance(bytes);
@@ -880,8 +882,11 @@ pub async fn hash_batch(
         // bytes at the walked path, which the cache may serve.
         let hashed = {
             let walk = path.clone();
-            match tokio::task::spawn_blocking(move || resolve_for_hash(&walk, &HASH_MEMBER_EXTS))
-                .await
+            let token = cancel.clone();
+            match tokio::task::spawn_blocking(move || {
+                resolve_for_hash(&walk, &HASH_MEMBER_EXTS, &token)
+            })
+            .await
             {
                 Ok(Ok(None)) => hash_cached(&path, algos, progress, cache, cancel),
                 Ok(Ok(Some(resolved))) => hash_file(resolved.path(), algos, progress, cancel),
@@ -926,6 +931,30 @@ pub async fn hash_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_cancel_while_staging_aborts_instead_of_counting_a_failure() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("set.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("game.iso", opts).unwrap();
+        zip.write_all(b"iso").unwrap();
+        zip.finish().unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut failed = 0;
+
+        let err = stage_or_fail(&path, &["iso"], &mut failed, &cancel)
+            .await
+            .expect_err("a cancelled run must not stage");
+
+        assert!(Cancelled::in_chain(&err));
+        assert_eq!(failed, 0);
+    }
 
     #[tokio::test]
     async fn recursive_verify_fails_on_an_unreadable_archive() {

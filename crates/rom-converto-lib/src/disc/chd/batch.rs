@@ -236,9 +236,11 @@ pub async fn verify_chd_batch(
         cancel,
         |path| Some(path.to_path_buf()),
         async |input, _output| -> anyhow::Result<()> {
-            let resolved =
-                tokio::task::spawn_blocking(move || crate::util::resolve_input(&input, &["chd"]))
-                    .await??;
+            let token = cancel.clone();
+            let resolved = tokio::task::spawn_blocking(move || {
+                crate::util::resolve_input(&input, &["chd"], &token)
+            })
+            .await??;
             verify_chd(
                 progress,
                 resolved.path().to_path_buf(),

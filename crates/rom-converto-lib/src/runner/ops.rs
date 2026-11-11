@@ -1573,7 +1573,7 @@ pub(crate) async fn cso_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "cso.verify").await?;
+    let resolved = stage_input(&input, "cso.verify", &cancel).await?;
     let source = staged_path(&resolved, &input);
     crate::cso::verify_cso(
         progress,
@@ -1792,7 +1792,7 @@ pub(crate) async fn chd_verify(
     }
     // A dry run verifies read-only: it never rewrites the header.
     let fix = fix && !req.dry_run;
-    let resolved = stage_input(&input, "chd.verify").await?;
+    let resolved = stage_input(&input, "chd.verify", &cancel).await?;
     let source = staged_path(&resolved, &input);
     crate::disc::chd::verify_chd(
         progress,
@@ -2199,7 +2199,8 @@ pub(crate) async fn hash(
     let cache = req.ctx.hash_cache.as_deref();
     let resolved = tokio::task::spawn_blocking({
         let input = input.clone();
-        move || crate::util::resolve_for_hash(&input, &crate::util::HASH_MEMBER_EXTS)
+        let cancel = cancel.clone();
+        move || crate::util::resolve_for_hash(&input, &crate::util::HASH_MEMBER_EXTS, &cancel)
     })
     .await??;
     let source = resolved
@@ -2373,7 +2374,7 @@ pub(crate) async fn ctr_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "ctr.verify").await?;
+    let resolved = stage_input(&input, "ctr.verify", &cancel).await?;
     let source = staged_path(&resolved, &input);
     let result = crate::nintendo::ctr::verify::verify_ctr(
         source,
@@ -2505,7 +2506,7 @@ pub(crate) async fn dol_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "dol.verify").await?;
+    let resolved = stage_input(&input, "dol.verify", &cancel).await?;
     let source = staged_path(&resolved, &input);
     let result = crate::nintendo::dol::verify::verify_dol(
         source,
@@ -2527,7 +2528,7 @@ pub(crate) async fn rvl_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "rvl.verify").await?;
+    let resolved = stage_input(&input, "rvl.verify", &cancel).await?;
     let source = staged_path(&resolved, &input);
     let result = crate::nintendo::rvl::verify::verify_rvl(
         source,
@@ -2652,7 +2653,7 @@ pub(crate) async fn nx_verify(
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
     let keys = crate::nintendo::nx::load_keyset(req.options.keys.as_deref())?;
-    let resolved = stage_input(&input, "nx.verify").await?;
+    let resolved = stage_input(&input, "nx.verify", &cancel).await?;
     let source = staged_path(&resolved, &input).to_path_buf();
     let result =
         crate::nintendo::nx::verify_container_async(source, keys, progress, cancel).await?;
@@ -2735,7 +2736,7 @@ pub(crate) async fn wup_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "wup.verify").await?;
+    let resolved = stage_input(&input, "wup.verify", &cancel).await?;
     let source = staged_path(&resolved, &input).to_path_buf();
     let result =
         crate::nintendo::wup::verify_wup_async(source, req.options.key.clone(), progress, cancel)
@@ -2997,7 +2998,8 @@ pub(crate) async fn info(req: RunRequest, cancel: CancelToken) -> Result<RunResp
     let keys_path = req.options.keys.clone();
     let info = tokio::task::spawn_blocking(move || {
         // `resolved` owns the staging directory: it must outlive the read.
-        let resolved = crate::util::resolve_input(&input, crate::info::SUPPORTED_INFO_EXTENSIONS)?;
+        let resolved =
+            crate::util::resolve_input(&input, crate::info::SUPPORTED_INFO_EXTENSIONS, &cancel)?;
         // Extracting an archive member can take long; do not read what the
         // caller already cancelled.
         if cancel.is_cancelled() {
@@ -3075,7 +3077,7 @@ where
     // Templates need the staged member's metadata, and CHD extraction needs
     // its media type to choose the output extension before planning.
     let mut resolved = if req.options.output_template.is_some() || operation == "chd.extract" {
-        stage_input_with_selection(input, operation, selection.take()).await?
+        stage_input_with_selection(input, operation, selection.take(), &cancel).await?
     } else {
         None
     };
@@ -3148,7 +3150,7 @@ where
         return Ok(planned(line));
     }
     if resolved.is_none() {
-        resolved = stage_input_with_selection(input, operation, selection.take()).await?;
+        resolved = stage_input_with_selection(input, operation, selection.take(), &cancel).await?;
     }
     let source = staged_path(&resolved, input).to_path_buf();
     if !req.options.skip_space_check.unwrap_or(false) {
@@ -3226,22 +3228,28 @@ fn nx_media_label(input: &Path) -> Option<String> {
 }
 
 /// Stages an archive input for `operation`.
-pub(crate) async fn stage_input(input: &Path, operation: &str) -> Result<Option<ResolvedInput>> {
-    stage_input_with_selection(input, operation, None).await
+pub(crate) async fn stage_input(
+    input: &Path,
+    operation: &str,
+    cancel: &CancelToken,
+) -> Result<Option<ResolvedInput>> {
+    stage_input_with_selection(input, operation, None, cancel).await
 }
 
 async fn stage_input_with_selection(
     input: &Path,
     operation: &str,
     selection: Option<crate::util::ArchiveSelection>,
+    cancel: &CancelToken,
 ) -> Result<Option<ResolvedInput>> {
     let exts = find_op(operation).map_or(&[][..], OpSpec::input_exts);
     if exts.is_empty() {
         return Ok(None);
     }
     let input = input.to_path_buf();
+    let cancel = cancel.clone();
     tokio::task::spawn_blocking(move || {
-        crate::util::resolve_input_with_selection(&input, exts, selection)
+        crate::util::resolve_input_with_selection(&input, exts, selection, &cancel)
     })
     .await?
     .map(Some)
@@ -3835,10 +3843,11 @@ pub(crate) async fn dir_op<F, Fut>(
     desired: &Path,
     operation: &str,
     required_bytes: fn(&Path) -> u64,
+    cancel: CancelToken,
     run: F,
 ) -> Result<RunResponse>
 where
-    F: FnOnce(PathBuf, PathBuf) -> Fut,
+    F: FnOnce(PathBuf, PathBuf, CancelToken) -> Fut,
     Fut: std::future::Future<Output = Result<(u64, Option<RunData>)>>,
 {
     let plan = prepare_output_dir(req, input, desired, operation)?;
@@ -3848,13 +3857,13 @@ where
     if let Some(line) = plan.line {
         return Ok(planned(line));
     }
-    let resolved = stage_input(input, operation).await?;
+    let resolved = stage_input(input, operation, &cancel).await?;
     let source = staged_path(&resolved, input).to_path_buf();
     if !req.options.skip_space_check.unwrap_or(false) {
         preflight_space(&output, required_bytes(&source))?;
     }
     let started = Instant::now();
-    let (output_bytes, data) = run(source, output.clone()).await?;
+    let (output_bytes, data) = run(source, output.clone(), cancel).await?;
     Ok(
         RunResponse::ok(format!("Wrote {}", output.display()), data).with_record(dir_op_record(
             input,

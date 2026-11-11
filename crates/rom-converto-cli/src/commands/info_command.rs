@@ -86,7 +86,7 @@ pub async fn run(cmd: InfoCommand, ctx: DispatchCtx<'_>) -> Result<()> {
         // staged member dir the info read holds never crosses back onto the
         // runtime between steps.
         let info = tokio::task::spawn_blocking(move || {
-            info_for_batch_entry(&input, &opts, save_icon.as_deref())
+            info_for_batch_entry(&input, &opts, save_icon.as_deref(), &cancel)
         })
         .await??;
         info_print::print(&info, cmd.json)?;

@@ -1126,13 +1126,17 @@ pub async fn verify_ctr_batch(
                 .and_then(|s| s.to_str())
                 .unwrap_or("<unnamed>");
             let walked = path.to_path_buf();
+            let token = cancel.clone();
             let resolved = match tokio::task::spawn_blocking(move || {
-                crate::util::resolve_input(&walked, VERIFY_EXTS)
+                crate::util::resolve_input(&walked, VERIFY_EXTS, &token)
             })
             .await
             {
                 Ok(Ok(resolved)) => resolved,
                 Ok(Err(err)) => {
+                    if cancel.is_cancelled() {
+                        return Err(err);
+                    }
                     summary.failed += 1;
                     log::warn!("[FAIL] {display_name} - {err:#}");
                     return Ok(());

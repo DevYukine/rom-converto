@@ -673,8 +673,9 @@ pub(super) async fn stage_unit(
         return Ok(None);
     }
     let path = primary.to_path_buf();
+    let token = cancel.clone();
     match tokio::task::spawn_blocking(move || {
-        crate::util::resolve_input(&path, SUPPORTED_INFO_EXTENSIONS)
+        crate::util::resolve_input(&path, SUPPORTED_INFO_EXTENSIONS, &token)
     })
     .await
     .context("staging archive input")?

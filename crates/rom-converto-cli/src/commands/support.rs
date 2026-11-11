@@ -119,8 +119,11 @@ pub(crate) fn log_count_summary(count: usize, tally: Tally) {
 pub(crate) async fn resolve_input_off_runtime(
     path: PathBuf,
     exts: &'static [&'static str],
+    cancel: &CancelToken,
 ) -> Result<ResolvedInput> {
-    tokio::task::spawn_blocking(move || rom_converto_lib::util::resolve_input(&path, exts)).await?
+    let cancel = cancel.clone();
+    tokio::task::spawn_blocking(move || rom_converto_lib::util::resolve_input(&path, exts, &cancel))
+        .await?
 }
 
 pub(crate) fn print_hash_row(path: &Path, d: &FileDigests, algos: &[HashAlgo]) {
@@ -319,10 +322,12 @@ pub(crate) fn info_for_batch_entry(
     path: &Path,
     opts: &rom_converto_lib::info::InfoOptions,
     save_icon: Option<&Path>,
+    cancel: &CancelToken,
 ) -> Result<rom_converto_lib::info::InfoResult> {
     let resolved = rom_converto_lib::util::resolve_input(
         path,
         rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+        cancel,
     )?;
     let info = rom_converto_lib::info::read_info(resolved.path(), opts)?;
     if let Some(dir) = save_icon {
@@ -350,7 +355,8 @@ pub(crate) fn run_info_batch(
                 return Err(Cancelled.into());
             }
             let path_str = path.display().to_string();
-            match info_for_batch_entry(path, opts, save_icon) {
+            match info_for_batch_entry(path, opts, save_icon, cancel) {
+                Err(_) if cancel.is_cancelled() => return Err(Cancelled.into()),
                 Ok(info) => results.push(InfoBatchEntry {
                     path: path_str,
                     ok: true,
@@ -375,7 +381,8 @@ pub(crate) fn run_info_batch(
                 return Err(Cancelled.into());
             }
             println!("==> {}", path.display());
-            match info_for_batch_entry(path, opts, save_icon) {
+            match info_for_batch_entry(path, opts, save_icon, cancel) {
+                Err(_) if cancel.is_cancelled() => return Err(Cancelled.into()),
                 Ok(info) => {
                     if let Err(e) = info_print::print(&info, false) {
                         log::warn!("{}: {}", path.display(), e);

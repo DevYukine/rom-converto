@@ -169,9 +169,18 @@ pub async fn digest_unit(
             // entry stays keyed by the archive so batch and single runs hit.
             let staged = {
                 let path = path.clone();
-                tokio::task::spawn_blocking(move || resolve_input(&path, ARCHIVE_IMAGE_EXTS))
-                    .await?
-                    .map_err(|e| DatError::InvalidInput(e.to_string()))?
+                let cancel = cancel.clone();
+                tokio::task::spawn_blocking(move || {
+                    resolve_input(&path, ARCHIVE_IMAGE_EXTS, &cancel)
+                })
+                .await?
+                .map_err(|e| {
+                    if Cancelled::in_chain(&e) {
+                        DatError::Cancelled(Cancelled)
+                    } else {
+                        DatError::InvalidInput(e.to_string())
+                    }
+                })?
             };
             let result = digest_inner_async(
                 staged.path().to_path_buf(),
@@ -370,6 +379,31 @@ pub fn bucket(e: DatError) -> DatResult<(DigestBucket, String)> {
 mod tests {
     use super::*;
     use crate::dat::fixdat::game_file_for;
+
+    #[tokio::test]
+    async fn digesting_an_archive_under_a_cancelled_token_reports_cancelled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("game.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        zip.start_file("game.iso", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"iso").unwrap();
+        zip.finish().unwrap();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = digest_unit(
+            &DatUnit::File(path),
+            &[HashAlgo::Crc32],
+            None,
+            &crate::util::NoProgress,
+            &cancel,
+        )
+        .await
+        .expect_err("a cancelled run must not digest");
+
+        assert!(matches!(err, DatError::Cancelled(_)), "{err:?}");
+    }
 
     /// A cue sheet referencing a bin through a redundant `sub/../` path
     /// still covers the file the walk produced: the bin does not resurface

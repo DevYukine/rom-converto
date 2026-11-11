@@ -64,7 +64,7 @@ pub async fn run(command: VitaCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, &["vpk", "pkg"])?;
+            let resolved = rom_converto_lib::util::resolve_input(input, &["vpk", "pkg"], &cancel)?;
             let info = rom_converto_lib::info::read_info(
                 resolved.path(),
                 &rom_converto_lib::info::InfoOptions::default(),

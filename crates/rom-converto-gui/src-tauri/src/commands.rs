@@ -335,6 +335,7 @@ pub async fn cmd_read_info(
         let resolved = rom_converto_lib::util::resolve_input(
             &input,
             rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
+            &CancelToken::new(),
         )?;
         let opts = InfoOptions {
             keys_path: keys.clone(),

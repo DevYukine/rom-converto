@@ -223,7 +223,7 @@ fn stage_merge_inputs(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            crate::util::resolve_input(path, &["nsp", "xci"])
+            crate::util::resolve_input(path, &["nsp", "xci"], cancel)
         })
         .collect()
 }
@@ -345,7 +345,8 @@ pub(crate) async fn nx_split(
         &desired,
         "nx.split",
         file_len,
-        |source, output_dir| async move {
+        cancel,
+        |source, output_dir, cancel| async move {
             let files = crate::nintendo::nx::split_container_async(
                 source, output_dir, keys, progress, cancel,
             )
@@ -435,7 +436,8 @@ pub(crate) async fn ctr_unbundle(
         &desired,
         "ctr.unbundle",
         file_len,
-        |source, output_dir| async move {
+        cancel,
+        |source, output_dir, cancel| async move {
             let files = crate::nintendo::ctr::bundle::unbundle_async(
                 source, user_input, output_dir, progress, cancel,
             )

@@ -212,7 +212,10 @@ pub fn list_members(path: &Path) -> Result<Vec<ArchiveMember>> {
 /// # Errors
 /// Same as [`list_members`], plus [`crate::util::Cancelled`] when a tar
 /// listing is cancelled.
-fn list_members_with(path: &Path, cancel: &crate::util::CancelToken) -> Result<Vec<ArchiveMember>> {
+pub(crate) fn list_members_with(
+    path: &Path,
+    cancel: &crate::util::CancelToken,
+) -> Result<Vec<ArchiveMember>> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
             "gzip archives without a tar container are not supported, extract the file first: {}",
@@ -312,11 +315,12 @@ pub(crate) fn probe_with_head(
         return Ok(Some((selection, None)));
     }
     let name = selection.member_name().to_string();
-    let head = read_member(path, kind, &name, selection.member_index, |rd| {
+    let head = read_member(path, kind, &name, selection.member_index, cancel, |rd| {
         let mut buf = Vec::with_capacity(len);
         rd.take(len as u64).read_to_end(&mut buf)?;
         Ok(buf)
-    })?;
+    })
+    .map_err(|err| cancelled_or(err, cancel))?;
     Ok(Some((selection, Some(head))))
 }
 
@@ -324,23 +328,26 @@ pub(crate) fn probe_with_head(
 /// `member_index`, the member's position among the listing's entries in
 /// archive order, and checks the lossy decoded name; distinct raw names can
 /// share that name. 7z does the same over its listing. Zip resolves by
-/// exact decoded name.
+/// exact decoded name. Reading stops with [`crate::util::Cancelled`] once
+/// `cancel` fires.
 fn read_member<T>(
     path: &Path,
     kind: ArchiveKind,
     member_name: &str,
     member_index: usize,
+    cancel: &crate::util::CancelToken,
     read: impl FnOnce(&mut dyn std::io::Read) -> std::io::Result<T>,
 ) -> Result<T> {
     match kind {
         ArchiveKind::Zip => {
-            let mut zip = zip::ZipArchive::new(File::open(path)?)?;
+            let mut zip = zip::ZipArchive::new(CancelRead::new(File::open(path)?, cancel))?;
             let index = zip_member_index(&mut zip, member_name)?;
             let mut entry = zip.by_index(index)?;
             Ok(read(&mut entry)?)
         }
         ArchiveKind::SevenZ => {
-            let (archive, mut file) = crate::util::sevenz_guard::open(path)?;
+            let (archive, file) = crate::util::sevenz_guard::open(path)?;
+            let mut file = CancelRead::new(file, cancel);
             // list_7z keeps members in `archive.files` order, so the
             // listing index maps back through the same filter. Names can
             // repeat in a 7z, so the exact entry is matched by address.
@@ -403,7 +410,7 @@ fn read_member<T>(
                             // the same decoded stream, so a member that is
                             // not drained leaves the stream mid-entry and
                             // the next member reads the wrong bytes.
-                            std::io::copy(rd, &mut std::io::sink())?;
+                            std::io::copy(&mut CancelRead::new(rd, cancel), &mut std::io::sink())?;
                             Ok(true)
                         })
                         .map_err(|err| anyhow!("decoding {}: {err}", path.display()))?;
@@ -414,7 +421,7 @@ fn read_member<T>(
                 .map_err(Into::into)
         }
         ArchiveKind::Tar | ArchiveKind::TarGz => {
-            let mut archive = open_tar(path, kind == ArchiveKind::TarGz)?;
+            let mut archive = open_tar(path, kind == ArchiveKind::TarGz, cancel)?;
             // Count members exactly as list_tar does, so member_index
             // addresses the sequence the selection was built from.
             let mut kept = 0;
@@ -466,8 +473,12 @@ fn list_rar(path: &Path) -> Result<Vec<ArchiveMember>> {
     Ok(out)
 }
 
-fn open_tar(path: &Path, gz: bool) -> Result<tar::Archive<Box<dyn std::io::Read>>> {
-    let file = File::open(path)?;
+fn open_tar(
+    path: &Path,
+    gz: bool,
+    cancel: &crate::util::CancelToken,
+) -> Result<tar::Archive<Box<dyn std::io::Read>>> {
+    let file = CancelRead::new(File::open(path)?, cancel);
     let reader: Box<dyn std::io::Read> = if gz {
         Box::new(flate2::read::GzDecoder::new(file))
     } else {
@@ -481,7 +492,7 @@ fn list_tar(
     gz: bool,
     cancel: &crate::util::CancelToken,
 ) -> Result<Vec<ArchiveMember>> {
-    let mut archive = open_tar(path, gz)?;
+    let mut archive = open_tar(path, gz, cancel)?;
     let mut out = Vec::new();
     let mut name_bytes = 0;
     for entry in archive.entries()? {
@@ -519,12 +530,54 @@ fn declared_size_error(
     }
 }
 
+/// A reader that fails with [`crate::util::Cancelled`] once `cancel` fires.
+/// The error kind is `Other`, never `Interrupted`, which std's copy and
+/// read loops retry forever.
+struct CancelRead<R> {
+    inner: R,
+    cancel: crate::util::CancelToken,
+}
+
+impl<R> CancelRead<R> {
+    fn new(inner: R, cancel: &crate::util::CancelToken) -> Self {
+        Self {
+            inner,
+            cancel: cancel.clone(),
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for CancelRead<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.cancel.is_cancelled() {
+            return Err(std::io::Error::other(crate::util::Cancelled));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<R: std::io::Seek> std::io::Seek for CancelRead<R> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(pos)
+    }
+}
+
 /// Copies at most one byte beyond the declared size and flushes before
 /// returning, so a buffered write failure cannot pass the size check.
-fn copy_member(rd: &mut dyn std::io::Read, out: &Path, declared_size: u64) -> std::io::Result<u64> {
+fn copy_member(
+    rd: &mut dyn std::io::Read,
+    out: &Path,
+    declared_size: u64,
+    cancel: &crate::util::CancelToken,
+) -> std::io::Result<u64> {
     let mut writer = std::io::BufWriter::with_capacity(1 << 20, File::create(out)?);
+    // The source side is cancellable too, but a highly compressible member
+    // decodes a lot of output per source read.
     let written = std::io::copy(
-        &mut std::io::Read::take(&mut *rd, declared_size.saturating_add(1)),
+        &mut CancelRead::new(
+            std::io::Read::take(&mut *rd, declared_size.saturating_add(1)),
+            cancel,
+        ),
         &mut writer,
     )?;
     writer.into_inner().map_err(|err| err.into_error())?;
@@ -539,11 +592,13 @@ fn extract_7z_members(
     members: &[ArchiveMember],
     indices: &[usize],
     dest_dir: &Path,
+    cancel: &crate::util::CancelToken,
 ) -> Result<()> {
     if indices.is_empty() {
         return Ok(());
     }
-    let (archive, mut file) = crate::util::sevenz_guard::open(path)?;
+    let (archive, file) = crate::util::sevenz_guard::open(path)?;
+    let mut file = CancelRead::new(file, cancel);
     let kept: Vec<usize> = archive
         .files
         .iter()
@@ -579,7 +634,7 @@ fn extract_7z_members(
                 .iter()
                 .find(|(target, _, _)| std::ptr::eq(*target, entry))
             {
-                let copied = copy_member(rd, out, member.size);
+                let copied = copy_member(rd, out, member.size, cancel);
                 match copied {
                     Ok(written) if written == member.size => {}
                     Ok(written) => {
@@ -597,7 +652,7 @@ fn extract_7z_members(
             } else {
                 // Solid members share the decoded stream: drain every
                 // preceding member so the next starts at its own bytes.
-                std::io::copy(rd, &mut std::io::sink())?;
+                std::io::copy(&mut CancelRead::new(rd, cancel), &mut std::io::sink())?;
                 Ok(true)
             }
         };
@@ -649,6 +704,7 @@ fn extract_one(
     member_index: usize,
     dest_dir: &Path,
     declared_size: u64,
+    cancel: &crate::util::CancelToken,
 ) -> Result<PathBuf> {
     match kind {
         ArchiveKind::Zip | ArchiveKind::SevenZ | ArchiveKind::Tar | ArchiveKind::TarGz => {
@@ -656,8 +712,8 @@ fn extract_one(
             // A member that decodes to other bytes than the size its
             // archive declares must not silently stage the difference:
             // hold the copy to the declared size and refuse a mismatch.
-            let copied = read_member(path, kind, member_name, member_index, |rd| {
-                copy_member(rd, &out, declared_size)
+            let copied = read_member(path, kind, member_name, member_index, cancel, |rd| {
+                copy_member(rd, &out, declared_size, cancel)
             });
             match copied {
                 Ok(written) if written == declared_size => Ok(out),
@@ -682,7 +738,14 @@ fn extract_one(
             // Count members exactly as list_rar does, so member_index
             // addresses the sequence the selection was built from.
             let mut kept = 0;
-            while let Some(header) = archive.read_header()? {
+            // unrar has no per-chunk hook, so a cancel lands between members.
+            loop {
+                if cancel.is_cancelled() {
+                    return Err(crate::util::Cancelled.into());
+                }
+                let Some(header) = archive.read_header()? else {
+                    break;
+                };
                 let entry = header.entry();
                 // Processing mode re-reports a split file's continuation
                 // header in every volume part, while list mode hides it;
@@ -817,7 +880,13 @@ pub fn entry_count(path: &Path) -> Result<usize> {
             // `git archive` writes) or another metadata header is no file
             // the archive's removal would destroy.
             let mut count = 0;
-            for entry in open_tar(path, kind == ArchiveKind::TarGz)?.entries()? {
+            for entry in open_tar(
+                path,
+                kind == ArchiveKind::TarGz,
+                &crate::util::CancelToken::new(),
+            )?
+            .entries()?
+            {
                 let kind = entry?.header().entry_type();
                 if kind.is_file()
                     || kind.is_symlink()
@@ -953,7 +1022,12 @@ fn is_rar_continuation(path: &Path) -> bool {
 /// # Errors
 /// Errors when staging a picked archive member fails; an archive whose
 /// listing or member search fails is logged and returned as `None`.
-pub fn resolve_for_hash(path: &Path, exts: &[&str]) -> anyhow::Result<Option<ResolvedInput>> {
+/// A cancel is always an error, never a fallback to the archive bytes.
+pub fn resolve_for_hash(
+    path: &Path,
+    exts: &[&str],
+    cancel: &crate::util::CancelToken,
+) -> anyhow::Result<Option<ResolvedInput>> {
     if !is_archive_path(path) {
         return Ok(None);
     }
@@ -961,7 +1035,8 @@ pub fn resolve_for_hash(path: &Path, exts: &[&str]) -> anyhow::Result<Option<Res
     if kind_of(path).is_none() || is_rar_continuation(path) {
         return Ok(None);
     }
-    match probe_selection(path, exts, false, &crate::util::CancelToken::new()) {
+    match probe_selection(path, exts, false, cancel) {
+        Err(_) if cancel.is_cancelled() => Err(crate::util::Cancelled.into()),
         Err(err) if err.downcast_ref::<NoMatchingMember>().is_some() => {
             log::debug!("hashing {} as a file: {err:#}", path.display());
             Ok(None)
@@ -970,7 +1045,9 @@ pub fn resolve_for_hash(path: &Path, exts: &[&str]) -> anyhow::Result<Option<Res
             log::warn!("hashing {} as a file: {err:#}", path.display());
             Ok(None)
         }
-        Ok(selection) => resolve_input_with_selection(path, exts, Some(selection)).map(Some),
+        Ok(selection) => {
+            resolve_input_with_selection(path, exts, Some(selection), cancel).map(Some)
+        }
     }
 }
 
@@ -1231,9 +1308,14 @@ fn cue_sidecar_members(
 /// # Errors
 /// Errors on unsupported or corrupt archives, 7z guard refusals, listing
 /// caps, no matching image, unsafe member names, ambiguous track references,
-/// insufficient temp space, declared-size mismatches, or extraction I/O failures.
-pub fn resolve_input(path: &Path, exts: &[&str]) -> Result<ResolvedInput> {
-    resolve_input_with_selection(path, exts, None)
+/// insufficient temp space, declared-size mismatches, or extraction I/O failures,
+/// and with [`crate::util::Cancelled`] once `cancel` fires.
+pub fn resolve_input(
+    path: &Path,
+    exts: &[&str],
+    cancel: &crate::util::CancelToken,
+) -> Result<ResolvedInput> {
+    resolve_input_with_selection(path, exts, None, cancel)
 }
 
 /// Same as [`resolve_input`], but reuses a previously probed
@@ -1245,6 +1327,27 @@ pub fn resolve_input_with_selection(
     path: &Path,
     exts: &[&str],
     selection: Option<ArchiveSelection>,
+    cancel: &crate::util::CancelToken,
+) -> Result<ResolvedInput> {
+    stage_selection(path, exts, selection, cancel).map_err(|err| cancelled_or(err, cancel))
+}
+
+/// A decoder can carry a reader error out as text (sevenz_rust2's error has
+/// no `source()`), dropping the [`crate::util::Cancelled`] payload, so any
+/// error under a cancelled token is reported as the cancel.
+fn cancelled_or(err: anyhow::Error, cancel: &crate::util::CancelToken) -> anyhow::Error {
+    if cancel.is_cancelled() {
+        crate::util::Cancelled.into()
+    } else {
+        err
+    }
+}
+
+fn stage_selection(
+    path: &Path,
+    exts: &[&str],
+    selection: Option<ArchiveSelection>,
+    cancel: &crate::util::CancelToken,
 ) -> Result<ResolvedInput> {
     if !is_archive_path(path) {
         return Ok(ResolvedInput {
@@ -1264,7 +1367,7 @@ pub fn resolve_input_with_selection(
     })?;
     let selection = match selection {
         Some(selection) => selection,
-        None => probe_selection(path, exts, false, &crate::util::CancelToken::new())?,
+        None => probe_selection(path, exts, false, cancel)?,
     };
     let ArchiveSelection {
         members,
@@ -1296,6 +1399,7 @@ pub fn resolve_input_with_selection(
             member_index,
             tmp.path(),
             member.size,
+            cancel,
         )?)
     } else {
         None
@@ -1351,10 +1455,11 @@ pub fn resolve_input_with_selection(
             member_index,
             tmp.path(),
             member.size,
+            cancel,
         )?,
     };
     if kind == ArchiveKind::SevenZ {
-        extract_7z_members(path, &members, &referenced, tmp.path())?;
+        extract_7z_members(path, &members, &referenced, tmp.path(), cancel)?;
     } else {
         for index in referenced {
             extract_one(
@@ -1364,6 +1469,7 @@ pub fn resolve_input_with_selection(
                 index,
                 tmp.path(),
                 members[index].size,
+                cancel,
             )?;
         }
     }
@@ -1432,7 +1538,7 @@ mod tests {
                 .is_none()
         );
 
-        let resolved = resolve_input(&zip_path, &["gba"]).unwrap();
+        let resolved = resolve_input(&zip_path, &["gba"], &CancelToken::new()).unwrap();
         let extracted = std::fs::read(resolved.path()).unwrap();
         assert_eq!(extracted, bytes);
         assert_eq!(
@@ -1599,7 +1705,7 @@ mod tests {
             zip::CompressionMethod::Stored,
             &[("readme.txt", b"junk"), ("game.iso", b"payload")],
         );
-        let resolved = resolve_input(&zip, &["iso"]).unwrap();
+        let resolved = resolve_input(&zip, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"payload");
         assert_eq!(resolved.path().file_name().unwrap(), "game.iso");
         // Output lands next to the archive, named after the member.
@@ -1880,27 +1986,113 @@ mod tests {
         // No matching member, and an archive that cannot be listed: the
         // archive bytes themselves are the input.
         assert!(
-            resolve_for_hash(&dir.path().join("docs.zip"), &["iso"])
+            resolve_for_hash(&dir.path().join("docs.zip"), &["iso"], &CancelToken::new())
                 .unwrap()
                 .is_none()
         );
         assert!(
-            resolve_for_hash(&dir.path().join("broken.zip"), &["iso"])
-                .unwrap()
-                .is_none()
+            resolve_for_hash(
+                &dir.path().join("broken.zip"),
+                &["iso"],
+                &CancelToken::new()
+            )
+            .unwrap()
+            .is_none()
         );
 
-        let resolved = resolve_for_hash(&dir.path().join("game.zip"), &["iso"])
-            .unwrap()
-            .unwrap();
+        let resolved =
+            resolve_for_hash(&dir.path().join("game.zip"), &["iso"], &CancelToken::new())
+                .unwrap()
+                .unwrap();
         assert_eq!(
             resolved.path().file_name(),
             Some(std::ffi::OsStr::new("game.iso"))
         );
         assert_ne!(resolved.path(), dir.path().join("game.zip"));
 
-        let passthrough = resolve_for_hash(&plain, &["iso"]).unwrap();
+        let passthrough = resolve_for_hash(&plain, &["iso"], &CancelToken::new()).unwrap();
         assert!(passthrough.is_none());
+    }
+
+    #[test]
+    fn a_cancelled_token_stops_staging_a_zip_tar_or_7z_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("set.zip");
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("game.iso", b"iso")],
+        );
+        let tar = dir.path().join("set.tar");
+        write_tar(&tar, false, &[("game.iso", b"iso")]);
+        let sevenz = dir.path().join("set.7z");
+        write_7z(&sevenz, &[("game.iso", b"iso")]);
+        let targz = dir.path().join("set.tar.gz");
+        write_tar(&targz, true, &[("game.iso", b"iso")]);
+        let rar = dir.path().join("set.rar");
+        std::fs::write(&rar, RAR_FIXTURE).unwrap();
+
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        for path in [&zip, &tar, &sevenz, &targz, &rar] {
+            let selection = probe_selection(path, &["iso"], false, &CancelToken::new()).unwrap();
+            let err = resolve_input_with_selection(path, &["iso"], Some(selection), &cancel)
+                .err()
+                .unwrap_or_else(|| panic!("{} staged despite the cancel", path.display()));
+            assert!(crate::util::Cancelled::in_chain(&err), "{}", path.display());
+        }
+    }
+
+    /// An endless member that cancels on its first read.
+    struct CancelsOnFirstRead {
+        cancel: CancelToken,
+    }
+
+    impl std::io::Read for CancelsOnFirstRead {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.cancel.cancel();
+            buf.fill(0xAB);
+            Ok(buf.len())
+        }
+    }
+
+    #[test]
+    fn copy_member_stops_mid_member_when_cancelled() {
+        const DECLARED: u64 = 64 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("member.bin");
+        let cancel = CancelToken::new();
+        let mut reader = CancelsOnFirstRead {
+            cancel: cancel.clone(),
+        };
+
+        let err = copy_member(&mut reader, &out, DECLARED, &cancel).unwrap_err();
+
+        assert!(
+            err.get_ref()
+                .is_some_and(|inner| inner.is::<crate::util::Cancelled>()),
+            "{err:?}"
+        );
+        // io::copy retries Interrupted forever.
+        assert_ne!(err.kind(), std::io::ErrorKind::Interrupted);
+        assert!(std::fs::metadata(&out).unwrap().len() < DECLARED);
+    }
+
+    #[test]
+    fn resolve_for_hash_propagates_a_cancel_instead_of_hashing_the_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join("game.zip");
+        write_zip(
+            &zip,
+            zip::CompressionMethod::Stored,
+            &[("game.iso", b"iso")],
+        );
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = resolve_for_hash(&zip, &["iso"], &cancel)
+            .expect_err("a cancelled run must not resolve");
+        assert!(crate::util::Cancelled::in_chain(&err));
     }
 
     #[test]
@@ -1962,7 +2154,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let zip = dir.path().join("g.zip");
             write_zip(&zip, method, &[("game.iso", b"codec-payload")]);
-            let resolved = resolve_input(&zip, &["iso"]).unwrap();
+            let resolved = resolve_input(&zip, &["iso"], &CancelToken::new()).unwrap();
             assert_eq!(
                 std::fs::read(resolved.path()).unwrap(),
                 b"codec-payload",
@@ -1976,7 +2168,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let tar = dir.path().join("g.tar");
         write_tar(&tar, false, &[("game.chd", b"chd-data")]);
-        let resolved = resolve_input(&tar, &["chd"]).unwrap();
+        let resolved = resolve_input(&tar, &["chd"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"chd-data");
     }
 
@@ -2028,6 +2220,7 @@ mod tests {
             0,
             staging.path(),
             declared as u64,
+            &CancelToken::new(),
         )
         .unwrap_err();
         assert_eq!(
@@ -2068,7 +2261,9 @@ mod tests {
             member_index: 2,
             candidates: 3,
         };
-        let resolved = resolve_input_with_selection(&tar, &["iso"], Some(selection)).unwrap();
+        let resolved =
+            resolve_input_with_selection(&tar, &["iso"], Some(selection), &CancelToken::new())
+                .unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"second");
     }
 
@@ -2082,9 +2277,10 @@ mod tests {
                 .unwrap()
                 .unwrap();
             write_tar(&path, gz, &[("other.iso", b"replacement")]);
-            let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
-                .unwrap_err()
-                .to_string();
+            let err =
+                resolve_input_with_selection(&path, &["iso"], Some(selection), &CancelToken::new())
+                    .unwrap_err()
+                    .to_string();
             assert!(err.contains("expected game.iso, found other.iso"), "{err}");
         }
     }
@@ -2095,7 +2291,7 @@ mod tests {
         let targz = dir.path().join("g.tar.gz");
         write_tar(&targz, true, &[("game.iso", b"gz-payload")]);
         assert!(is_archive_path(&targz));
-        let resolved = resolve_input(&targz, &["iso"]).unwrap();
+        let resolved = resolve_input(&targz, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"gz-payload");
     }
 
@@ -2106,7 +2302,7 @@ mod tests {
         write_7z(&sz, &[("junk.txt", b"x"), ("game.iso", b"seven-payload")]);
         let members = list_members(&sz).unwrap();
         assert!(members.iter().any(|m| m.name == "game.iso"));
-        let resolved = resolve_input(&sz, &["iso"]).unwrap();
+        let resolved = resolve_input(&sz, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"seven-payload");
     }
 
@@ -2126,7 +2322,7 @@ mod tests {
         );
         let (archive, _) = crate::util::sevenz_guard::open(&sz).unwrap();
         assert_eq!(archive.blocks.len(), 1);
-        let resolved = resolve_input(&sz, &["iso"]).unwrap();
+        let resolved = resolve_input(&sz, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(
             std::fs::read(resolved.path()).unwrap(),
             b"second member payload"
@@ -2149,7 +2345,7 @@ mod tests {
         );
         let (archive, _) = crate::util::sevenz_guard::open(&path).unwrap();
         assert_eq!(archive.blocks.len(), 1);
-        let resolved = resolve_input(&path, &["cue"]).unwrap();
+        let resolved = resolve_input(&path, &["cue"], &CancelToken::new()).unwrap();
         let staged = resolved.path().parent().unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), cue);
         assert_eq!(
@@ -2177,7 +2373,7 @@ mod tests {
         let mut members = list_members(&path).unwrap();
         members[1].size -= 1;
         let staged = tempfile::tempdir().unwrap();
-        let err = extract_7z_members(&path, &members, &[0, 1], staged.path())
+        let err = extract_7z_members(&path, &members, &[0, 1], staged.path(), &CancelToken::new())
             .unwrap_err()
             .to_string();
         assert!(
@@ -2206,7 +2402,14 @@ mod tests {
         );
         let members = list_members(&path).unwrap();
         let staged = tempfile::tempdir().unwrap();
-        extract_7z_members(&path, &members, &[0, 1, 2], staged.path()).unwrap();
+        extract_7z_members(
+            &path,
+            &members,
+            &[0, 1, 2],
+            staged.path(),
+            &CancelToken::new(),
+        )
+        .unwrap();
         assert!(
             std::fs::read(staged.path().join("empty.bin"))
                 .unwrap()
@@ -2242,7 +2445,7 @@ mod tests {
         // the target.
         raw[packed_end - 1] ^= 0xFF;
         std::fs::write(&sz, raw).unwrap();
-        let resolved = resolve_input(&sz, &["iso"]).unwrap();
+        let resolved = resolve_input(&sz, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"iso-payload");
     }
 
@@ -2258,7 +2461,7 @@ mod tests {
         );
         let members = list_members(&zip).unwrap();
         assert!(members.iter().all(|m| !m.name.contains("..")));
-        let resolved = resolve_input(&zip, &["iso"]).unwrap();
+        let resolved = resolve_input(&zip, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"good");
     }
 
@@ -2282,7 +2485,7 @@ mod tests {
         let members = list_members(&rar).unwrap();
         let names: Vec<&str> = members.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, ["game.iso", "readme.txt"]);
-        let resolved = resolve_input(&rar, &["iso"]).unwrap();
+        let resolved = resolve_input(&rar, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"rar-payload");
         assert_eq!(resolved.output_basis(), dir.path().join("game.iso"));
     }
@@ -2296,9 +2499,10 @@ mod tests {
             .unwrap()
             .unwrap();
         selection.members[selection.member_index].name = "other.iso".into();
-        let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
-            .unwrap_err()
-            .to_string();
+        let err =
+            resolve_input_with_selection(&path, &["iso"], Some(selection), &CancelToken::new())
+                .unwrap_err()
+                .to_string();
         assert!(
             err.contains("other.iso") && err.contains("game.iso"),
             "{err}"
@@ -2314,9 +2518,10 @@ mod tests {
             .unwrap()
             .unwrap();
         selection.members[selection.member_index].name = "other.iso".into();
-        let err = resolve_input_with_selection(&path, &["iso"], Some(selection))
-            .unwrap_err()
-            .to_string();
+        let err =
+            resolve_input_with_selection(&path, &["iso"], Some(selection), &CancelToken::new())
+                .unwrap_err()
+                .to_string();
         assert!(err.contains("expected other.iso, found game.iso"), "{err}");
     }
 
@@ -2325,7 +2530,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let gz = dir.path().join("game.iso.gz");
         std::fs::write(&gz, b"\x1f\x8b\x08\x00").unwrap();
-        let err = resolve_input(&gz, &["iso"]).unwrap_err().to_string();
+        let err = resolve_input(&gz, &["iso"], &CancelToken::new())
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("gzip archives without a tar container"),
             "{err}"
@@ -2341,7 +2548,7 @@ mod tests {
             zip::CompressionMethod::Stored,
             &[("readme.txt", b"x")],
         );
-        assert!(resolve_input(&zip, &["iso"]).is_err());
+        assert!(resolve_input(&zip, &["iso"], &CancelToken::new()).is_err());
     }
 
     #[test]
@@ -2356,7 +2563,7 @@ mod tests {
         let members = list_members(&zip).unwrap();
         assert_eq!(members[0].name, "b.iso");
         assert_eq!(members[1].name, "a.iso");
-        let resolved = resolve_input(&zip, &["iso"]).unwrap();
+        let resolved = resolve_input(&zip, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(resolved.path().file_name().unwrap(), "a.iso");
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"first");
     }
@@ -2375,7 +2582,7 @@ mod tests {
                 ("unrelated.bin", b"other"),
             ],
         );
-        let resolved = resolve_input(&zip, &["cue"]).unwrap();
+        let resolved = resolve_input(&zip, &["cue"], &CancelToken::new()).unwrap();
         let dir = resolved.path().parent().unwrap();
         assert_eq!(
             std::fs::read(dir.join("disc.bin")).unwrap(),
@@ -2400,7 +2607,7 @@ mod tests {
                 ("unrelated.bin", b"other"),
             ],
         );
-        let resolved = resolve_input(&zip, &["gdi"]).unwrap();
+        let resolved = resolve_input(&zip, &["gdi"], &CancelToken::new()).unwrap();
         assert_eq!(resolved.path().file_name().unwrap(), "game.gdi");
         let dir = resolved.path().parent().unwrap();
         assert_eq!(
@@ -2435,7 +2642,9 @@ mod tests {
                 } else {
                     write_tar(&path, false, entries);
                 }
-                let err = resolve_input(&path, &["cue"]).unwrap_err().to_string();
+                let err = resolve_input(&path, &["cue"], &CancelToken::new())
+                    .unwrap_err()
+                    .to_string();
                 assert!(
                     err.contains("referenced archive basename track 01.bin appears multiple times"),
                     "{err}"
@@ -2459,7 +2668,7 @@ mod tests {
                 ("Disc 2/Track 01.bin", b"second-disc"),
             ],
         );
-        let resolved = resolve_input(&zip, &["cue"]).unwrap();
+        let resolved = resolve_input(&zip, &["cue"], &CancelToken::new()).unwrap();
         // The first sorted cue is Disc 1's, and its track resolves inside
         // Disc 1 even though Disc 2 repeats the basename.
         assert_eq!(resolved.output_basis().file_name().unwrap(), "game.cue");
@@ -2474,7 +2683,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let iso = dir.path().join("game.iso");
         std::fs::write(&iso, b"x").unwrap();
-        let resolved = resolve_input(&iso, &["iso"]).unwrap();
+        let resolved = resolve_input(&iso, &["iso"], &CancelToken::new()).unwrap();
         assert_eq!(resolved.path(), iso);
         assert_eq!(resolved.output_basis(), iso);
     }
@@ -2495,7 +2704,9 @@ mod tests {
             selection.output_basis(&zip).unwrap(),
             dir.path().join("a.iso")
         );
-        let resolved = resolve_input_with_selection(&zip, &["iso"], Some(selection)).unwrap();
+        let resolved =
+            resolve_input_with_selection(&zip, &["iso"], Some(selection), &CancelToken::new())
+                .unwrap();
         assert_eq!(std::fs::read(resolved.path()).unwrap(), b"first");
         assert_eq!(resolved.output_basis(), dir.path().join("a.iso"));
     }
@@ -2514,7 +2725,7 @@ mod tests {
                 ("other.bin", b"unreferenced"),
             ],
         );
-        let resolved = resolve_input(&tar, &["cue"]).unwrap();
+        let resolved = resolve_input(&tar, &["cue"], &CancelToken::new()).unwrap();
         let staged = resolved.path().parent().unwrap();
         assert_eq!(std::fs::read(staged.join("one.bin")).unwrap(), b"track");
         assert!(!staged.join("other.bin").exists());

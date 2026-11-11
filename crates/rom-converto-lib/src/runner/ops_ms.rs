@@ -63,7 +63,8 @@ pub(crate) async fn xbox_extract(
                 .map(|info| info.total_file_bytes)
                 .unwrap_or_else(|_| file_len(source))
         },
-        |source, output| async move {
+        cancel,
+        |source, output, cancel| async move {
             crate::microsoft::xbox::extract_xiso(&source, &output, progress, cancel)
                 .await
                 .map(|_| (0, None))
@@ -120,7 +121,8 @@ pub(crate) async fn xenon_extract(
                 .map(|info| info.logical_size)
                 .unwrap_or_else(|_| file_len(source))
         },
-        |source, output| async move {
+        cancel,
+        |source, output, cancel| async move {
             crate::microsoft::xenon::extract_zar(&source, &output, progress, cancel)
                 .await
                 .map(|_| (0, None))
@@ -149,7 +151,8 @@ pub(crate) async fn xenon_convert(
             let len = file_len(source);
             len + len / 0xCC + 0xB000
         },
-        |source, output| async move {
+        cancel,
+        |source, output, cancel| async move {
             let summary = crate::microsoft::xenon::convert_to_god(
                 &source,
                 &output,
@@ -176,7 +179,7 @@ pub(crate) async fn xenon_verify(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
-    let resolved = stage_input(&input, "xenon.verify").await?;
+    let resolved = stage_input(&input, "xenon.verify", &cancel).await?;
     let result =
         crate::microsoft::xenon::verify_zar(staged_path(&resolved, &input), progress, cancel)
             .await?;

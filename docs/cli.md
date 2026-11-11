@@ -290,9 +290,9 @@ once it finishes. In a batch run the file in progress is cancelled and the loop 
 already converted are kept. A cancelled run is reported with its own status rather than as a
 failure. On Linux, macOS, and FreeBSD, SIGTERM and SIGHUP cancel the same way, and a cancelled
 run exits with 128 plus the signal number: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP. A
-run started with `nohup` keeps ignoring SIGHUP. The run stops at its next safe point, so a step
-that cannot be interrupted, such as extracting an archive, finishes first, and further signals
-change nothing. `kill -9` stops it at once, without cleanup.
+run started with `nohup` keeps ignoring SIGHUP. The run stops at its next safe point: extracting
+an archive member stops within one chunk, except a RAR member, which finishes first. Further
+signals change nothing. `kill -9` stops it at once, without cleanup.
 
 Switch split and GoD conversion write multiple output files directly. Overwriting
 these outputs is not atomic: failure or cancellation can remove replaced files.

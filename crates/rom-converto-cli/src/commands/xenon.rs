@@ -227,7 +227,7 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         XenonCommands::Verify(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["zar"])?;
+            let resolved = rom_converto_lib::util::resolve_input(&cmd.input, &["zar"], &cancel)?;
             let result = verify_zar(resolved.path(), &progress, cancel.clone()).await?;
             log::info!("Blocks: {}", result.blocks);
             log::info!("Logical bytes: {}", result.logical_bytes);
@@ -242,7 +242,7 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             // A not-yet-packed disc image is a valid xenon input for
             // compress, so info falls back to its XDVDFS layout rather
             // than failing on the missing ZArchive magic.

@@ -1035,7 +1035,11 @@ mod tests {
         let archive = archive.to_path_buf();
         let staged_archive = archive.clone();
         let resolved = tokio::task::spawn_blocking(move || {
-            crate::util::resolve_input(&staged_archive, crate::info::SUPPORTED_INFO_EXTENSIONS)
+            crate::util::resolve_input(
+                &staged_archive,
+                crate::info::SUPPORTED_INFO_EXTENSIONS,
+                &crate::util::CancelToken::new(),
+            )
         })
         .await
         .unwrap()

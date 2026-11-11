@@ -295,8 +295,11 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .await?
             } else {
                 ensure_input_exists(&cmd.input)?;
-                let resolved =
-                    rom_converto_lib::util::resolve_input(&cmd.input, &["cso", "zso", "dax"])?;
+                let resolved = rom_converto_lib::util::resolve_input(
+                    &cmd.input,
+                    &["cso", "zso", "dax"],
+                    &cancel,
+                )?;
                 verify_cso(
                     &progress,
                     resolved.path().to_path_buf(),
@@ -357,7 +360,7 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::cso::info::read_info(resolved.path())?;
             info_print::print(&rom_converto_lib::info::InfoResult::Cso(info), cmd.json)?;
         }

@@ -652,7 +652,8 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 }
             } else {
                 ensure_input_exists(&cmd.input)?;
-                let resolved = rom_converto_lib::util::resolve_input(&cmd.input, VERIFY_EXTS)?;
+                let resolved =
+                    rom_converto_lib::util::resolve_input(&cmd.input, VERIFY_EXTS, &cancel)?;
                 let result =
                     verify_ctr(resolved.path(), &opts, &progress, &CancelToken::new()).await?;
                 match &result {
@@ -703,7 +704,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::nintendo::ctr::info::read_info(resolved.path())?;
             if let Some(dir) = &cmd.save_icon {
                 save_ctr_icon(&info, dir)?;

@@ -401,6 +401,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             let resolved = rom_converto_lib::util::resolve_input(
                 &cmd.input,
                 &["nsp", "xci", "nca", "nsz", "xcz", "ncz", "dnsp", "dxci"],
+                &cancel,
             )?;
             let result = verify_container_async(
                 resolved.path().to_path_buf(),
@@ -483,7 +484,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         NxCommands::Info(cmd) => {
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS)?;
+            let resolved = rom_converto_lib::util::resolve_input(input, ALL_IMAGE_EXTS, &cancel)?;
             let info = rom_converto_lib::nintendo::nx::info::read_info(
                 resolved.path(),
                 cmd.keys.as_deref(),

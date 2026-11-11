@@ -171,7 +171,7 @@ pub async fn run(command: NtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             }
             let input = require_info_input(&cmd.input)?;
             ensure_input_exists(input)?;
-            let resolved = rom_converto_lib::util::resolve_input(input, &["nds", "dsi"])?;
+            let resolved = rom_converto_lib::util::resolve_input(input, &["nds", "dsi"], &cancel)?;
             let info = rom_converto_lib::nintendo::ntr::info::read_info(resolved.path())?;
             if let Some(dir) = &cmd.save_icon {
                 save_ntr_icon(&info, dir)?;

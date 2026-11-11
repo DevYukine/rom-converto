@@ -102,7 +102,7 @@ pub(crate) async fn psp_to_iso(
 pub(crate) async fn psp_extract(
     req: RunRequest,
     progress: &dyn ProgressReporter,
-    _cancel: CancelToken,
+    cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
     let desired = required_output_dir(&req)?;
@@ -112,7 +112,8 @@ pub(crate) async fn psp_extract(
         &desired,
         "psp.extract",
         file_len,
-        |source, output| async move {
+        cancel,
+        |source, output, _cancel| async move {
             spawn_blocking_with_progress(progress, move |progress| {
                 crate::sony::psp::extract_segments(progress, &source, &output)
             })
@@ -136,7 +137,7 @@ pub(crate) async fn psx_to_pbp(
 
     const OPERATION: &str = "psx.to_pbp";
     let input = required_input(&req)?;
-    refuse_archived_playlist(&input).await?;
+    refuse_archived_playlist(&input, &cancel).await?;
     let desired = req
         .output
         .clone()
@@ -211,7 +212,7 @@ pub(crate) async fn psx_to_pbp(
         }));
     }
 
-    let resolved = stage_input(&input, OPERATION).await?;
+    let resolved = stage_input(&input, OPERATION, &cancel).await?;
     let source = staged_path(&resolved, &input).to_path_buf();
     if let Some(path) = find(source.clone()).await?? {
         match existing {
@@ -251,13 +252,16 @@ pub(crate) async fn psx_to_pbp(
 
 /// Refuses an archive holding an `.m3u`: staging extracts one member and
 /// the sidecars of a cue sheet, never the discs a playlist names.
-async fn refuse_archived_playlist(input: &Path) -> Result<()> {
+async fn refuse_archived_playlist(input: &Path, cancel: &CancelToken) -> Result<()> {
     if !crate::util::is_archive_path(input) {
         return Ok(());
     }
     let archive = input.to_path_buf();
-    let members =
-        tokio::task::spawn_blocking(move || crate::util::archive::list_members(&archive)).await??;
+    let cancel = cancel.clone();
+    let members = tokio::task::spawn_blocking(move || {
+        crate::util::archive::list_members_with(&archive, &cancel)
+    })
+    .await??;
     if let Some(playlist) = members
         .iter()
         .find(|member| has_ext(Path::new(&member.name), "m3u"))
@@ -274,7 +278,7 @@ async fn refuse_archived_playlist(input: &Path) -> Result<()> {
 pub(crate) async fn vita_extract(
     req: RunRequest,
     progress: &dyn ProgressReporter,
-    _cancel: CancelToken,
+    cancel: CancelToken,
 ) -> Result<RunResponse> {
     let input = required_input(&req)?;
     let desired = required_output_dir(&req)?;
@@ -284,7 +288,8 @@ pub(crate) async fn vita_extract(
         &desired,
         "vita.extract",
         file_len,
-        |source, output| async move {
+        cancel,
+        |source, output, _cancel| async move {
             spawn_blocking_with_progress(progress, move |progress| {
                 crate::sony::vita::pkg::extract(&source, &output, progress)
             })
