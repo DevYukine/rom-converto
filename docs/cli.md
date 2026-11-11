@@ -290,7 +290,9 @@ once it finishes. In a batch run the file in progress is cancelled and the loop 
 already converted are kept. A cancelled run is reported with its own status rather than as a
 failure. On Linux, macOS, and FreeBSD, SIGTERM and SIGHUP cancel the same way, and a cancelled
 run exits with 128 plus the signal number: 130 for Ctrl-C, 143 for SIGTERM, 129 for SIGHUP. A
-run started with `nohup` keeps ignoring SIGHUP. The run stops at its next safe point: extracting
+run started with `nohup` keeps ignoring SIGHUP. On Windows, Ctrl-Break and closing the console
+cancel the same way and exit with 149 and 129; Windows ends the process a few seconds after
+its console closes, so cleanup has that long. The run stops at its next safe point: extracting
 an archive member stops within one chunk, except a RAR member, which finishes first. Further
 signals change nothing. `kill -9` stops it at once, without cleanup.
 

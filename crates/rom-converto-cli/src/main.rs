@@ -179,10 +179,10 @@ async fn run() -> Result<()> {
 /// 128 plus the signal that cancelled the run, 0 until then.
 static SIGNAL_EXIT_CODE: AtomicI32 = AtomicI32::new(0);
 
-/// Cancels `cancel` on SIGINT, SIGTERM or SIGHUP (only Ctrl-C on Windows)
-/// and records the exit code. Later signals change nothing, as with Ctrl-C
-/// before: exiting mid-step could strand files under their scratch names in
-/// a rename transaction or a backup swap.
+/// Cancels `cancel` on SIGINT, SIGTERM or SIGHUP (Ctrl-C, Ctrl-Break or a
+/// closed console on Windows) and records the exit code. Later signals
+/// change nothing, as with Ctrl-C before: exiting mid-step could strand
+/// files under their scratch names in a rename transaction or a backup swap.
 async fn watch_signals(cancel: CancelToken) -> std::io::Result<()> {
     #[cfg(unix)]
     let (mut interrupt, mut terminate, mut hangup) = {
@@ -207,7 +207,14 @@ async fn watch_signals(cancel: CancelToken) -> std::io::Result<()> {
         )
     };
     #[cfg(windows)]
-    let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+    let (mut ctrl_c, mut ctrl_break, mut ctrl_close) = {
+        use tokio::signal::windows;
+        (
+            windows::ctrl_c()?,
+            windows::ctrl_break()?,
+            windows::ctrl_close()?,
+        )
+    };
     log::debug!("Listening for signals");
 
     #[cfg(unix)]
@@ -216,10 +223,13 @@ async fn watch_signals(cancel: CancelToken) -> std::io::Result<()> {
         _ = terminate.recv() => libc::SIGTERM,
         Some(()) = async { hangup.as_mut()?.recv().await } => libc::SIGHUP,
     };
+    // Windows waits a few seconds after a console closes before it ends the
+    // process, as tokio holds the close handler; cleanup runs in that time.
     #[cfg(windows)]
-    let signal = {
-        ctrl_c.recv().await;
-        2 // SIGINT
+    let signal = tokio::select! {
+        _ = ctrl_c.recv() => 2,     // SIGINT
+        _ = ctrl_break.recv() => 21, // SIGBREAK
+        _ = ctrl_close.recv() => 1,  // as SIGHUP: the terminal is gone
     };
     SIGNAL_EXIT_CODE.store(128 + signal, Ordering::SeqCst);
     cancel.cancel();
