@@ -116,7 +116,7 @@ impl KeySet {
     /// `<rights_id_hex> = <encrypted_title_key_hex>`, both 16 bytes.
     pub fn merge_title_keys(&mut self, path: &Path) -> NxResult<()> {
         let content = fs::read_to_string(path)?;
-        for raw in content.lines() {
+        for raw in content.trim_start_matches('\u{feff}').lines() {
             let line = strip_comment(raw).trim();
             if line.is_empty() {
                 continue;
@@ -143,7 +143,7 @@ pub fn load_keyset(explicit: Option<&Path>) -> NxResult<KeySet> {
         .ok_or_else(|| NxError::KeyfileMissing(candidate_paths(explicit)))?;
     let content = fs::read_to_string(&path)?;
     let mut keyset = KeySet::default();
-    for raw in content.lines() {
+    for raw in content.trim_start_matches('\u{feff}').lines() {
         let line = strip_comment(raw).trim();
         if line.is_empty() {
             continue;
@@ -275,6 +275,35 @@ mod tests {
         assert_eq!(
             set.key_area_key(KeyAreaKind::Application, 0).unwrap()[0],
             0xAA
+        );
+    }
+
+    #[test]
+    fn a_utf8_bom_on_prod_keys_is_ignored() {
+        let body = "header_key = 00112233445566778899AABBCCDDEEFF112233445566778899AABBCCDDEEFF00\n\
+                    master_key_00 = 00010203040506070809000102030405\n";
+        let plain = load_keyset(Some(write_keys(body).path())).unwrap();
+        let bom = load_keyset(Some(write_keys(&format!("\u{feff}{body}")).path())).unwrap();
+        assert_eq!(bom.header_key, plain.header_key);
+        assert!(bom.header_key.is_some());
+        assert_eq!(bom.master_key(0).unwrap(), plain.master_key(0).unwrap());
+    }
+
+    #[test]
+    fn a_utf8_bom_on_title_keys_is_ignored() {
+        let body = "00112233445566778899AABBCCDDEEFF = 00010203040506070809000102030405\n";
+        let rights_id = [
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD,
+            0xEE, 0xFF,
+        ];
+        let mut plain = KeySet::default();
+        plain.merge_title_keys(write_keys(body).path()).unwrap();
+        let mut bom = KeySet::default();
+        bom.merge_title_keys(write_keys(&format!("\u{feff}{body}")).path())
+            .unwrap();
+        assert_eq!(
+            bom.title_key(&rights_id).unwrap(),
+            plain.title_key(&rights_id).unwrap()
         );
     }
 

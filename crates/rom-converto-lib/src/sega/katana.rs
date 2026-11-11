@@ -154,7 +154,7 @@ fn parse_index_reader<R: BufRead>(mut reader: R) -> Result<GdiIndex> {
     let track_count = loop {
         let line = bounded_line::read_line(&mut reader)?
             .ok_or_else(|| anyhow!("does not open with a track count"))?;
-        let line = line.trim();
+        let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
         }
@@ -380,6 +380,15 @@ pub(crate) mod tests {
             index.track_paths(Path::new("libs/game.gdi")),
             vec![PathBuf::from("libs/a.bin")]
         );
+    }
+
+    #[test]
+    fn a_utf8_bom_before_the_track_count_is_ignored() {
+        let sheet = "2\n1 0 4 2352 a.bin 0\n2 450 0 2352 b.raw 0\n";
+        let plain = parse_index_reader(Cursor::new(sheet)).unwrap();
+        let bom = parse_index_reader(Cursor::new(format!("\u{feff}{sheet}"))).unwrap();
+        assert_eq!(bom.track_count, 2);
+        assert_eq!(format!("{bom:?}"), format!("{plain:?}"));
     }
 
     #[test]
