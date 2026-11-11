@@ -94,7 +94,7 @@ set through the C ABI.
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
 `dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `patch.apply`, `ps3.decrypt`, `psp.to_iso`,
-`psp.extract`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
+`psp.extract`, `psx.to_pbp`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
 `dol.convert` accepts `options.format` `iso` (default), `gcz`, or `rvz`;
@@ -154,6 +154,8 @@ conversion: `output` names a single file, otherwise the output is
 `<name>.v5.chd` next to the input, re-rooted by `options.output_dir` or shaped
 by `options.output_template`. Recursive runs, per-file conflict policies, and
 reports all apply.
+
+`psx.to_pbp` reads a `.cue`, a CD-mode `.chd`, or an `.m3u` of either as `input`, and writes one game folder per EBOOT into `output` or `options.output_dir`, defaulting to `<INPUT>_psp` next to the input. `options.disc_id` (such as `SLUS-99999`) sets the disc ID. It applies when `SYSTEM.CNF` names none and overrides the ID it names. `options.splash` (480x272), `options.icon0` (144x80), and `options.pic1` (480x272) take PNG or JPEG paths. `options.compression` is `deflate` (default) or `stored`. `on_conflict` applies to this game's EBOOT, not to the output folder: `skip` keeps the existing EBOOT, `error` refuses it, and `overwrite` replaces it. `overwrite_invalid` acts as `skip`, since an EBOOT is not verified. `rename` is refused with `invalid_argument`.
 
 ### Recursive runs
 

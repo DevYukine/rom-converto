@@ -8,10 +8,17 @@ use std::path::{Path, PathBuf};
 
 use super::error::{PsxPbpError, PsxPbpResult};
 use super::format::MAX_SECTORS;
-use crate::disc::cd::{MAX_TRACKS, SECTOR_SIZE};
+use crate::disc::cd::{FRAME_SIZE, MAX_TRACKS, SECTOR_SIZE};
+use crate::disc::chd::extract::track_bin_paths;
 use crate::disc::chd::gdi::{TrackChain, TrackSource};
+use crate::disc::chd::layout::{
+    cd_track_metadata_text, chd_layout_is_padded, chd_track_decoded_size, chd_validate_cd_hunks,
+    chd_validate_frame_total,
+};
+use crate::disc::chd::reader::cue_generator::{generate_cue_sheet, parse_chd_track_metadata};
+use crate::disc::chd::reader::{ChdFlavor, open_chd_sync};
 use crate::disc::cue::CueParser;
-use crate::disc::cue::models::{FileType, Msf, TrackType};
+use crate::disc::cue::models::{CueSheet, FileType, Msf, TrackType};
 use crate::sony::disc_source::{ChdSectors, CueSectors};
 use crate::util::iso9660::{DiscKind, SectorSource, read_volume};
 
@@ -36,120 +43,24 @@ pub(crate) struct DiscImage {
 }
 
 impl DiscImage {
-    /// Reads the cue sheet at `cue`, refusing what a PS1 EBOOT cannot
-    /// carry: non-binary files, 2048- or 2336-byte sectors, silence that is
-    /// not stored, partial sectors, a data track that does not start the
-    /// image, track numbers a TOC cannot hold, and a disc past 99:59:74.
-    /// Errors name `source`, the file the user gave.
+    /// Reads the cue sheet at `cue` and lays its tracks over the files it
+    /// names; see [`lay_out`]. Errors name `source`, the file the user
+    /// gave, or the file that cannot be read.
     pub fn open(cue: &Path, source: &Path) -> PsxPbpResult<Self> {
-        let sheet = CueParser::new(cue).parse_reader(BufReader::new(File::open(cue)?))?;
+        let reader = BufReader::new(File::open(cue).map_err(cannot_read(cue))?);
+        let sheet = CueParser::new(cue).parse_reader(reader)?;
         let folder = cue.parent().unwrap_or(Path::new("."));
-        if sheet.tracks.len() > MAX_TRACKS {
-            return Err(PsxPbpError::TooManyTracks {
-                path: source.to_path_buf(),
-                count: sheet.tracks.len(),
-            });
-        }
-
-        let mut files = Vec::with_capacity(sheet.files.len());
-        let mut file_starts = Vec::with_capacity(sheet.files.len());
-        let mut sectors = 0u64;
-        for file in &sheet.files {
-            if !matches!(file.file_type, FileType::Binary) {
-                return Err(PsxPbpError::NotBinary {
-                    path: source.to_path_buf(),
-                    file: file.filename.clone(),
-                });
-            }
-            let path = folder.join(&file.filename);
-            let size = std::fs::metadata(&path)?.len();
-            if size == 0 || !size.is_multiple_of(SECTOR_SIZE as u64) {
-                return Err(PsxPbpError::PartialSector { path, size });
-            }
-            file_starts.push(sectors);
-            sectors += size / SECTOR_SIZE as u64;
-            files.push((path, size));
-        }
-        if sectors > MAX_SECTORS {
-            return Err(PsxPbpError::DiscTooLong {
-                path: source.to_path_buf(),
-                sectors,
-                max: MAX_SECTORS,
-            });
-        }
-
-        let mut tracks = Vec::with_capacity(sheet.tracks.len());
-        for track in &sheet.tracks {
-            if !(1..=MAX_TRACKS).contains(&usize::from(track.number)) {
-                return Err(PsxPbpError::TrackNumberOutOfRange {
-                    path: source.to_path_buf(),
-                    track: track.number,
-                });
-            }
-            let audio = match track.track_type {
-                TrackType::Audio => true,
-                TrackType::Mode1_2352 | TrackType::Mode2_2352 => false,
-                other => {
-                    return Err(PsxPbpError::UnsupportedTrackMode {
-                        path: source.to_path_buf(),
-                        track: track.number,
-                        mode: other.cue_string(),
-                    });
-                }
-            };
-            let silence = |gap: Option<Msf>| gap.is_some_and(|msf| msf.to_lba() > 0);
-            if silence(track.pregap) || silence(track.postgap) {
-                return Err(PsxPbpError::PregapNotStored {
-                    path: source.to_path_buf(),
-                    track: track.number,
-                });
-            }
-            let index =
-                track
-                    .primary_index_lba()
-                    .ok_or_else(|| PsxPbpError::MissingTrackStart {
-                        path: source.to_path_buf(),
-                        track: track.number,
-                    })?;
-            let (&file_start, (_, file_bytes)) = file_starts
-                .get(track.file_index)
-                .zip(files.get(track.file_index))
-                .ok_or_else(|| PsxPbpError::TrackWithoutFile {
-                    path: source.to_path_buf(),
-                    track: track.number,
-                })?;
-            if u64::from(index) >= file_bytes / SECTOR_SIZE as u64 {
-                return Err(PsxPbpError::TrackPastEnd {
-                    path: source.to_path_buf(),
-                    track: track.number,
-                });
-            }
-            tracks.push(DiscTrack {
-                number: track.number,
-                audio,
-                start: u32::try_from(file_start + u64::from(index)).map_err(|_| {
-                    PsxPbpError::DiscTooLong {
-                        path: source.to_path_buf(),
-                        sectors,
-                        max: MAX_SECTORS,
-                    }
-                })?,
-            });
-        }
-        match tracks.first() {
-            None => return Err(PsxPbpError::NoDataTrack(source.to_path_buf())),
-            Some(first) if first.audio => {
-                return Err(PsxPbpError::NoDataTrack(source.to_path_buf()));
-            }
-            Some(first) if first.start > 0 => {
-                return Err(PsxPbpError::DataTrackNotAtStart {
-                    path: source.to_path_buf(),
-                    start: first.start,
-                });
-            }
-            Some(_) => {}
-        }
-
+        let files = sheet
+            .files
+            .iter()
+            .map(|file| {
+                let path = folder.join(&file.filename);
+                let size = std::fs::metadata(&path).map_err(cannot_read(&path))?.len();
+                Ok((path, size))
+            })
+            .collect::<PsxPbpResult<Vec<_>>>()?;
+        let sizes: Vec<u64> = files.iter().map(|&(_, size)| size).collect();
+        let tracks = lay_out(&sheet, &sizes, source)?;
         Ok(Self {
             cue: cue.to_path_buf(),
             source: source.to_path_buf(),
@@ -185,14 +96,181 @@ impl DiscImage {
     /// Reads the disc ID from the boot executable `SYSTEM.CNF` names; see
     /// [`disc_id_of`].
     pub fn read_disc_id(&self) -> PsxPbpResult<Option<DiscId>> {
-        disc_id_of(&mut CueSectors::open(&self.cue)?, &self.source)
+        let mut sectors = CueSectors::open(&self.cue).map_err(cannot_read(&self.source))?;
+        disc_id_of(&mut sectors, &self.source)
+    }
+}
+
+/// Lays the tracks of `sheet` over its FILEs, `sizes` bytes long,
+/// refusing what a PS1 EBOOT cannot carry: non-binary files, 2048- or
+/// 2336-byte sectors, silence that is not stored, partial sectors, tracks
+/// out of order, a data track that does not start the image, track numbers
+/// a TOC cannot hold, and a disc past 99:59:74. Errors name `source`.
+fn lay_out(sheet: &CueSheet, sizes: &[u64], source: &Path) -> PsxPbpResult<Vec<DiscTrack>> {
+    let path = || source.to_path_buf();
+    if sheet.tracks.len() > MAX_TRACKS {
+        return Err(PsxPbpError::TooManyTracks {
+            path: path(),
+            count: sheet.tracks.len(),
+        });
+    }
+    // Modes before file sizes, so a bin of 2048-byte sectors is refused for
+    // its mode rather than as partial 2352-byte sectors.
+    for (i, track) in sheet.tracks.iter().enumerate() {
+        let number = usize::from(track.number);
+        if !(1..=MAX_TRACKS).contains(&number) {
+            return Err(PsxPbpError::TrackNumberOutOfRange {
+                path: path(),
+                track: track.number,
+            });
+        }
+        if number != i + 1 {
+            return Err(PsxPbpError::TrackOutOfOrder {
+                path: path(),
+                track: track.number,
+            });
+        }
+        if !matches!(
+            track.track_type,
+            TrackType::Audio | TrackType::Mode1_2352 | TrackType::Mode2_2352
+        ) {
+            return Err(PsxPbpError::UnsupportedTrackMode {
+                path: path(),
+                track: track.number,
+                mode: track.track_type.cue_string(),
+            });
+        }
+    }
+
+    let mut file_starts = Vec::with_capacity(sizes.len());
+    let mut sectors = 0u64;
+    for (file, &size) in sheet.files.iter().zip(sizes) {
+        if !matches!(file.file_type, FileType::Binary) {
+            return Err(PsxPbpError::NotBinary {
+                path: path(),
+                file: file.filename.clone(),
+            });
+        }
+        if size == 0 || !size.is_multiple_of(SECTOR_SIZE as u64) {
+            return Err(PsxPbpError::PartialSector {
+                path: path(),
+                file: file.filename.clone(),
+                size,
+            });
+        }
+        file_starts.push(sectors);
+        sectors += size / SECTOR_SIZE as u64;
+    }
+    if sectors > MAX_SECTORS {
+        return Err(PsxPbpError::DiscTooLong {
+            path: path(),
+            sectors,
+            max: MAX_SECTORS,
+        });
+    }
+
+    let mut tracks: Vec<DiscTrack> = Vec::with_capacity(sheet.tracks.len());
+    for track in &sheet.tracks {
+        let silence = |gap: Option<Msf>| gap.is_some_and(|msf| msf.to_lba() > 0);
+        if silence(track.pregap) || silence(track.postgap) {
+            return Err(PsxPbpError::PregapNotStored {
+                path: path(),
+                track: track.number,
+            });
+        }
+        let index = track
+            .primary_index_lba()
+            .ok_or_else(|| PsxPbpError::MissingTrackStart {
+                path: path(),
+                track: track.number,
+            })?;
+        let (&file_start, &file_bytes) = file_starts
+            .get(track.file_index)
+            .zip(sizes.get(track.file_index))
+            .ok_or_else(|| PsxPbpError::TrackWithoutFile {
+                path: path(),
+                track: track.number,
+            })?;
+        if u64::from(index) >= file_bytes / SECTOR_SIZE as u64 {
+            return Err(PsxPbpError::TrackPastEnd {
+                path: path(),
+                track: track.number,
+            });
+        }
+        let start =
+            u32::try_from(file_start + u64::from(index)).map_err(|_| PsxPbpError::DiscTooLong {
+                path: path(),
+                sectors,
+                max: MAX_SECTORS,
+            })?;
+        if tracks.last().is_some_and(|before| start <= before.start) {
+            return Err(PsxPbpError::TrackOutOfOrder {
+                path: path(),
+                track: track.number,
+            });
+        }
+        tracks.push(DiscTrack {
+            number: track.number,
+            audio: matches!(track.track_type, TrackType::Audio),
+            start,
+        });
+    }
+    match tracks.first() {
+        None => return Err(PsxPbpError::NoDataTrack(path())),
+        Some(first) if first.audio => return Err(PsxPbpError::NoDataTrack(path())),
+        Some(first) if first.start > 0 => {
+            return Err(PsxPbpError::DataTrackNotAtStart {
+                path: path(),
+                start: first.start,
+            });
+        }
+        Some(_) => {}
+    }
+    Ok(tracks)
+}
+
+/// Refuses a CHD before it is extracted: one other than version 5, without
+/// CD tracks or with tracks past its stream, which extraction refuses, and
+/// otherwise what [`DiscImage::open`] would refuse once it is, by laying out
+/// the cue sheet and bins extraction writes. Errors name `chd`.
+pub(crate) fn check_chd(chd: &Path) -> PsxPbpResult<()> {
+    let handle = open_chd_sync(chd).map_err(cannot_read(chd))?;
+    let text = cd_track_metadata_text(&handle.metadata)
+        .filter(|_| handle.flavor() == ChdFlavor::Cd)
+        .ok_or_else(|| PsxPbpError::NoCdTracks(chd.to_path_buf()))?;
+    let tracks = parse_chd_track_metadata(&text).map_err(cannot_read(chd))?;
+    chd_validate_cd_hunks(handle.header.hunk_bytes).map_err(cannot_read(chd))?;
+    let physical_frames = handle.header.logical_bytes / FRAME_SIZE as u64;
+    let padded = chd_layout_is_padded(&tracks, physical_frames);
+    chd_validate_frame_total(&tracks, padded, physical_frames).map_err(cannot_read(chd))?;
+    // Named like the scratch cue extraction writes, so the sheet parses alike.
+    let names: Vec<String> = track_bin_paths(Path::new("disc.cue"), tracks.len())
+        .iter()
+        .map(|bin| {
+            bin.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let sheet = CueParser::new(chd).parse_bytes(generate_cue_sheet(&names, &tracks).as_bytes())?;
+    let sizes: Vec<u64> = tracks.iter().map(chd_track_decoded_size).collect();
+    lay_out(&sheet, &sizes, chd)?;
+    Ok(())
+}
+
+/// Maps a failure to open or read `path` to [`PsxPbpError::Open`].
+fn cannot_read<E: Into<anyhow::Error>>(path: &Path) -> impl FnOnce(E) -> PsxPbpError {
+    move |source| PsxPbpError::Open {
+        path: path.to_path_buf(),
+        source: source.into(),
     }
 }
 
 /// [`DiscImage::read_disc_id`] for a CHD, read in place before it is
 /// extracted.
 pub(crate) fn read_chd_disc_id(chd: &Path) -> PsxPbpResult<Option<DiscId>> {
-    disc_id_of(&mut ChdSectors::open(chd)?, chd)
+    disc_id_of(&mut ChdSectors::open(chd).map_err(cannot_read(chd))?, chd)
 }
 
 /// Reads the disc ID from the boot executable `SYSTEM.CNF` names.
@@ -270,7 +348,7 @@ impl DiscId {
 /// `..` included, is relative to the playlist's folder; an absolute one is
 /// kept as it is.
 pub(crate) fn read_playlist(path: &Path) -> PsxPbpResult<Vec<PathBuf>> {
-    let text = std::fs::read_to_string(path)?;
+    let text = std::fs::read_to_string(path).map_err(cannot_read(path))?;
     let folder = path.parent().unwrap_or(Path::new("."));
     let mut discs = Vec::new();
     for line in text.trim_start_matches('\u{feff}').lines() {
@@ -522,6 +600,93 @@ mod tests {
             let err = DiscImage::open(&cue, &cue).unwrap_err();
             assert!(expected(&err), "{sheet}: {err}");
         }
+    }
+
+    /// Opens a cue sheet of `tracks` over one 40-sector bin.
+    fn open_tracks(tracks: &str) -> PsxPbpResult<DiscImage> {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("game.bin"), vec![0u8; 2352 * 40]).unwrap();
+        let cue = dir.path().join("game.cue");
+        std::fs::write(&cue, format!("FILE \"game.bin\" BINARY\n{tracks}")).unwrap();
+        DiscImage::open(&cue, &cue)
+    }
+
+    #[test]
+    fn refuses_a_repeated_track_number() {
+        let err = open_tracks(
+            " TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:10\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PsxPbpError::TrackOutOfOrder { track: 1, .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_gap_in_track_numbers() {
+        let err = open_tracks(
+            " TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n TRACK 03 AUDIO\n  INDEX 01 00:00:10\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PsxPbpError::TrackOutOfOrder { track: 3, .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_track_that_starts_before_the_one_before_it() {
+        let err = open_tracks(
+            " TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n TRACK 02 AUDIO\n  INDEX 01 00:00:20\n\
+             TRACK 03 AUDIO\n  INDEX 01 00:00:10\n",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, PsxPbpError::TrackOutOfOrder { track: 3, .. }),
+            "{err}"
+        );
+    }
+
+    /// Extraction refuses a CHD whose track metadata claims more frames than
+    /// its stream holds; the pre-check refuses it first, naming the CHD.
+    #[test]
+    fn refuses_a_chd_whose_tracks_run_past_its_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let chd = dir.path().join("game.chd");
+        crate::disc::chd::test_fixtures::write_raw_cd_chd(
+            &chd,
+            *b"CHT2",
+            "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:80",
+            &vec![0u8; FRAME_SIZE * 40],
+            FRAME_SIZE as u32 * 4,
+            FRAME_SIZE as u32,
+        );
+        let err = check_chd(&chd).unwrap_err();
+        assert!(
+            matches!(&err, PsxPbpError::Open { path, .. } if *path == chd),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_missing_bin_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("game.cue");
+        std::fs::write(
+            &cue,
+            "FILE \"gone.bin\" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let err = DiscImage::open(&cue, &cue).unwrap_err();
+        assert!(err.to_string().contains("gone.bin"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_playlist_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_playlist(&dir.path().join("game.m3u")).unwrap_err();
+        assert!(err.to_string().contains("game.m3u"), "{err}");
     }
 
     #[test]

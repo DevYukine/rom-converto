@@ -17,12 +17,13 @@ pub use error::{PsxPbpError, PsxPbpResult};
 #[cfg(test)]
 pub(crate) use disc::test_fixtures;
 
-use disc::{DiscImage, read_chd_disc_id, read_playlist};
+use disc::{DiscImage, check_chd, read_chd_disc_id, read_playlist};
 use format::{MAX_DISCS, MULTIDISC_TABLE_LEN, POPS_MULTIDISC_TABLE};
-use writer::{Assets, Eboot, FAT32_MAX_FILE};
+use writer::{Assets, Eboot, FAT32_MAX_FILE, SFO_TITLE_SLOT};
 
 use crate::disc::chd::extract_from_chd;
 use crate::util::fs::has_ext;
+use crate::util::template::truncate_bytes;
 use crate::util::{
     CancelToken, DEFAULT_SPACE_HEADROOM, ProgressReporter, available_space, derive_output_stem,
     publish_set, scratch_output_file, space_shortfall, spawn_blocking_with_progress,
@@ -236,6 +237,7 @@ fn check_inputs(sources: Vec<PathBuf>, options: &PbpOptions) -> PsxPbpResult<Che
             inputs.push(Input::Cue(disc));
         } else if has_ext(&source, "chd") {
             read_ids.push(read_chd_disc_id(&source)?);
+            check_chd(&source)?;
             inputs.push(Input::Chd(source));
         } else {
             return Err(PsxPbpError::UnsupportedInput(source));
@@ -449,8 +451,16 @@ fn build(
          then start the next disc's EBOOT",
         discs.len()
     ));
+    // The base title gives way so every disc keeps its suffix in the SFO
+    // TITLE slot, which ends in a NUL.
     let titles: Vec<String> = (1..=discs.len())
-        .map(|n| format!("{title} (Disc {n})"))
+        .map(|n| {
+            let suffix = format!(" (Disc {n})");
+            format!(
+                "{}{suffix}",
+                truncate_bytes(title, SFO_TITLE_SLOT as usize - 1 - suffix.len())
+            )
+        })
         .collect();
     let eboots = discs
         .iter()
@@ -479,17 +489,49 @@ fn build(
 /// earlier file in place. Unless `existing` is [`ExistingEboot::Replace`],
 /// publishing never replaces a file, so an EBOOT another run published
 /// meanwhile is kept or refused as asked. A file that could pass FAT32's
-/// limit is refused before the first byte.
+/// limit is refused before the first byte. A game folder this call creates
+/// is removed again when no EBOOT is published.
 fn publish(
     eboots: Vec<(Eboot<'_>, PathBuf)>,
     existing: ExistingEboot,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
+    let mut claimed = Vec::new();
+    let published = write_and_publish(eboots, existing, progress, cancel, &mut claimed);
+    if !matches!(&published, Ok(paths) if !paths.is_empty()) {
+        // Best effort: a folder another run wrote into meanwhile stays.
+        for folder in &claimed {
+            let _ = std::fs::remove_dir(folder);
+        }
+    }
+    published
+}
+
+/// [`publish`] but for the cleanup, adding to `claimed` each game folder it
+/// creates. Every scratch file is gone by the time it returns.
+fn write_and_publish(
+    eboots: Vec<(Eboot<'_>, PathBuf)>,
+    existing: ExistingEboot,
+    progress: &dyn ProgressReporter,
+    cancel: &CancelToken,
+    claimed: &mut Vec<PathBuf>,
+) -> PsxPbpResult<Vec<PathBuf>> {
     for (eboot, _) in &eboots {
         let size = eboot.max_size()?;
         if size > FAT32_MAX_FILE {
             return Err(PsxPbpError::ExceedsFat32 { size });
+        }
+    }
+    for (_, path) in &eboots {
+        let folder = path.parent().expect("an EBOOT path names its game folder");
+        if let Some(output_dir) = folder.parent() {
+            std::fs::create_dir_all(output_dir)?;
+        }
+        match std::fs::create_dir(folder) {
+            Ok(()) => claimed.push(folder.to_path_buf()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err.into()),
         }
     }
     let mut written = Vec::with_capacity(eboots.len());
@@ -768,6 +810,34 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn per_disc_titles_keep_their_suffix_under_a_long_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let options = PbpOptions {
+            title: Some("A".repeat(200)),
+            ..PbpOptions::default()
+        };
+
+        let written = build_eboots(
+            &NoProgress,
+            &m3u,
+            &dir.path().join("out"),
+            &options,
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written.len(), 2);
+        for (n, path) in written.iter().enumerate() {
+            let sfo = sfo_of(&std::fs::read(path).unwrap());
+            let title = sfo.get_str("TITLE").unwrap();
+            assert!(title.ends_with(&format!(" (Disc {})", n + 1)), "{title}");
+            assert!(title.len() <= 127, "{} bytes", title.len());
+        }
+    }
+
     /// 301 data sectors are not a multiple of the CHD's 4-frame track
     /// padding, and the audio track stores a two-second INDEX 00, so both
     /// layout rules of the CHD round trip show up in the EBOOT.
@@ -861,6 +931,125 @@ mod tests {
         );
     }
 
+    /// Counts the spans started; before the discs are written, only a CHD
+    /// extraction starts one.
+    #[derive(Default)]
+    struct CountStarts(std::sync::atomic::AtomicUsize);
+
+    impl ProgressReporter for CountStarts {
+        fn start(&self, _: u64, _: &str) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn inc(&self, _: u64) {}
+        fn finish(&self) {}
+    }
+
+    /// Disc 1 as a CHD, disc 2 as a flat ISO of 2048-byte sectors, and a
+    /// playlist naming `game (Disc 2).chd`, which the caller makes from the
+    /// ISO. Returns the playlist and the ISO.
+    async fn chd_playlist_with_iso(dir: &Path) -> (PathBuf, PathBuf) {
+        let disc1 = write_disc(dir, "game (Disc 1)", &ps1_data_track("SLPS_999.98", 40));
+        chd_of(&disc1).await;
+        let iso: Vec<u8> = ps1_data_track("SLPS_999.97", 50)
+            .as_chunks::<2352>()
+            .0
+            .iter()
+            .flat_map(|sector| &sector[24..24 + 2048])
+            .copied()
+            .collect();
+        let disc2 = dir.join("game (Disc 2).iso");
+        std::fs::write(&disc2, iso).unwrap();
+        let m3u = dir.join("game.m3u");
+        std::fs::write(&m3u, "game (Disc 1).chd\ngame (Disc 2).chd\n").unwrap();
+        (m3u, disc2)
+    }
+
+    /// Builds `m3u`, returning its error and how many CHDs were extracted.
+    async fn refuse_counting_extractions(m3u: &Path) -> (PsxPbpError, usize) {
+        let progress = CountStarts::default();
+        let err = to_pbp(
+            &progress,
+            m3u,
+            &m3u.with_file_name("out"),
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        (err, progress.0.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    #[tokio::test]
+    async fn a_chd_an_eboot_cannot_carry_is_refused_before_any_chd_is_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, disc2) = chd_playlist_with_iso(dir.path()).await;
+        // The CHD creator stores a flat ISO as a MODE1/2048 track; it takes
+        // no such track from a cue.
+        crate::disc::chd::convert_iso_to_cd_chd(
+            &NoProgress,
+            disc2.clone(),
+            disc2.with_extension("chd"),
+            crate::disc::chd::ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let (err, extracted) = refuse_counting_extractions(&m3u).await;
+        assert!(err.to_string().contains("game (Disc 2).chd"), "{err}");
+        assert_eq!(extracted, 0, "a CHD was extracted");
+    }
+
+    #[tokio::test]
+    async fn a_dvd_chd_is_refused_before_any_chd_is_extracted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, disc2) = chd_playlist_with_iso(dir.path()).await;
+        let chd = disc2.with_extension("chd");
+        crate::disc::chd::convert_iso_to_chd(
+            &NoProgress,
+            disc2,
+            chd.clone(),
+            crate::disc::chd::ChdOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let (err, extracted) = refuse_counting_extractions(&m3u).await;
+        assert!(
+            matches!(&err, PsxPbpError::NoCdTracks(path) if *path == chd),
+            "{err}"
+        );
+        assert_eq!(extracted, 0, "a CHD was extracted");
+    }
+
+    #[tokio::test]
+    async fn a_missing_playlist_entry_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        write_disc(
+            dir.path(),
+            "game (Disc 1)",
+            &ps1_data_track("SLPS_999.98", 40),
+        );
+        let m3u = dir.path().join("game.m3u");
+        for entry in ["gone.cue", "gone.chd"] {
+            std::fs::write(&m3u, format!("game (Disc 1).cue\n{entry}\n")).unwrap();
+            let err = to_pbp(
+                &NoProgress,
+                &m3u,
+                &dir.path().join("out"),
+                &PbpOptions::default(),
+                CancelToken::new(),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(&err, PsxPbpError::Open { path, .. } if *path == dir.path().join(entry)),
+                "{err}"
+            );
+        }
+    }
+
     #[test]
     fn a_failed_disc_publishes_none_of_its_set() {
         let dir = tempfile::tempdir().unwrap();
@@ -893,11 +1082,52 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, PsxPbpError::Io(_)), "{err}");
         for folder in ["SLPS99998-DISC1", "SLPS99998-DISC2"] {
-            let left: Vec<_> = std::fs::read_dir(out.join(folder))
-                .map(|entries| entries.map(|e| e.unwrap().file_name()).collect())
-                .unwrap_or_default();
-            assert!(left.is_empty(), "{folder}: {left:?}");
+            assert!(!out.join(folder).exists(), "{folder} left behind");
         }
+    }
+
+    /// Another run may publish one disc of the set between the early check
+    /// and this one's publish. Called through `build`, as `build_eboots`
+    /// returns at the early check without reaching a publish.
+    #[test]
+    fn a_kept_disc_leaves_no_empty_folder_of_the_rest_of_its_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let discs: Vec<DiscImage> = read_playlist(&m3u)
+            .unwrap()
+            .iter()
+            .map(|cue| DiscImage::open(cue, cue).unwrap())
+            .collect();
+        let ids = vec![DiscId::parse("SLPS-99998").unwrap(); 2];
+        let images = Images {
+            startdat_png: STARTDAT_PNG.to_vec(),
+            icon0: None,
+            pic1: None,
+        };
+        let out = dir.path().join("out");
+        let kept = out.join("SLPS99998-DISC2/EBOOT.PBP");
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, b"the other run").unwrap();
+
+        let written = build(
+            &NoProgress,
+            &discs,
+            &ids,
+            &images,
+            "game",
+            &out,
+            BlockEncoding::Stored,
+            ExistingEboot::Keep,
+            None,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        assert!(written.is_empty(), "{written:?}");
+        assert!(
+            !out.join("SLPS99998-DISC1").exists(),
+            "DISC1 folder left behind"
+        );
+        assert_eq!(std::fs::read(&kept).unwrap(), b"the other run");
     }
 
     #[tokio::test]
@@ -997,9 +1227,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
-        let eboot = out.join("SLUS99999/EBOOT.PBP");
-        assert!(!eboot.exists());
-        assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
+        assert!(!out.join("SLUS99999").exists(), "game folder left behind");
     }
 
     #[tokio::test]

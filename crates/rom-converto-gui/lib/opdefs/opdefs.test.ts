@@ -53,6 +53,12 @@ describe("op registry", () => {
 		expect(def.deriveOutput?.(item.path, store)).toBe("/Volumes/PSP/PSP/GAME/");
 	});
 
+	// A dropped folder holds the playlist and its own cues, which would build each disc twice.
+	it("stops the PS1 page from scanning dropped folders", () => {
+		const def = defs.find((def) => def.storeId === "psx-to-pbp")!;
+		expect(def.scanFolders).toBe(false);
+	});
+
 	it("never sends rename for pages whose output is a directory", () => {
 		for (const id of [
 			"ctr-unbundle",

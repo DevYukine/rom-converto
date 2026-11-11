@@ -218,7 +218,7 @@ pub(crate) async fn psx_to_pbp(
             ExistingEboot::Replace => {}
             ExistingEboot::Keep => {
                 log::info!("Skipped, EBOOT exists: {}", path.display());
-                return Ok(skipped(&input, &desired, OPERATION, None));
+                return Ok(skipped(&input, &path, OPERATION, None));
             }
             ExistingEboot::Refuse => return Err(refuse(path)),
         }
@@ -234,7 +234,13 @@ pub(crate) async fn psx_to_pbp(
             other => other.into(),
         })?;
     if written.is_empty() {
-        return Ok(skipped(&input, &desired, OPERATION, None));
+        let kept = find(source).await?.ok().flatten();
+        return Ok(skipped(
+            &input,
+            kept.as_deref().unwrap_or(desired.as_path()),
+            OPERATION,
+            None,
+        ));
     }
     let bytes = written.iter().map(|path| file_len(path)).sum();
     Ok(
@@ -432,6 +438,37 @@ mod tests {
             assert_eq!(data["decision"], decision, "{policy}");
         }
         assert!(!plan(&first, "error").await.ok);
+    }
+
+    #[tokio::test]
+    async fn psx_to_pbp_skip_names_the_kept_eboot() {
+        use crate::sony::psx::pbp::test_fixtures::{ps1_data_track, write_disc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("GAME");
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let run = |policy: &str| {
+            let req = json!({
+                "operation": "psx.to_pbp",
+                "input": cue,
+                "output": game,
+                "options": { "on_conflict": policy },
+            });
+            async move { run_json(&req.to_string(), CancelToken::new()).await }
+        };
+        let res = run("error").await;
+        assert!(res.ok, "{res:?}");
+        let eboot = game.join("SLUS99999").join("EBOOT.PBP");
+        assert!(eboot.is_file());
+
+        let res = run("skip").await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            std::path::Path::new(&res.records[0].output_path),
+            eboot,
+            "{res:?}"
+        );
+        assert!(res.message.contains("EBOOT.PBP"), "{res:?}");
     }
 
     #[tokio::test]

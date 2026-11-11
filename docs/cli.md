@@ -981,7 +981,7 @@ one member and a cue sheet's tracks are extracted from an archive. It writes one
 on the Memory Stick, or pass `PSP/GAME` as `OUTPUT_DIR` to write there directly.
 `--on-conflict` applies to this game's EBOOTs, not to the folder, so other games in it are
 never a conflict: `skip` keeps the game's existing EBOOT, `error` refuses it, and `overwrite`
-replaces it. The folder is never emptied.
+replaces it. `overwrite-invalid` acts as `skip`, since an EBOOT is not verified. The folder is never emptied.
 
 | Option | Description |
 |---|---|
@@ -991,10 +991,10 @@ replaces it. The folder is never emptied.
 | `--splash <IMAGE>` | Image shown while the game starts (480x272), in place of the built-in one |
 | `--icon0 <IMAGE>` | XMB icon (144x80), such as the game's cover |
 | `--pic1 <IMAGE>` | XMB background (480x272) |
-| `--on-conflict`, `-f`, `--report` | As for the other commands. Rename is not offered because the output is a folder |
+| `--on-conflict`, `-f`, `--report` | As for the other commands. `rename` is rejected because the output is a folder |
 
-The images may be PNG or JPEG files of any size. A PNG already at the listed size is kept
-as it is; any other image is scaled to fit, keeping its aspect ratio, and centred: on a
+The images may be PNG or JPEG files up to 8192 pixels on a side. A PNG already at the listed
+size and under 1 MiB is kept as it is; any other image is scaled to fit, keeping its aspect ratio, and centred: on a
 transparent icon, or on black for the two full-screen images.
 
 A playlist of 2 to 5 discs becomes one EBOOT with **Switch Discs** in the HOME menu when
@@ -1004,15 +1004,15 @@ one memory card: save before a disc change, quit, and start the next disc's EBOO
 command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is
 written and existing ones stay as they were. A CHD is extracted to a private folder in the
 system temp folder (`TMPDIR`) first and removed afterwards; the run stops before extracting
-when that disk lacks the room. The disc IDs, `--disc-id` and the images are all checked
-before any CHD is extracted.
+when that disk lacks the room. The disc IDs, `--disc-id`, the images and each CHD's tracks
+are all checked before any CHD is extracted.
 
 Only the sectors are converted. Subchannel data, such as the LibCrypt `.sbi` files some
-PAL discs need, is not read, so a game that checks for LibCrypt may fail after it boots.
+PAL discs need, is not read, so a game that checks for LibCrypt may fail after it boots. A LibCrypt PAL set split into one EBOOT per disc boots discs 2 and up under disc 1's ID, which older custom firmware uses to pick the LibCrypt key.
 
 ```sh
 rom-converto psx to-pbp game.cue
-rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME --on-conflict overwrite
+rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME
 rom-converto psx to-pbp game.m3u --title "Game title"
 ```
 

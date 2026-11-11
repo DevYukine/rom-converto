@@ -166,7 +166,7 @@ a plain `.m3u` playlist (one inside an archive is refused), and writes one game 
 EBOOT into the picked directory, such as `PSP/GAME`, or into `<stem>_psp` beside the input.
 Copy those folders into `PSP/GAME`. The page offers the same options as `psx to-pbp`:
 compression, title, disc ID, and the boot image, icon, and background, as PNG or JPEG
-files of any size. It has no
+files up to 8192 pixels on a side. It has no
 recursive folder scan, because a folder that holds a playlist and its cue sheets would
 build each disc twice; drop the playlist instead.
 

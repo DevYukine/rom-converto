@@ -11,6 +11,13 @@ pub enum PsxPbpError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
+    /// An input file, a cue `FILE` or a CHD's header cannot be read.
+    #[error("cannot read {path}: {source:#}")]
+    Open {
+        path: PathBuf,
+        source: anyhow::Error,
+    },
+
     /// The blocking build task panicked or was aborted.
     #[error(transparent)]
     JoinError(#[from] tokio::task::JoinError),
@@ -58,6 +65,13 @@ pub enum PsxPbpError {
     #[error("{path}: track number {track} is outside 1 to 99")]
     TrackNumberOutOfRange { path: PathBuf, track: u8 },
 
+    /// A track out of sequence: tracks count up from 1 and each starts
+    /// after the one before.
+    #[error(
+        "{path}: track {track} is out of order; tracks must count up from 1 and each start after the one before"
+    )]
+    TrackOutOfOrder { path: PathBuf, track: u8 },
+
     /// The data track has a stored pregap, so its file system does not
     /// start the image where the PS1 emulator reads it.
     #[error(
@@ -74,12 +88,20 @@ pub enum PsxPbpError {
     },
 
     /// A `.bin` holds a partial sector.
-    #[error("{path}: {size} bytes is not a whole number of 2352-byte sectors")]
-    PartialSector { path: PathBuf, size: u64 },
+    #[error("{path}: FILE {file} is {size} bytes, not a whole number of 2352-byte sectors")]
+    PartialSector {
+        path: PathBuf,
+        file: String,
+        size: u64,
+    },
 
     /// A track starts past the end of its file.
     #[error("{path}: track {track} starts past the end of its file")]
     TrackPastEnd { path: PathBuf, track: u8 },
+
+    /// A CHD of a DVD, a LaserDisc or a hard disk, with no CD tracks.
+    #[error("{0}: the CHD holds no CD tracks; a PS1 EBOOT needs a CD image")]
+    NoCdTracks(PathBuf),
 
     /// The first track carries no data, so there is no PS1 file system.
     #[error("{0}: the first track is not a data track")]

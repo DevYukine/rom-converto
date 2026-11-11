@@ -1,16 +1,23 @@
 //! The boot screen and XMB images, fitted to the sizes the PSP shows them at.
 
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use image::imageops::{self, FilterType};
-use image::{Rgba, RgbaImage};
+use image::{GenericImageView, ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
 
 use super::error::{PsxPbpError, PsxPbpResult};
-use crate::info::image::Image;
 use crate::util::pixel::encode_png;
 
 const TRANSPARENT: Rgba<u8> = Rgba([0, 0, 0, 0]);
 const BLACK: Rgba<u8> = Rgba([0, 0, 0, 0xFF]);
+
+/// Cover art never needs more; bounds what a decode can allocate.
+const MAX_IMAGE_SIDE: u32 = 8192;
+
+/// A frame-sized PNG up to this size is used as is. Anything larger carries
+/// data the PSP never shows and is encoded again.
+const MAX_PASS_THROUGH: u64 = 1 << 20;
 
 /// The size the PSP shows an image at, and what fills the space a fitted
 /// image leaves.
@@ -46,16 +53,35 @@ pub(crate) const SPLASH: Frame = PIC1;
 /// the decoder can read, and [`PsxPbpError::ReadImage`] when it cannot be
 /// read.
 pub(crate) fn fit(path: &Path, frame: Frame) -> PsxPbpResult<Vec<u8>> {
-    let bytes = std::fs::read(path).map_err(|source| PsxPbpError::ReadImage {
+    let read_error = |source| PsxPbpError::ReadImage {
         path: path.to_path_buf(),
         source,
-    })?;
-    let decoded = image::load_from_memory(&bytes).map_err(|source| PsxPbpError::InvalidImage {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    if png_dimensions(&bytes) == Some((frame.width, frame.height)) {
-        return Ok(bytes);
+    };
+    // The format comes from the content alone, so only the PNG and JPEG
+    // decoders are reachable whatever the file is named.
+    let mut reader = std::fs::File::open(path)
+        .map(|file| ImageReader::new(BufReader::new(file)))
+        .and_then(ImageReader::with_guessed_format)
+        .map_err(read_error)?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    reader.limits(limits);
+    let is_png = reader.format() == Some(ImageFormat::Png);
+    let decoded = reader
+        .decode()
+        .map_err(|source| PsxPbpError::InvalidImage {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if is_png && decoded.dimensions() == (frame.width, frame.height) {
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .and_then(|file| file.take(MAX_PASS_THROUGH + 1).read_to_end(&mut bytes))
+            .map_err(read_error)?;
+        if bytes.len() as u64 <= MAX_PASS_THROUGH {
+            return Ok(bytes);
+        }
     }
     let fitted = fit_image(&decoded.into_rgba8(), frame);
     encode_png(fitted.as_raw(), frame.width, frame.height).map_err(|source| {
@@ -95,8 +121,9 @@ fn scaled(length: u32, scale: f64, limit: u32) -> u32 {
 
 /// The width and height a PNG's IHDR declares, or `None` for anything
 /// that is not a PNG.
+#[cfg(test)]
 pub(crate) fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    Image::from_png(bytes.to_vec()).map(|image| (image.width, image.height))
+    crate::info::image::Image::from_png(bytes.to_vec()).map(|image| (image.width, image.height))
 }
 
 #[cfg(test)]
@@ -172,6 +199,31 @@ mod tests {
     }
 
     #[test]
+    fn encodes_again_a_frame_sized_png_with_megabytes_after_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("icon.png");
+        let mut padded = png(144, 80, RED);
+        padded.resize(padded.len() + (2 << 20), 0);
+        std::fs::write(&path, &padded).unwrap();
+        let fitted = fit(&path, ICON0).unwrap();
+        assert!((fitted.len() as u64) < MAX_PASS_THROUGH, "{}", fitted.len());
+        assert_eq!(png_dimensions(&fitted), Some((144, 80)));
+    }
+
+    #[test]
+    fn rejects_a_tga_whatever_it_is_named() {
+        let mut tga = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(RgbaImage::from_pixel(144, 80, RED))
+            .write_to(&mut tga, ImageFormat::Tga)
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cover.tga");
+        std::fs::write(&path, tga.into_inner()).unwrap();
+        let err = fit(&path, ICON0).unwrap_err();
+        assert!(matches!(err, PsxPbpError::InvalidImage { .. }), "{err}");
+    }
+
+    #[test]
     fn centres_a_square_cover_on_a_transparent_icon() {
         let icon = fit_bytes("cover.jpg", &jpeg(500, 500, Rgb([0xFF, 0, 0])), ICON0);
         // 500x500 scales to 80x80, leaving 32 transparent columns each side.
@@ -224,6 +276,16 @@ mod tests {
         std::fs::write(&path, &truncated).unwrap();
         let err = fit(&path, ICON0).unwrap_err();
         assert!(matches!(err, PsxPbpError::InvalidImage { .. }), "{err}");
+    }
+
+    #[test]
+    fn refuses_an_image_taller_than_the_decoder_limit_naming_its_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tall.png");
+        std::fs::write(&path, png(1, 9000, RED)).unwrap();
+        let err = fit(&path, ICON0).unwrap_err();
+        assert!(matches!(err, PsxPbpError::InvalidImage { .. }), "{err}");
+        assert!(err.to_string().contains("tall.png"), "{err}");
     }
 
     #[test]

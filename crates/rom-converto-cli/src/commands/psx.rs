@@ -46,7 +46,7 @@ discs fit in 4 GiB. Otherwise each disc becomes its own EBOOT with \
 disc 1's ID, so all discs share one memory card: save before a disc change, quit, and start \
 the next disc's EBOOT.",
     after_long_help = "EXAMPLES:\n  rom-converto psx to-pbp game.cue\n  \
-rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME --on-conflict overwrite\n  \
+rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME\n  \
 rom-converto psx to-pbp game.m3u --title \"My Game\"\n"
 )]
 pub struct ToPbpCommand {
@@ -81,7 +81,7 @@ pub struct ToPbpCommand {
     #[arg(long, value_name = "IMAGE")]
     pub pic1: Option<PathBuf>,
 
-    /// What to do when the output folder is not empty: error, overwrite, or skip
+    /// What to do when this game's EBOOT already exists: error, overwrite, or skip. overwrite-invalid acts as skip, and `rename` is rejected for directory outputs
     #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
     pub on_conflict: ConflictPolicyArg,
 

@@ -157,6 +157,8 @@ export interface OpDef {
 	browseDirectory?: boolean;
 	// Input can be a file or a directory; DropZone offers both pickers.
 	browseAlsoDirectory?: boolean;
+	// false: a dropped folder is ignored instead of scanned for inputs.
+	scanFolders?: boolean;
 
 	// Fixed progress/cancel key for commands that hardcode one (cue, hash,
 	// dat, cdn). When absent each job gets a unique `job-<uuid>` key.

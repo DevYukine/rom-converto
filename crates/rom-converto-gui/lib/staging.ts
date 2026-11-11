@@ -36,6 +36,7 @@ export function useStaging(def: OpDef) {
 		const dirs = new Set<string>();
 		for (const p of paths) {
 			const scanned = await scan.expand(p, recursive ? maxDepth : 1);
+			if (scanned !== null && def.scanFolders === false) continue;
 			let expanded: string[];
 			if (scanned === null) expanded = [p];
 			else if (scanned.length > 0) expanded = scanned;

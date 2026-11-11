@@ -22,7 +22,7 @@ use crate::util::{CancelToken, Cancelled, ProgressReporter};
 /// Largest file a FAT32 Memory Stick holds.
 pub(crate) const FAT32_MAX_FILE: u64 = u32::MAX as u64;
 
-const SFO_TITLE_SLOT: u32 = 128;
+pub(crate) const SFO_TITLE_SLOT: u32 = 128;
 const SFO_LICENSE: &str = "rom-converto";
 
 /// Bytes a disc of `image_size` bytes takes in an EBOOT at most: its

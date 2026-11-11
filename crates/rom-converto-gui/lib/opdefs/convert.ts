@@ -702,6 +702,7 @@ const psx: OpDef = {
 	subtitle: "Builds the EBOOT.PBP the PSP's built-in PS1 emulator runs on custom firmware, one game folder each.",
 	dropText: "Drop a .cue, CD .chd, or .m3u playlist",
 	acceptedExts: ["cue", "chd", "m3u", ...ARCHIVE_EXTS],
+	scanFolders: false,
 	browseFilters: [{ name: "PS1 disc", extensions: ["cue", "chd", "m3u"] }],
 	fields: [
 		{

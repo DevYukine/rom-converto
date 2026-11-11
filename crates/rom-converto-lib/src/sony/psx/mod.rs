@@ -6,7 +6,7 @@ use std::io;
 
 use serde::{Deserialize, Serialize};
 
-use crate::util::iso9660::{SectorSource, Volume};
+use crate::util::iso9660::{SectorSource, Volume, cnf_lines};
 
 pub mod pbp;
 
@@ -49,11 +49,8 @@ pub(crate) fn read<S: SectorSource>(src: &mut S, volume: &Volume) -> io::Result<
 /// Value of a `KEY = VALUE` line in `SYSTEM.CNF`; keys match exactly, so
 /// `BOOT` never picks up a `BOOT2` line.
 fn cnf_value(text: &str, key: &str) -> Option<String> {
-    text.lines()
-        .find_map(|line| {
-            let (k, v) = line.split_once('=')?;
-            (k.trim() == key).then(|| v.trim().to_string())
-        })
+    cnf_lines(text.as_bytes())
+        .find_map(|(k, v)| (k == key.as_bytes()).then(|| String::from_utf8_lossy(v).into_owned()))
         .filter(|v| !v.is_empty())
 }
 
@@ -122,5 +119,29 @@ mod tests {
         assert_eq!(cnf_value(cnf, "BOOT"), None);
         assert_eq!(cnf_value(cnf, "VER").as_deref(), Some("1.01"));
         assert_eq!(cnf_value("VER =\r\n", "VER"), None);
+    }
+
+    #[test]
+    fn cnf_values_survive_a_utf8_bom() {
+        assert_eq!(
+            cnf_value("\u{feff}BOOT = cdrom:\\SLUS_999.99;1\r\n", "BOOT").as_deref(),
+            Some("cdrom:\\SLUS_999.99;1")
+        );
+    }
+
+    #[test]
+    fn cnf_values_split_on_a_bare_cr() {
+        assert_eq!(
+            cnf_value("VER = 1.00\rBOOT = cdrom:\\SLUS_999.99;1\r", "BOOT").as_deref(),
+            Some("cdrom:\\SLUS_999.99;1")
+        );
+    }
+
+    #[test]
+    fn cnf_values_drop_nul_padding() {
+        assert_eq!(
+            cnf_value("BOOT = cdrom:\\SLUS_999.99;1\0\0\0", "BOOT").as_deref(),
+            Some("cdrom:\\SLUS_999.99;1")
+        );
     }
 }

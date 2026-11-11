@@ -49,7 +49,7 @@ docs(cli): align organize help with sibling commands
 ```
 
 - Use these types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`, `ci`.
-- Scope is the console or feature area: `ctr`, `dol`, `rvl`, `wup`, `nx`, `nds`, `chd`, `cso`, `cue`, `psp`, `ps3`, `vita`, `xbox`, `xenon`, `dat`, `hash`, `organize`, `patch`, `archive`, `info`. Crate scopes are `lib`, `cli`, `gui`, `ffi`, `runner`, `release`. Join several with commas: `fix(dol,rvl): ...`. Cross-cutting commits may omit it.
+- Scope is the console or feature area: `ctr`, `dol`, `rvl`, `wup`, `nx`, `nds`, `chd`, `cso`, `cue`, `psp`, `psx`, `ps3`, `vita`, `xbox`, `xenon`, `dat`, `hash`, `organize`, `patch`, `archive`, `info`. Crate scopes are `lib`, `cli`, `gui`, `ffi`, `runner`, `release`. Join several with commas: `fix(dol,rvl): ...`. Cross-cutting commits may omit it.
 - Start with a lowercase verb. Describe the fix or feature itself. Never name another tool as the reference in the subject ("like Dolphin", "match nsz", "per Atmosphere"). The changelog is generated from these lines and must read cleanly on its own.
 - Never edit `CHANGELOG.md` or the workspace version in `Cargo.toml`. Release automation on `main` bumps both and commits `chore(release): vX.Y.Z [skip ci]`.
 
