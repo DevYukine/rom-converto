@@ -271,29 +271,42 @@ pub(crate) fn publish_temp(
     let result = if overwrite {
         temp.persist(output)
     } else {
-        match temp.persist_noclobber(output) {
-            Err(err) if lacks_exclusive_rename(&err.error) => {
-                return persist_over_claim(err.path, output);
-            }
-            other => other,
-        }
+        persist_noclobber(temp, output)
     };
     result.map_err(|err| err.error)
+}
+
+/// [`tempfile::TempPath::persist_noclobber`] that also works on filesystems
+/// without an exclusive rename, such as FAT32 and exFAT. A failed publish
+/// hands the temp back in the error.
+pub(crate) fn persist_noclobber(
+    temp: tempfile::TempPath,
+    output: &std::path::Path,
+) -> Result<(), tempfile::PathPersistError> {
+    match temp.persist_noclobber(output) {
+        Err(err) if lacks_exclusive_rename(&err.error) => persist_over_claim(err.path, output),
+        other => other,
+    }
 }
 
 /// Publishes `temp` at `output` on a filesystem without an exclusive rename.
 /// Creating a file is still exclusive there, so claiming the name first keeps
 /// a file another publisher made from being replaced; the rename then only
 /// replaces the empty placeholder.
-fn persist_over_claim(temp: tempfile::TempPath, output: &std::path::Path) -> std::io::Result<()> {
-    std::fs::OpenOptions::new()
+fn persist_over_claim(
+    temp: tempfile::TempPath,
+    output: &std::path::Path,
+) -> Result<(), tempfile::PathPersistError> {
+    if let Err(error) = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(output)?;
-    temp.persist(output).map_err(|err| {
+        .open(output)
+    {
+        return Err(tempfile::PathPersistError { error, path: temp });
+    }
+    temp.persist(output).inspect_err(|_| {
         // The placeholder is ours and empty.
         let _ = std::fs::remove_file(output);
-        err.error
     })
 }
 
@@ -352,18 +365,26 @@ pub(crate) fn backup_existing(
     Ok(Some(backup))
 }
 
+/// Moves `temp` back to `path`, or keeps it on disk under its scratch name
+/// when that fails. Never replaces a file: when an earlier rollback step
+/// failed, `path` can hold a file that must survive.
 pub(crate) fn restore_temp(
     temp: tempfile::TempPath,
     path: &std::path::Path,
 ) -> std::io::Result<()> {
-    match temp.persist(path) {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let error = err.error;
-            let _ = err.path.keep();
-            Err(error)
+    let restored = match persist_noclobber(temp, path) {
+        // Some filesystems refuse the exclusive rename with an errno that
+        // `lacks_exclusive_rename` does not know, such as EPERM from
+        // tempfile's hard-link fallback. Claiming the name works everywhere.
+        Err(err) if err.error.kind() != std::io::ErrorKind::AlreadyExists => {
+            persist_over_claim(err.path, path)
         }
-    }
+        other => other,
+    };
+    restored.map_err(|err| {
+        let _ = err.path.keep();
+        err.error
+    })
 }
 
 fn restore_output(
@@ -696,8 +717,8 @@ mod tests {
     use super::lacks_exclusive_rename;
     use super::{
         derive_output_stem, extent_end, is_safe_dirent_name, is_safe_relative_path,
-        is_windows_reserved_stem, persist_over_claim, place_in_dir_mirrored, publish_set,
-        publish_temp, scratch_output_path,
+        is_windows_reserved_stem, persist_noclobber, persist_over_claim, place_in_dir_mirrored,
+        publish_set, publish_temp, restore_temp, scratch_output_path,
     };
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
@@ -934,7 +955,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_over_claim_keeps_an_existing_output_and_drops_the_temp() {
+    fn persist_over_claim_keeps_an_existing_output_and_hands_the_temp_back() {
         let dir = tempfile::tempdir().unwrap();
         let output = dir.path().join("out.bin");
         std::fs::write(&output, b"old").unwrap();
@@ -943,9 +964,67 @@ mod tests {
 
         let err = persist_over_claim(temp, &output).unwrap_err();
 
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(err.error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(std::fs::read(&output).unwrap(), b"old");
+        assert_eq!(std::fs::read(&err.path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn persist_noclobber_publishes_a_missing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        let temp = scratch_output_path(&output).unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        persist_noclobber(temp, &output).unwrap();
+
+        assert_eq!(std::fs::read(&output).unwrap(), b"new");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn persist_noclobber_hands_the_temp_back_when_the_output_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        std::fs::write(&output, b"old").unwrap();
+        let temp = scratch_output_path(&output).unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        let err = persist_noclobber(temp, &output).unwrap_err();
+
+        assert_eq!(err.error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&output).unwrap(), b"old");
+        assert_eq!(std::fs::read(&err.path).unwrap(), b"new");
+    }
+
+    #[test]
+    fn restore_temp_keeps_both_files_when_the_path_is_taken() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bin");
+        let temp = scratch_output_path(&path).unwrap();
+        std::fs::write(&temp, b"source").unwrap();
+        std::fs::write(&path, b"other").unwrap();
+
+        assert!(restore_temp(temp, &path).is_err());
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"other");
+        let kept = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .any(|entry| entry != path && std::fs::read(&entry).is_ok_and(|b| b == b"source"));
+        assert!(kept, "the source did not survive under its scratch name");
+    }
+
+    #[test]
+    fn restore_temp_moves_the_source_to_a_free_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bin");
+        let temp = scratch_output_path(&path).unwrap();
+        std::fs::write(&temp, b"source").unwrap();
+
+        restore_temp(temp, &path).unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"source");
     }
 
     #[cfg(unix)]

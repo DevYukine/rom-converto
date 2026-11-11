@@ -599,7 +599,7 @@ pub(crate) fn rename_transaction(
         let result = if overwrite {
             temp.persist(&moves[index].to)
         } else {
-            temp.persist_noclobber(&moves[index].to)
+            crate::util::persist_noclobber(temp, &moves[index].to)
         };
         match result {
             Ok(_) => moves[index].published = true,
