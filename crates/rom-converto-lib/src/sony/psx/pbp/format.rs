@@ -377,7 +377,11 @@ mod tests {
     fn titles_are_cut_at_a_character_boundary() {
         let mut slot = vec![0xFFu8; 8];
         put_text(&mut slot, 0, 4, "ab\u{e9}");
-        assert_eq!(&slot[..4], b"ab\xFF\xFF", "the 2-byte \u{e9} does not fit 3 bytes");
+        assert_eq!(
+            &slot[..4],
+            b"ab\xFF\xFF",
+            "the 2-byte \u{e9} does not fit 3 bytes"
+        );
         let mut slot = vec![0xFFu8; 8];
         put_text(&mut slot, 0, 4, "abcdef");
         assert_eq!(&slot[..4], b"abc\xFF");

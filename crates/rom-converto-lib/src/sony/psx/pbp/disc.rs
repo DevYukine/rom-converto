@@ -138,7 +138,9 @@ impl DiscImage {
         }
         match tracks.first() {
             None => return Err(PsxPbpError::NoDataTrack(source.to_path_buf())),
-            Some(first) if first.audio => return Err(PsxPbpError::NoDataTrack(source.to_path_buf())),
+            Some(first) if first.audio => {
+                return Err(PsxPbpError::NoDataTrack(source.to_path_buf()));
+            }
             Some(first) if first.start > 0 => {
                 return Err(PsxPbpError::DataTrackNotAtStart {
                     path: source.to_path_buf(),
@@ -393,14 +395,20 @@ mod tests {
     fn a_boot_file_that_is_not_a_serial_has_no_disc_id() {
         let dir = tempfile::tempdir().unwrap();
         let cue = write_disc(dir.path(), "game", &ps1_data_track("PSX.EXE", 64));
-        assert_eq!(DiscImage::open(&cue, &cue).unwrap().read_disc_id().unwrap(), None);
+        assert_eq!(
+            DiscImage::open(&cue, &cue).unwrap().read_disc_id().unwrap(),
+            None
+        );
     }
 
     #[test]
     fn a_disc_without_system_cnf_has_no_disc_id() {
         let dir = tempfile::tempdir().unwrap();
         let cue = write_disc(dir.path(), "game", &data_track_without_system_cnf(64));
-        assert_eq!(DiscImage::open(&cue, &cue).unwrap().read_disc_id().unwrap(), None);
+        assert_eq!(
+            DiscImage::open(&cue, &cue).unwrap().read_disc_id().unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -489,10 +497,9 @@ mod tests {
                 "FILE \"game.bin\" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:10\n",
                 |e| matches!(e, PsxPbpError::TrackPastEnd { .. }),
             ),
-            (
-                " TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n",
-                |e| matches!(e, PsxPbpError::TrackWithoutFile { .. }),
-            ),
+            (" TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n", |e| {
+                matches!(e, PsxPbpError::TrackWithoutFile { .. })
+            }),
             (
                 "FILE \"game.bin\" BINARY\n TRACK 01 MODE2/2352\n  INDEX 00 00:00:00\n  INDEX 01 00:00:02\n",
                 |e| matches!(e, PsxPbpError::DataTrackNotAtStart { start: 2, .. }),
@@ -505,10 +512,9 @@ mod tests {
                 "FILE \"game.bin\" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n TRACK 100 AUDIO\n  INDEX 01 00:00:01\n",
                 |e| matches!(e, PsxPbpError::TrackNumberOutOfRange { track: 100, .. }),
             ),
-            (
-                &hundred_tracks,
-                |e| matches!(e, PsxPbpError::TooManyTracks { count: 100, .. }),
-            ),
+            (&hundred_tracks, |e| {
+                matches!(e, PsxPbpError::TooManyTracks { count: 100, .. })
+            }),
         ];
         for (sheet, expected) in cases {
             let cue = dir.path().join("game.cue");
@@ -578,11 +584,7 @@ mod tests {
         );
 
         let elsewhere = dir.path().join("elsewhere/game.cue");
-        std::fs::write(
-            &m3u,
-            format!("../up.cue\n{}\n", elsewhere.display()),
-        )
-        .unwrap();
+        std::fs::write(&m3u, format!("../up.cue\n{}\n", elsewhere.display())).unwrap();
         assert_eq!(
             read_playlist(&m3u).unwrap(),
             vec![dir.path().join("../up.cue"), elsewhere]

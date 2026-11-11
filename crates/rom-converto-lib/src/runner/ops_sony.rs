@@ -368,7 +368,8 @@ mod tests {
         let res = run_json(&req.to_string(), CancelToken::new()).await;
         assert_eq!(res.status, 2, "{res:?}");
         assert!(
-            res.message.contains("game.m3u is a playlist inside an archive"),
+            res.message
+                .contains("game.m3u is a playlist inside an archive"),
             "{res:?}"
         );
     }
@@ -401,7 +402,10 @@ mod tests {
         assert!(game.join("SLES99995/EBOOT.PBP").is_file());
 
         let res = run(first.clone(), "skip").await;
-        assert!(res.ok && res.message.starts_with("Skipped existing"), "{res:?}");
+        assert!(
+            res.ok && res.message.starts_with("Skipped existing"),
+            "{res:?}"
+        );
         let res = run(first.clone(), "error").await;
         assert!(!res.ok, "{res:?}");
         assert!(res.message.contains("SLUS99999"), "{res:?}");

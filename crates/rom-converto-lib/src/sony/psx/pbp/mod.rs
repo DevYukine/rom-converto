@@ -640,8 +640,16 @@ mod tests {
 
         static STAND_IN: [u8; MULTIDISC_TABLE_LEN] = [0x5A; MULTIDISC_TABLE_LEN];
         let dir = tempfile::tempdir().unwrap();
-        write_disc(dir.path(), "game (Disc 1)", &ps1_data_track("SLPS_999.98", 40));
-        write_disc(dir.path(), "game (Disc 2)", &data_track_without_system_cnf(50));
+        write_disc(
+            dir.path(),
+            "game (Disc 1)",
+            &ps1_data_track("SLPS_999.98", 40),
+        );
+        write_disc(
+            dir.path(),
+            "game (Disc 2)",
+            &data_track_without_system_cnf(50),
+        );
         let m3u = dir.path().join("game.m3u");
         std::fs::write(&m3u, "game (Disc 1).cue\ngame (Disc 2).cue\n").unwrap();
 
@@ -967,7 +975,13 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(err, PsxPbpError::NotPs1Disc { kind: "PS2 (CD)", .. }),
+            matches!(
+                err,
+                PsxPbpError::NotPs1Disc {
+                    kind: "PS2 (CD)",
+                    ..
+                }
+            ),
             "{err}"
         );
     }
@@ -1010,7 +1024,10 @@ mod tests {
         assert_eq!(written, vec![out.join("SLUS99999/EBOOT.PBP")]);
         let built = std::fs::read(&written[0]).unwrap();
 
-        assert_eq!(build(ExistingEboot::Keep).await.unwrap(), Vec::<PathBuf>::new());
+        assert_eq!(
+            build(ExistingEboot::Keep).await.unwrap(),
+            Vec::<PathBuf>::new()
+        );
         let err = build(ExistingEboot::Refuse).await.unwrap_err();
         assert!(
             matches!(&err, PsxPbpError::EbootExists(path) if *path == written[0]),
@@ -1052,13 +1069,22 @@ mod tests {
         std::fs::create_dir_all(eboot.parent().unwrap()).unwrap();
         std::fs::write(&eboot, b"the other run").unwrap();
 
-        assert_eq!(build_with(ExistingEboot::Keep).unwrap(), Vec::<PathBuf>::new());
+        assert_eq!(
+            build_with(ExistingEboot::Keep).unwrap(),
+            Vec::<PathBuf>::new()
+        );
         let err = build_with(ExistingEboot::Refuse).unwrap_err();
-        assert!(matches!(&err, PsxPbpError::EbootExists(path) if *path == eboot), "{err}");
+        assert!(
+            matches!(&err, PsxPbpError::EbootExists(path) if *path == eboot),
+            "{err}"
+        );
         assert_eq!(std::fs::read(&eboot).unwrap(), b"the other run");
         assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
 
-        assert_eq!(build_with(ExistingEboot::Replace).unwrap(), vec![eboot.clone()]);
+        assert_eq!(
+            build_with(ExistingEboot::Replace).unwrap(),
+            vec![eboot.clone()]
+        );
         assert_ne!(std::fs::read(&eboot).unwrap(), b"the other run");
     }
 

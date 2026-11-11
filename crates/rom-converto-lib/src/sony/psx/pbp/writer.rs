@@ -12,9 +12,9 @@ use super::format::{
     PSAR_ALIGN, PSTITLEIMG_LEN, block_count, data_end, psisoimg_header, pstitleimg_header,
     startdat_header, startdat_len,
 };
+use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::sony::psp::pbp::{self, DATA_PSAR, SEGMENT_COUNT};
 use crate::util::sfo::{self, SfoEntry, SfoValue};
-use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::template::truncate_bytes;
 use crate::util::worker_pool::{Pool, PoolChannelClosed, drive, parallelism, with_writer_thread};
 use crate::util::{CancelToken, Cancelled, ProgressReporter};
