@@ -364,7 +364,14 @@ fn existing_eboot(output_dir: &Path, id: &DiscId, discs: usize) -> Option<PathBu
     std::iter::once(id.sfo())
         .chain((1..=discs).map(|n| format!("{}-DISC{n}", id.sfo())))
         .map(|folder| output_dir.join(folder).join("EBOOT.PBP"))
-        .find(|path| path.exists())
+        .find(|path| path.exists() && !is_empty_file(path))
+}
+
+/// An empty EBOOT is what a run killed while publishing on FAT32 or exFAT
+/// leaves: the name claimed, the rename not done. It counts as missing.
+fn is_empty_file(path: &Path) -> bool {
+    path.symlink_metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() == 0)
 }
 
 /// The file stem a default title and output folder derive from, with any
@@ -489,8 +496,8 @@ fn build(
 /// earlier file in place. Unless `existing` is [`ExistingEboot::Replace`],
 /// publishing never replaces a file, so an EBOOT another run published
 /// meanwhile is kept or refused as asked. A file that could pass FAT32's
-/// limit is refused before the first byte. A game folder this call creates
-/// is removed again when no EBOOT is published.
+/// limit is refused before the first byte. A folder this call creates is
+/// removed again when no EBOOT is published.
 fn publish(
     eboots: Vec<(Eboot<'_>, PathBuf)>,
     existing: ExistingEboot,
@@ -501,15 +508,15 @@ fn publish(
     let published = write_and_publish(eboots, existing, progress, cancel, &mut claimed);
     if !matches!(&published, Ok(paths) if !paths.is_empty()) {
         // Best effort: a folder another run wrote into meanwhile stays.
-        for folder in &claimed {
+        for folder in claimed.iter().rev() {
             let _ = std::fs::remove_dir(folder);
         }
     }
     published
 }
 
-/// [`publish`] but for the cleanup, adding to `claimed` each game folder it
-/// creates. Every scratch file is gone by the time it returns.
+/// [`publish`] but for the cleanup, adding to `claimed` each folder it
+/// creates, in order. Every scratch file is gone by the time it returns.
 fn write_and_publish(
     eboots: Vec<(Eboot<'_>, PathBuf)>,
     existing: ExistingEboot,
@@ -525,20 +532,29 @@ fn write_and_publish(
     }
     for (_, path) in &eboots {
         let folder = path.parent().expect("an EBOOT path names its game folder");
-        if let Some(output_dir) = folder.parent() {
-            std::fs::create_dir_all(output_dir)?;
+        // The exists() check keeps a drive root, which create_dir refuses,
+        // out of the claim.
+        if let Some(output_dir) = folder.parent()
+            && !output_dir.as_os_str().is_empty()
+            && !output_dir.exists()
+        {
+            if let Some(parent) = output_dir.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            claim_dir(output_dir, claimed)?;
         }
-        match std::fs::create_dir(folder) {
-            Ok(()) => claimed.push(folder.to_path_buf()),
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(err) => return Err(err.into()),
-        }
+        claim_dir(folder, claimed)?;
     }
     let mut written = Vec::with_capacity(eboots.len());
     for (eboot, path) in &eboots {
         let (mut file, temp) = scratch_output_file(path)?.into_parts();
         eboot.write(&mut file, progress, cancel)?;
         written.push(temp);
+    }
+    for (_, path) in &eboots {
+        if is_empty_file(path) {
+            std::fs::remove_file(path)?;
+        }
     }
     let published = publish_set(
         written
@@ -567,6 +583,17 @@ fn write_and_publish(
         }
         Err(err) => Err(err.into()),
     }
+}
+
+/// Creates `dir` and records it in `claimed`; a folder that already exists,
+/// perhaps made by another run just now, is used but not claimed.
+fn claim_dir(dir: &Path, claimed: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    match std::fs::create_dir(dir) {
+        Ok(()) => claimed.push(dir.to_path_buf()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(err) => return Err(err),
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1228,6 +1255,93 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
         assert!(!out.join("SLUS99999").exists(), "game folder left behind");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_leaves_no_output_folder_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let out = dir.path().join("out");
+        let err = to_pbp(&NoProgress, &cue, &out, &PbpOptions::default(), cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert!(!out.exists(), "output folder left behind");
+    }
+
+    #[test]
+    fn a_failed_run_removes_only_an_output_folder_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let discs: Vec<DiscImage> = read_playlist(&m3u)
+            .unwrap()
+            .iter()
+            .map(|cue| DiscImage::open(cue, cue).unwrap())
+            .collect();
+        std::fs::remove_file(dir.path().join("game (Disc 2).bin")).unwrap();
+        let ids = vec![DiscId::parse("SLPS-99998").unwrap(); 2];
+        let images = Images {
+            startdat_png: STARTDAT_PNG.to_vec(),
+            icon0: None,
+            pic1: None,
+        };
+        let fail_into = |out: &Path| {
+            build(
+                &NoProgress,
+                &discs,
+                &ids,
+                &images,
+                "game",
+                out,
+                BlockEncoding::Stored,
+                ExistingEboot::Replace,
+                None,
+                &CancelToken::new(),
+            )
+            .unwrap_err()
+        };
+
+        let missing = dir.path().join("missing");
+        let err = fail_into(&missing);
+        assert!(matches!(err, PsxPbpError::Io(_)), "{err}");
+        assert!(!missing.exists(), "created output folder left behind");
+
+        let existing = dir.path().join("existing");
+        std::fs::create_dir(&existing).unwrap();
+        fail_into(&existing);
+        assert!(existing.is_dir(), "pre-existing output folder removed");
+    }
+
+    #[tokio::test]
+    async fn an_empty_eboot_is_absent_under_every_existing_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        for existing in [
+            ExistingEboot::Keep,
+            ExistingEboot::Refuse,
+            ExistingEboot::Replace,
+        ] {
+            let out = dir.path().join(format!("out_{existing:?}"));
+            let eboot = out.join("SLUS99999/EBOOT.PBP");
+            std::fs::create_dir_all(eboot.parent().unwrap()).unwrap();
+            std::fs::write(&eboot, b"").unwrap();
+            assert_eq!(find_existing_eboot(&cue, &out, None).unwrap(), None);
+
+            let options = PbpOptions {
+                existing,
+                ..PbpOptions::default()
+            };
+            let written = to_pbp(&NoProgress, &cue, &out, &options, CancelToken::new())
+                .await
+                .unwrap_or_else(|err| panic!("{existing:?}: {err}"));
+            assert_eq!(written, vec![eboot.clone()], "{existing:?}");
+            assert!(
+                std::fs::metadata(&eboot).unwrap().len() > 0,
+                "{existing:?} left the empty EBOOT"
+            );
+        }
     }
 
     #[tokio::test]

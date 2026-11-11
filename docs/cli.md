@@ -1008,7 +1008,9 @@ the discs fit in 4 GiB. Otherwise every disc
 becomes its own EBOOT, titled `<TITLE> (Disc N)`, all carrying disc 1's ID, so they share
 one memory card: save before a disc change, quit, and start the next disc's EBOOT; the
 command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is
-written and existing ones stay as they were. A CHD is extracted to a private folder in the
+written, existing ones stay as they were, and a folder the run created is removed again. An
+empty `EBOOT.PBP`, which a run killed while publishing can leave, counts as missing and is
+replaced. A CHD is extracted to a private folder in the
 system temp folder (`TMPDIR`) first and removed afterwards; the run stops before extracting
 when that disk lacks the room. The disc IDs, `--disc-id`, the images and each CHD's tracks
 are all checked before any CHD is extracted.
