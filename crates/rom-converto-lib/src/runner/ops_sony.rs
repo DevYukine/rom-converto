@@ -3,11 +3,12 @@
 use super::invalid_arg;
 use super::models::{RunRequest, RunResponse};
 use super::ops::{
-    ConvertTarget, conflict_policy, convert_op, dir_op, output_exists, required_input,
-    required_output_dir, skipped, skipped_already_done,
+    ConvertTarget, conflict_policy, convert_op, dir_op, dir_op_record, output_exists, planned,
+    preflight_space, required_input, required_output_dir, skipped, skipped_already_done,
+    stage_input, staged_path,
 };
 use crate::util::ConflictPolicy;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::sony::ps3::Ps3Error;
 use crate::util::fs::{file_len, has_ext};
@@ -128,9 +129,12 @@ pub(crate) async fn psx_to_pbp(
     cancel: CancelToken,
 ) -> Result<RunResponse> {
     use crate::sony::psx::pbp::{
-        BlockEncoding, ExistingEboot, PbpOptions, PsxPbpError, derive_output_dir, required_bytes,
+        BlockEncoding, ExistingEboot, PbpOptions, PsxPbpError, derive_output_dir,
+        find_existing_eboot, required_bytes,
     };
+    use crate::util::{PlanDecision, PlanLine};
 
+    const OPERATION: &str = "psx.to_pbp";
     let input = required_input(&req)?;
     refuse_archived_playlist(&input).await?;
     let desired = req
@@ -158,14 +162,12 @@ pub(crate) async fn psx_to_pbp(
             desired.display()
         )));
     }
-    let mut folder_req = req.clone();
-    folder_req.options.on_conflict = Some("overwrite".to_string());
     let options = PbpOptions {
         existing,
         encoding: match req.options.compression.as_deref() {
             Some(name) => name
                 .parse()
-                .map_err(|err: crate::sony::psx::pbp::PsxPbpError| invalid_arg(err.to_string()))?,
+                .map_err(|err: PsxPbpError| invalid_arg(err.to_string()))?,
             None => BlockEncoding::default(),
         },
         title: req.options.title.clone(),
@@ -174,31 +176,71 @@ pub(crate) async fn psx_to_pbp(
         icon0: req.options.icon0.clone(),
         pic1: req.options.pic1.clone(),
     };
-    let kept_flag = std::sync::atomic::AtomicBool::new(false);
-    let kept = &kept_flag;
-    let response = dir_op(
-        &folder_req,
-        &input,
-        &desired,
-        "psx.to_pbp",
-        required_bytes,
-        |source, output| async move {
-            let written = crate::sony::psx::pbp::to_pbp(progress, &source, &output, &options, cancel)
-                .await
-                .map_err(|err| match &err {
-                    PsxPbpError::EbootExists(path) => output_exists(path, err.to_string()),
-                    _ => err.into(),
-                })?;
-            kept.store(written.is_empty(), std::sync::atomic::Ordering::Relaxed);
-            Ok((written.iter().map(|path| file_len(path)).sum(), None))
-        },
+    let find = |source: PathBuf| {
+        let (output_dir, disc_id) = (desired.clone(), options.disc_id.clone());
+        tokio::task::spawn_blocking(move || {
+            find_existing_eboot(&source, &output_dir, disc_id.as_deref())
+        })
+    };
+    let refuse = |path: PathBuf| {
+        let message = PsxPbpError::EbootExists(path.clone()).to_string();
+        output_exists(&path, message)
+    };
+
+    if req.dry_run {
+        // A preview does not extract an archive, and an input it cannot read
+        // plans as new; the real run reports why it fails.
+        let present = if crate::util::is_archive_path(&input) {
+            None
+        } else {
+            find(input.clone()).await?.ok().flatten()
+        };
+        let decision = match (present, existing) {
+            (None, _) => PlanDecision::New,
+            (Some(_), ExistingEboot::Replace) => PlanDecision::Overwrite,
+            (Some(_), ExistingEboot::Keep) => PlanDecision::Skip,
+            (Some(path), ExistingEboot::Refuse) => return Err(refuse(path)),
+        };
+        return Ok(planned(PlanLine {
+            operation: OPERATION.to_string(),
+            input: input.clone(),
+            output: desired,
+            decision,
+            media: None,
+            missing_keys: None,
+        }));
+    }
+
+    let resolved = stage_input(&input, OPERATION).await?;
+    let source = staged_path(&resolved, &input).to_path_buf();
+    if let Some(path) = find(source.clone()).await?? {
+        match existing {
+            ExistingEboot::Replace => {}
+            ExistingEboot::Keep => {
+                log::info!("Skipped, EBOOT exists: {}", path.display());
+                return Ok(skipped(&input, &desired, OPERATION, None));
+            }
+            ExistingEboot::Refuse => return Err(refuse(path)),
+        }
+    }
+    if !req.options.skip_space_check.unwrap_or(false) {
+        preflight_space(&desired, required_bytes(&source))?;
+    }
+    let started = std::time::Instant::now();
+    let written = crate::sony::psx::pbp::to_pbp(progress, &source, &desired, &options, cancel)
+        .await
+        .map_err(|err| match err {
+            PsxPbpError::EbootExists(path) => refuse(path),
+            other => other.into(),
+        })?;
+    if written.is_empty() {
+        return Ok(skipped(&input, &desired, OPERATION, None));
+    }
+    let bytes = written.iter().map(|path| file_len(path)).sum();
+    Ok(
+        RunResponse::ok(format!("Wrote {}", desired.display()), None)
+            .with_record(dir_op_record(&input, &desired, OPERATION, bytes, started)),
     )
-    .await?;
-    Ok(if kept_flag.load(std::sync::atomic::Ordering::Relaxed) {
-        skipped(&input, &desired, "psx.to_pbp", None)
-    } else {
-        response
-    })
 }
 
 /// Refuses an archive holding an `.m3u`: staging extracts one member and
@@ -360,9 +402,32 @@ mod tests {
 
         let res = run(first.clone(), "skip").await;
         assert!(res.ok && res.message.starts_with("Skipped existing"), "{res:?}");
-        let res = run(first, "error").await;
+        let res = run(first.clone(), "error").await;
         assert!(!res.ok, "{res:?}");
         assert!(res.message.contains("SLUS99999"), "{res:?}");
+
+        let plan = |cue: &std::path::Path, policy: &str| {
+            let req = json!({
+                "operation": "psx.to_pbp",
+                "input": cue,
+                "output": game,
+                "dry_run": true,
+                "options": { "on_conflict": policy },
+            });
+            async move { run_json(&req.to_string(), CancelToken::new()).await }
+        };
+        let third = write_disc(dir.path(), "third", &ps1_data_track("SCES_999.96", 40));
+        for (cue, policy, decision) in [
+            (&third, "error", "New"),
+            (&first, "skip", "Skip"),
+            (&first, "overwrite", "Overwrite"),
+        ] {
+            let res = plan(cue, policy).await;
+            assert!(res.ok, "{policy}: {res:?}");
+            let data = serde_json::to_value(res.data.unwrap()).unwrap();
+            assert_eq!(data["decision"], decision, "{policy}");
+        }
+        assert!(!plan(&first, "error").await.ok);
     }
 
     #[tokio::test]

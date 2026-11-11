@@ -322,6 +322,39 @@ fn shares_disk(scratch: &Path, output: &Path) -> bool {
     }
 }
 
+/// The EBOOT a build of `input` into `output_dir` would meet, if any: the
+/// game's one-file folder or any of its per-disc ones, found from disc 1's
+/// ID (or `disc_id`) without building anything.
+///
+/// # Errors
+/// Returns [`PsxPbpError`] when disc 1 cannot be read or names no ID.
+pub fn find_existing_eboot(
+    input: &Path,
+    output_dir: &Path,
+    disc_id: Option<&str>,
+) -> PsxPbpResult<Option<PathBuf>> {
+    let sources = if has_ext(input, "m3u") {
+        read_playlist(input)?
+    } else {
+        vec![input.to_path_buf()]
+    };
+    let id = match disc_id {
+        Some(text) => DiscId::parse(text)?,
+        None => {
+            let first = &sources[0];
+            let read = if has_ext(first, "cue") {
+                DiscImage::open(first, first)?.read_disc_id()?
+            } else if has_ext(first, "chd") {
+                read_chd_disc_id(first)?
+            } else {
+                return Err(PsxPbpError::UnsupportedInput(first.clone()));
+            };
+            read.ok_or_else(|| PsxPbpError::NoDiscId(first.clone()))?
+        }
+    };
+    Ok(existing_eboot(output_dir, &id, sources.len()))
+}
+
 /// The first EBOOT of the game `id` names, with `discs` discs, already in
 /// `output_dir`: its one-file folder or any of its per-disc ones.
 fn existing_eboot(output_dir: &Path, id: &DiscId, discs: usize) -> Option<PathBuf> {
