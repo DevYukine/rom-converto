@@ -184,7 +184,7 @@ async fn build_eboots(
 
     let title = options.title.clone().unwrap_or_else(|| default_stem(input));
     let output_dir = output_dir.to_path_buf();
-    let encoding = options.encoding;
+    let (encoding, existing) = (options.encoding, options.existing);
     let (ids, images) = (checked.ids, checked.images);
     let written = spawn_blocking_with_progress(progress, move |progress| {
         build(
@@ -195,6 +195,7 @@ async fn build_eboots(
             &title,
             &output_dir,
             encoding,
+            existing,
             table,
             &cancel,
         )
@@ -410,6 +411,7 @@ fn build(
     title: &str,
     output_dir: &Path,
     encoding: BlockEncoding,
+    existing: ExistingEboot,
     table: Option<&[u8; MULTIDISC_TABLE_LEN]>,
     cancel: &CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
@@ -439,7 +441,7 @@ fn build(
             );
         }
         let path = output_dir.join(first_id.sfo()).join("EBOOT.PBP");
-        return publish(vec![(together, path)], progress, cancel);
+        return publish(vec![(together, path)], existing, progress, cancel);
     }
 
     progress.warn(&format!(
@@ -469,15 +471,18 @@ fn build(
             (eboot, path)
         })
         .collect();
-    publish(eboots, progress, cancel)
+    publish(eboots, existing, progress, cancel)
 }
 
 /// Writes every EBOOT to a scratch file beside its path, then publishes
 /// them together, so a failure leaves no EBOOT of the set behind and every
-/// earlier file in place. A file that could pass FAT32's limit is refused
-/// before the first byte.
+/// earlier file in place. Unless `existing` is [`ExistingEboot::Replace`],
+/// publishing never replaces a file, so an EBOOT another run published
+/// meanwhile is kept or refused as asked. A file that could pass FAT32's
+/// limit is refused before the first byte.
 fn publish(
     eboots: Vec<(Eboot<'_>, PathBuf)>,
+    existing: ExistingEboot,
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
@@ -493,15 +498,33 @@ fn publish(
         eboot.write(&mut file, progress, cancel)?;
         written.push(temp);
     }
-    publish_set(
+    let published = publish_set(
         written
             .into_iter()
             .zip(&eboots)
             .map(|(temp, (_, path))| (temp, path.as_path()))
             .collect(),
-        true,
-    )?;
-    Ok(eboots.into_iter().map(|(_, path)| path).collect())
+        existing == ExistingEboot::Replace,
+    );
+    match published {
+        Ok(()) => Ok(eboots.into_iter().map(|(_, path)| path).collect()),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let path = eboots
+                .iter()
+                .map(|(_, path)| path)
+                .find(|path| path.exists())
+                .cloned()
+                .unwrap_or_else(|| eboots[0].1.clone());
+            match existing {
+                ExistingEboot::Keep => {
+                    log::info!("Skipped, EBOOT exists: {}", path.display());
+                    Ok(Vec::new())
+                }
+                _ => Err(PsxPbpError::EbootExists(path)),
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
 }
 
 #[cfg(test)]
@@ -855,6 +878,7 @@ mod tests {
             "game",
             &out,
             BlockEncoding::Stored,
+            ExistingEboot::Replace,
             None,
             &CancelToken::new(),
         )
@@ -994,6 +1018,48 @@ mod tests {
         );
         assert_eq!(std::fs::read(&written[0]).unwrap(), built);
         assert_eq!(std::fs::read(&other).unwrap(), b"another game");
+    }
+
+    /// Another run may publish the same game between the early check and
+    /// this one's publish; Keep and Refuse never replace that file.
+    #[test]
+    fn publishing_never_replaces_an_eboot_another_run_wrote_unless_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let disc = DiscImage::open(&cue, &cue).unwrap();
+        let ids = vec![DiscId::parse("SLUS-99999").unwrap()];
+        let images = Images {
+            startdat_png: STARTDAT_PNG.to_vec(),
+            icon0: None,
+            pic1: None,
+        };
+        let out = dir.path().join("out");
+        let eboot = out.join("SLUS99999/EBOOT.PBP");
+        let build_with = |existing| {
+            build(
+                &NoProgress,
+                std::slice::from_ref(&disc),
+                &ids,
+                &images,
+                "game",
+                &out,
+                BlockEncoding::Stored,
+                existing,
+                None,
+                &CancelToken::new(),
+            )
+        };
+        std::fs::create_dir_all(eboot.parent().unwrap()).unwrap();
+        std::fs::write(&eboot, b"the other run").unwrap();
+
+        assert_eq!(build_with(ExistingEboot::Keep).unwrap(), Vec::<PathBuf>::new());
+        let err = build_with(ExistingEboot::Refuse).unwrap_err();
+        assert!(matches!(&err, PsxPbpError::EbootExists(path) if *path == eboot), "{err}");
+        assert_eq!(std::fs::read(&eboot).unwrap(), b"the other run");
+        assert!(!crate::util::scratch_output_exists(&eboot).unwrap());
+
+        assert_eq!(build_with(ExistingEboot::Replace).unwrap(), vec![eboot.clone()]);
+        assert_ne!(std::fs::read(&eboot).unwrap(), b"the other run");
     }
 
     #[tokio::test]
