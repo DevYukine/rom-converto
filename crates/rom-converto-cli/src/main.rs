@@ -12,7 +12,9 @@ use clap::Parser;
 use indicatif::MultiProgress;
 use indicatif_log_bridge::LogWrapper;
 use rom_converto_lib::runner::is_cancelled_error;
+use rom_converto_lib::util::CancelToken;
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::commands::support::DispatchCtx;
 
@@ -33,8 +35,19 @@ pub mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
 
+// Debug builds put several hundred KiB of clap and dispatch frames on the
+// thread that drives the CLI, more than Windows' 1 MiB main thread stack.
+fn main() -> Result<()> {
+    std::thread::Builder::new()
+        .name("main".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)?
+        .join()
+        .unwrap_or_else(|p| std::panic::resume_unwind(p))
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     dotenv::dotenv().ok();
 
     let cli = Cli::parse_from(std::env::args_os().map(crate::util::expand_tilde_arg));
@@ -122,12 +135,12 @@ async fn main() -> Result<()> {
         cli.rebuild_cache,
     ));
 
-    let cancel = rom_converto_lib::util::CancelToken::new();
+    let cancel = CancelToken::new();
     {
         let cancel = cancel.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                cancel.cancel();
+            if let Err(e) = watch_signals(cancel).await {
+                log::debug!("Cannot listen for signals: {e}");
             }
         });
     }
@@ -153,12 +166,66 @@ async fn main() -> Result<()> {
 
     if let Err(err) = dispatch {
         if cancel.is_cancelled() && is_cancelled_error(&err) {
-            eprintln!("Cancelled");
-            std::process::exit(130);
+            use std::io::Write;
+            // After SIGHUP the terminal is gone, and eprintln! panics on EIO.
+            writeln!(std::io::stderr(), "Cancelled").ok();
+            std::process::exit(SIGNAL_EXIT_CODE.load(Ordering::SeqCst));
         }
         return Err(err);
     }
     Ok(())
+}
+
+/// 128 plus the signal that cancelled the run, 0 until then.
+static SIGNAL_EXIT_CODE: AtomicI32 = AtomicI32::new(0);
+
+/// Cancels `cancel` on SIGINT, SIGTERM or SIGHUP (only Ctrl-C on Windows)
+/// and records the exit code. Later signals change nothing, as with Ctrl-C
+/// before: exiting mid-step could strand files under their scratch names in
+/// a rename transaction or a backup swap.
+async fn watch_signals(cancel: CancelToken) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let (mut interrupt, mut terminate, mut hangup) = {
+        use tokio::signal::unix::{SignalKind, signal};
+        // nohup leaves SIGHUP ignored, and listening for it would replace
+        // that with signal-hook-registry's handler.
+        // SAFETY: an all-zero sigaction is valid, and with a null new action
+        // sigaction only writes the current one into `old`.
+        let hangup_ignored = unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGHUP, std::ptr::null(), &mut old) == 0
+                && old.sa_sigaction == libc::SIG_IGN
+        };
+        (
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+            if hangup_ignored {
+                None
+            } else {
+                Some(signal(SignalKind::hangup())?)
+            },
+        )
+    };
+    #[cfg(windows)]
+    let mut ctrl_c = tokio::signal::windows::ctrl_c()?;
+    log::debug!("Listening for signals");
+
+    #[cfg(unix)]
+    let signal = tokio::select! {
+        _ = interrupt.recv() => libc::SIGINT,
+        _ = terminate.recv() => libc::SIGTERM,
+        Some(()) = async { hangup.as_mut()?.recv().await } => libc::SIGHUP,
+    };
+    #[cfg(windows)]
+    let signal = {
+        ctrl_c.recv().await;
+        2 // SIGINT
+    };
+    SIGNAL_EXIT_CODE.store(128 + signal, Ordering::SeqCst);
+    cancel.cancel();
+    // Windows runs its default handler, which ends the process, once no
+    // listener is left, so keep them for the rest of the run.
+    std::future::pending().await
 }
 
 fn should_check_for_updates(no_update_check: bool) -> bool {

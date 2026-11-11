@@ -31,6 +31,7 @@ pub(crate) fn hash_single(
     algos: &[HashAlgo],
     report: Option<&Path>,
     cache: Option<&rom_converto_lib::util::HashCache>,
+    cancel: &CancelToken,
 ) -> Result<()> {
     use rom_converto_lib::util::{
         FileStatus, HashReportRecord, ReportFormat, ReportTotals, write_hash_report,
@@ -39,8 +40,8 @@ pub(crate) fn hash_single(
     let started = Instant::now();
     let mut tally = Tally::new();
     let result = match cache {
-        Some(cache) => hash_cached(source, algos, progress, cache, &CancelToken::new()),
-        None => hash_file(source, algos, progress, &CancelToken::new()),
+        Some(cache) => hash_cached(source, algos, progress, cache, cancel),
+        None => hash_file(source, algos, progress, cancel),
     };
     let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
 
@@ -62,6 +63,9 @@ pub(crate) fn hash_single(
             (record, Ok(d.size_bytes))
         }
         Err(e) => {
+            if cancel.is_cancelled() {
+                return Err(Cancelled.into());
+            }
             log::warn!("Failed to hash {}: {e}", display.display());
             tally.record_failed();
             let record = HashReportRecord {
@@ -765,5 +769,36 @@ mod chd_codecs_tip_tests {
             part_hash_line(None, 2),
             "RVZ partition table hash: not checked"
         );
+    }
+}
+
+#[cfg(test)]
+mod hash_single_tests {
+    use super::*;
+    use rom_converto_lib::runner::is_cancelled_error;
+    use rom_converto_lib::util::NoProgress;
+
+    #[test]
+    fn a_cancelled_hash_returns_cancelled_and_writes_no_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("game.iso");
+        std::fs::write(&input, [0u8; 16]).unwrap();
+        let report = dir.path().join("hashes.json");
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        let err = hash_single(
+            &NoProgress,
+            &input,
+            &input,
+            &[HashAlgo::Crc32],
+            Some(&report),
+            None,
+            &cancel,
+        )
+        .unwrap_err();
+
+        assert!(is_cancelled_error(&err), "{err:#}");
+        assert!(!report.exists());
     }
 }

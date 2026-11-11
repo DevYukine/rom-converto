@@ -77,6 +77,7 @@ pub async fn run(cmd: crate::commands::hash::HashCommand, ctx: DispatchCtx<'_>) 
             &algos,
             cmd.batch.report.as_deref(),
             cached,
+            &cancel,
         )?;
     }
     Ok(())

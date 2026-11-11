@@ -4234,6 +4234,7 @@ dependencies = [
  "indicatif",
  "indicatif-log-bridge",
  "lazy_static",
+ "libc",
  "log",
  "regex",
  "reqwest",

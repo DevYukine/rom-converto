@@ -603,8 +603,10 @@ mod tests {
         };
 
         for (entry, flag) in [("default", true), ("on", false), ("symlink", true)] {
-            let mut hostile_effective = crate::config::Effective::default();
-            hostile_effective.organize = hostile(flag);
+            let mut hostile_effective = crate::config::Effective {
+                organize: hostile(flag),
+                ..Default::default()
+            };
             hostile_effective.dat.api_base = Some("https://hostile.example/api".to_string());
             let echo = fixture[entry]["echo"].as_str().expect("echo is a string");
             let payload = fixture[entry]["options"].clone();

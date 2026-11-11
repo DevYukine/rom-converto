@@ -43,7 +43,8 @@ impl CueParser {
         let mut current_track: Option<Track> = None;
 
         while let Some(line) = bounded_line::read_line(&mut reader)? {
-            let line = line.trim();
+            // Notepad writes a UTF-8 BOM before the first line.
+            let line = line.trim_start_matches('\u{feff}').trim();
 
             if line.is_empty() || line.starts_with("REM") {
                 continue;
@@ -431,5 +432,40 @@ mod tests {
                 expected_msf.frames
             )
         );
+    }
+
+    #[test]
+    fn bom_prefixed_sheet_parses_like_the_plain_sheet() {
+        let text = "FILE \"first track.bin\" BINARY\n\
+                    TRACK 01 MODE1/2352\n\
+                    INDEX 01 00:00:00\n\
+                    FILE \"second track.bin\" BINARY\n\
+                    TRACK 02 AUDIO\n\
+                    INDEX 01 00:02:00\n";
+        let plain = parser().parse_bytes(text.as_bytes()).unwrap();
+        let bom = parser()
+            .parse_bytes(format!("\u{feff}{text}").as_bytes())
+            .unwrap();
+
+        let summary = |sheet: &CueSheet| {
+            let files: Vec<String> = sheet.files.iter().map(|f| f.filename.clone()).collect();
+            let tracks: Vec<_> = sheet
+                .tracks
+                .iter()
+                .map(|t| {
+                    let indices: Vec<_> = t
+                        .indices
+                        .iter()
+                        .map(|i| {
+                            let p = i.position;
+                            (i.number, p.minutes, p.seconds, p.frames)
+                        })
+                        .collect();
+                    (t.number, t.track_type, t.file_index, indices)
+                })
+                .collect();
+            (files, tracks)
+        };
+        assert_eq!(summary(&bom), summary(&plain));
     }
 }
