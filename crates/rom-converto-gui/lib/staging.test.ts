@@ -68,4 +68,26 @@ describe("useStaging", () => {
 		await add(["/lib/game.nsp"]);
 		expect(staged.value).toHaveLength(1);
 	});
+
+	it("stages nothing for a dropped folder when the def turns folder scanning off", async () => {
+		const folderless = { ...def, scanFolders: false };
+		invoke.mockImplementation(async (cmd: string) =>
+			cmd === "cmd_scan_dir" ? ["/g/game.m3u", "/g/Disc 1.cue", "/g/Disc 2.cue"] : null,
+		);
+		const { staged, add } = useStaging(folderless);
+		await add(["/g"]);
+		expect(staged.value).toHaveLength(0);
+	});
+
+	it("stages a plain file under a def that turns folder scanning off", async () => {
+		const folderless = { ...def, scanFolders: false };
+		invoke.mockImplementation(async (cmd: string) => {
+			if (cmd === "cmd_scan_dir") throw new Error("not a directory");
+			return 1;
+		});
+		const { staged, add } = useStaging(folderless);
+		await add(["/g/game.m3u"]);
+		expect(staged.value).toHaveLength(1);
+		expect(staged.value[0]).toMatchObject({ path: "/g/game.m3u", name: "game.m3u", dir: false });
+	});
 });

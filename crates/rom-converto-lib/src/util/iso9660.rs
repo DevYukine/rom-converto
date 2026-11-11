@@ -218,14 +218,14 @@ fn classify<S: SectorSource>(
             entry.size.min(SECTOR as u32),
             MAX_FILE_BYTES,
         )?;
-        if contains(&cnf, b"BOOT2") {
+        if has_cnf_key(&cnf, b"BOOT2") {
             return Ok(if volume.total_sectors > CD_MAX_SECTORS {
                 DiscKind::Ps2Dvd
             } else {
                 DiscKind::Ps2Cd
             });
         }
-        if contains(&cnf, b"BOOT") {
+        if has_cnf_key(&cnf, b"BOOT") {
             return Ok(DiscKind::Ps1);
         }
     }
@@ -296,6 +296,29 @@ fn strip_version(name: &[u8]) -> &[u8] {
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The `(key, value)` of each `key = value` line of `SYSTEM.CNF`, split on CR
+/// or LF, with ASCII whitespace and NUL trimmed around both.
+pub(crate) fn cnf_lines(cnf: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
+    let cnf = cnf.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(cnf);
+    cnf.split(|&b| b == b'\r' || b == b'\n').filter_map(|line| {
+        let (key, value) = line.split_at(line.iter().position(|&b| b == b'=')?);
+        Some((trim_cnf(key), trim_cnf(&value[1..])))
+    })
+}
+
+fn trim_cnf(s: &[u8]) -> &[u8] {
+    let is_pad = |b: &u8| b.is_ascii_whitespace() || *b == 0;
+    let start = s.iter().position(|b| !is_pad(b)).unwrap_or(s.len());
+    let end = s.iter().rposition(|b| !is_pad(b)).map_or(start, |i| i + 1);
+    &s[start..end]
+}
+
+/// Whether `SYSTEM.CNF` has a `key = value` line for exactly `key`, so a
+/// PS1 `BOOT` path that mentions `BOOT2` stays a PS1 disc.
+fn has_cnf_key(cnf: &[u8], key: &[u8]) -> bool {
+    cnf_lines(cnf).any(|(k, _)| k == key)
 }
 
 #[cfg(test)]
@@ -463,6 +486,50 @@ mod tests {
             file_content: cnf,
         });
         assert_eq!(detect_bytes(&dvd), DiscKind::Ps2Dvd);
+    }
+
+    #[test]
+    fn a_ps1_boot_path_naming_boot2_stays_ps1() {
+        let iso = make_iso(&IsoSpec {
+            system_id: b"PLAYSTATION",
+            volume_sectors: 300_000,
+            root_entries: &[(b"SYSTEM.CNF;1", false)],
+            file_content: b"BOOT = cdrom:\\BOOT2.EXE;1\r\nTCB = 4\r\n",
+        });
+        assert_eq!(detect_bytes(&iso), DiscKind::Ps1);
+    }
+
+    fn detect_cnf(cnf: &[u8]) -> DiscKind {
+        detect_bytes(&make_iso(&IsoSpec {
+            system_id: b"PLAYSTATION",
+            volume_sectors: 300_000,
+            root_entries: &[(b"SYSTEM.CNF;1", false)],
+            file_content: cnf,
+        }))
+    }
+
+    #[test]
+    fn a_utf8_bom_before_boot_stays_ps1() {
+        assert_eq!(
+            detect_cnf(b"\xEF\xBB\xBFBOOT = cdrom:\\SLUS_999.99;1\r\n"),
+            DiscKind::Ps1
+        );
+    }
+
+    #[test]
+    fn leading_nuls_before_boot2_stay_ps2() {
+        assert_eq!(
+            detect_cnf(b"\0\0BOOT2 = cdrom0:\\SLUS_999.99;1\r\n"),
+            DiscKind::Ps2Cd
+        );
+    }
+
+    #[test]
+    fn cr_only_line_endings_still_find_boot2() {
+        assert_eq!(
+            detect_cnf(b"VER = 1.00\rBOOT2 = cdrom0:\\SLUS_999.99;1\r"),
+            DiscKind::Ps2Cd
+        );
     }
 
     #[test]

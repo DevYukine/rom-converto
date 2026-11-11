@@ -23,6 +23,7 @@ Use `rom-converto --help`, `rom-converto <command> --help`, or
 | `xenon` | Compress Xbox 360 images to ZAR, convert ISO to GoD, extract, verify, and inspect |
 | `ps3` | Decrypt and inspect PlayStation 3 disc images |
 | `psp` | Inspect and extract PSP `EBOOT.PBP` containers |
+| `psx` | Convert PS1 disc images to PSP `EBOOT.PBP` files |
 | `vita` | Inspect PS Vita VPK/PKG packages and extract a PKG |
 | `info` | Auto-detect the console and inspect any supported ROM or disc image |
 | `capabilities` | Print the supported operations and info extensions as JSON |
@@ -153,7 +154,7 @@ size or modification time changes. DAT commands still query the remote database.
 
 Every command that takes one input file can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`,
 and `.tgz` archives: conversion, extraction, verification, and info under `ctr`, `dol`,
-`rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `vita`, `xbox`, and `xenon`,
+`rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `psx`, `vita`, `xbox`, and `xenon`,
 including `nx merge`, `nx split`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
 and `dat identify`. Commands that take a directory, such as `wup decrypt` and
 `ctr cdn-to-cia`, cannot. `ctr bundle` and `patch apply` require plain files and do not
@@ -963,6 +964,57 @@ its standard name; `DATA.PSAR` is written as stored, so it stays encrypted for a
 `NPUMDIMG` image. `to-iso` decrypts an `NPUMDIMG` EBOOT into a plain ISO, and also accepts
 a PSN `.pkg` directly, reading the EBOOT out of the decrypted package. `OUTPUT` defaults to
 `<INPUT>.iso`; `--output-template` takes the same tokens as the other commands.
+
+## psx (PS1 to PSP EBOOT)
+
+```
+rom-converto psx to-pbp <INPUT> [OUTPUT_DIR] [--compression deflate|stored] [--title TITLE]
+                        [--disc-id ID] [--splash IMAGE] [--icon0 IMAGE] [--pic1 IMAGE]
+```
+
+`to-pbp` builds the `EBOOT.PBP` that the PSP's built-in PS1 emulator runs on custom
+firmware. `INPUT` is a `.cue` with raw 2352-byte sectors, a CD-mode `.chd`, or an `.m3u`
+playlist of either. A playlist entry is relative to the playlist's folder (`..` included) or
+an absolute path. A cue or CHD may sit inside an archive; a playlist may not, since only
+one member and a cue sheet's tracks are extracted from an archive. It writes one game folder per EBOOT, named after the disc ID, into
+`OUTPUT_DIR` (default `<INPUT>_psp` next to the input). Copy those folders into `PSP/GAME`
+on the Memory Stick, or pass `PSP/GAME` as `OUTPUT_DIR` to write there directly.
+`--on-conflict` applies to this game's EBOOTs, not to the folder, so other games in it are
+never a conflict: `skip` keeps the game's existing EBOOT, `error` refuses it, and `overwrite`
+replaces it. `overwrite-invalid` acts as `skip`, since an EBOOT is not verified. The folder is never emptied.
+
+| Option | Description |
+|---|---|
+| `--compression <deflate\|stored>` | `deflate` (default) writes a smaller EBOOT. `stored` keeps every sector unchanged, so the EBOOT is about the size of the disc image |
+| `--title <TITLE>` | Name the XMB shows. Defaults to the input file name without its extensions |
+| `--disc-id <ID>` | Disc ID such as `SLUS-99999`, for a disc whose `SYSTEM.CNF` names none. It also overrides the one `SYSTEM.CNF` names |
+| `--splash <IMAGE>` | Image shown while the game starts (480x272), in place of the built-in one |
+| `--icon0 <IMAGE>` | XMB icon (144x80), such as the game's cover |
+| `--pic1 <IMAGE>` | XMB background (480x272) |
+| `--on-conflict`, `-f`, `--report` | As for the other commands. `rename` is rejected because the output is a folder |
+
+The images may be PNG or JPEG files up to 8192 pixels on a side. A PNG already at the listed
+size and under 1 MiB is kept as it is; any other image is scaled to fit, keeping its aspect ratio, and centred: on a
+transparent icon, or on black for the two full-screen images.
+
+A playlist of 2 to 5 discs becomes one EBOOT with **Switch Discs** in the HOME menu when
+the discs fit in 4 GiB. Otherwise every disc
+becomes its own EBOOT, titled `<TITLE> (Disc N)`, all carrying disc 1's ID, so they share
+one memory card: save before a disc change, quit, and start the next disc's EBOOT; the
+command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is
+written and existing ones stay as they were. A CHD is extracted to a private folder in the
+system temp folder (`TMPDIR`) first and removed afterwards; the run stops before extracting
+when that disk lacks the room. The disc IDs, `--disc-id`, the images and each CHD's tracks
+are all checked before any CHD is extracted.
+
+Only the sectors are converted. Subchannel data, such as the LibCrypt `.sbi` files some
+PAL discs need, is not read, so a game that checks for LibCrypt may fail after it boots. A LibCrypt PAL set split into one EBOOT per disc boots discs 2 and up under disc 1's ID, which older custom firmware uses to pick the LibCrypt key.
+
+```sh
+rom-converto psx to-pbp game.cue
+rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME
+rom-converto psx to-pbp game.m3u --title "Game title"
+```
 
 ## vita (PS Vita)
 

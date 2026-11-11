@@ -18,6 +18,7 @@ import {
   deriveNxMergedPath,
   deriveNxSplitDir,
   derivePatchedPath,
+  derivePbpDir,
   deriveRvzPath,
   deriveWuaPath,
   deriveWupDiscPath,
@@ -183,6 +184,15 @@ describe("god dir derivation", () => {
   it("appends _god to the stripped stem, keeping dots in the title", () => {
     expect(deriveGodDir(`${DOTTED}.zip`)).toBe(`${DOTTED}_god`);
     expect(deriveGodDir("game.iso")).toBe("game_god");
+	});
+});
+
+describe("pbp dir derivation", () => {
+  it("appends _psp to the stem of a cue, chd or playlist", () => {
+    expect(derivePbpDir("/roms/Game (Disc 1).cue")).toBe("/roms/Game (Disc 1)_psp");
+    expect(derivePbpDir("game.m3u")).toBe("game_psp");
+    expect(derivePbpDir("/roms/game.cue.zip")).toBe("/roms/game_psp");
+    expect(derivePbpDir("/roms/game.chd.7z")).toBe("/roms/game_psp");
 	});
 });
 

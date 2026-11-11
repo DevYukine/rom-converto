@@ -1,5 +1,5 @@
 //! `\0PBP` container header: the eight segment offsets an `EBOOT.PBP`
-//! carries, sized against each other and the file end.
+//! carries, sized against each other and the file end, read and written.
 
 use std::io::{Read, Seek, SeekFrom};
 
@@ -27,10 +27,18 @@ pub const SEGMENT_NAMES: [&str; SEGMENT_COUNT] = [
 pub const PARAM_SFO: usize = 0;
 /// Index of the `ICON0.PNG` segment in [`Pbp::segments`].
 pub const ICON0_PNG: usize = 1;
+/// Index of the `PIC1.PNG` segment in [`Pbp::segments`].
+pub const PIC1_PNG: usize = 4;
+/// Index of the `DATA.PSP` segment in [`Pbp::segments`].
+pub const DATA_PSP: usize = 6;
 /// Index of the `DATA.PSAR` segment in [`Pbp::segments`].
 pub const DATA_PSAR: usize = 7;
 
-const HEADER_LEN: usize = 40;
+/// Container version firmware-built and homebrew PBPs carry.
+pub const VERSION: u32 = 0x0001_0000;
+
+/// Bytes of the PBP header; the first segment starts here.
+pub const HEADER_LEN: usize = 40;
 
 /// A PBP segment's byte range inside the container. A zero `size` means
 /// the container does not carry that segment.
@@ -101,6 +109,37 @@ impl Pbp {
     }
 }
 
+/// Lays segments of `sizes` (every segment but `DATA.PSAR`, in header order)
+/// back to back after the header, then starts `DATA.PSAR` at the next
+/// multiple of `psar_alignment`. Returns each segment's offset.
+pub fn layout(sizes: &[u64; SEGMENT_COUNT - 1], psar_alignment: u64) -> [u64; SEGMENT_COUNT] {
+    let mut offsets = [0u64; SEGMENT_COUNT];
+    let mut next = HEADER_LEN as u64;
+    for (offset, size) in offsets.iter_mut().zip(sizes) {
+        *offset = next;
+        next += size;
+    }
+    offsets[DATA_PSAR] = next.next_multiple_of(psar_alignment);
+    offsets
+}
+
+/// Encodes a PBP header holding `version` and the segment `offsets`.
+///
+/// # Errors
+/// Returns an error if an offset does not fit the header's 32-bit field.
+pub fn write_header(version: u32, offsets: &[u64; SEGMENT_COUNT]) -> Result<[u8; HEADER_LEN]> {
+    let mut header = [0u8; HEADER_LEN];
+    header[..4].copy_from_slice(MAGIC);
+    header[4..8].copy_from_slice(&version.to_le_bytes());
+    for (i, offset) in offsets.iter().enumerate() {
+        let Ok(offset) = u32::try_from(*offset) else {
+            bail!("PBP segment {i} at {offset} is past the 4 GiB a PBP header can address");
+        };
+        header[8 + i * 4..12 + i * 4].copy_from_slice(&offset.to_le_bytes());
+    }
+    Ok(header)
+}
+
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     use super::*;
@@ -108,14 +147,14 @@ pub(crate) mod test_fixtures {
     /// Builds a PBP carrying `segments` in header order; an empty slice
     /// marks that segment absent.
     pub fn build_pbp(version: u32, segments: &[&[u8]; SEGMENT_COUNT]) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&version.to_le_bytes());
-        let mut offset = HEADER_LEN as u32;
-        for seg in segments {
-            out.extend_from_slice(&offset.to_le_bytes());
-            offset += seg.len() as u32;
+        let mut sizes = [0u64; SEGMENT_COUNT - 1];
+        for (size, seg) in sizes.iter_mut().zip(segments) {
+            *size = seg.len() as u64;
         }
+        let offsets = layout(&sizes, 1);
+        let mut out = write_header(version, &offsets)
+            .expect("fixture offsets fit")
+            .to_vec();
         for seg in segments {
             out.extend_from_slice(seg);
         }
@@ -173,6 +212,41 @@ mod tests {
         let mut bytes = build_pbp(1, &[b"sfo", &[], &[], &[], &[], &[], &[], &[]]);
         bytes[8..12].copy_from_slice(&8u32.to_le_bytes());
         assert!(Pbp::read(&mut Cursor::new(&bytes)).is_err());
+    }
+
+    #[test]
+    fn layout_aligns_only_the_psar() {
+        let offsets = layout(&[944, 0, 0, 0, 0, 0, 2194], 0x10000);
+        assert_eq!(
+            &offsets[..DATA_PSAR],
+            &[0x28, 0x3D8, 0x3D8, 0x3D8, 0x3D8, 0x3D8, 0x3D8]
+        );
+        assert_eq!(offsets[DATA_PSAR], 0x10000);
+
+        let unaligned = layout(&[944, 0, 0, 0, 0, 0, 2194], 1);
+        assert_eq!(unaligned[DATA_PSAR], 0x3D8 + 2194);
+    }
+
+    #[test]
+    fn written_header_reads_back() {
+        let offsets = layout(&[944, 10, 0, 0, 20, 0, 30], 0x10000);
+        let mut bytes = write_header(VERSION, &offsets)
+            .expect("offsets fit")
+            .to_vec();
+        bytes.resize(0x10000 + 8, 0);
+        let pbp = Pbp::read(&mut Cursor::new(&bytes)).expect("parse pbp");
+        assert_eq!(pbp.version, VERSION);
+        assert_eq!(pbp.segments[ICON0_PNG].size, 10);
+        assert_eq!(pbp.segments[PIC1_PNG].size, 20);
+        assert_eq!(pbp.segments[DATA_PSAR].offset, 0x10000);
+        assert_eq!(pbp.segments[DATA_PSAR].size, 8);
+    }
+
+    #[test]
+    fn write_header_rejects_offsets_past_4_gib() {
+        let mut offsets = layout(&[944, 0, 0, 0, 0, 0, 0], 1);
+        offsets[DATA_PSAR] = u64::from(u32::MAX) + 1;
+        assert!(write_header(VERSION, &offsets).is_err());
     }
 
     #[test]

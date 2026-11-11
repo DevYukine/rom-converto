@@ -15,7 +15,7 @@ use super::ops_misc::{
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
 };
-use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, vita_extract};
+use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, psx_to_pbp, vita_extract};
 use super::organize::{FileIdentity, location_under_root, organize};
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
 use crate::cso::{CsoCompressOptions, CsoFormat};
@@ -744,6 +744,17 @@ pub(crate) static OPS: &[OpSpec] = &[
         derive_output: None,
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(psp_extract(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "psx.to_pbp",
+        aliases: &["psx.to-pbp"],
+        batch_exts: None,
+        input_exts: Some(&["cue", "chd", "m3u"]),
+        batch_output_dir: None,
+        writes_output: true,
+        derive_output: None,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(psx_to_pbp(req, progress, cancel)),
     },
     OpSpec {
         name: "vita.extract",
@@ -3475,7 +3486,7 @@ pub(crate) struct PreparedOutput {
 
 /// An existing-output refusal carrying the [`OutputExists`] marker, so a
 /// batched run skips the file the way [`prepare_output`]'s refusal does.
-fn output_exists(desired: &Path, message: String) -> anyhow::Error {
+pub(crate) fn output_exists(desired: &Path, message: String) -> anyhow::Error {
     anyhow::Error::new(std::io::Error::new(
         std::io::ErrorKind::AlreadyExists,
         OutputExists(desired.to_path_buf()),

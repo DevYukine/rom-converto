@@ -531,7 +531,8 @@ fn sanitize_component(s: &str) -> String {
     cleaned
 }
 
-fn truncate_bytes(s: &str, max: usize) -> String {
+/// `s` cut to at most `max` bytes without splitting a character.
+pub(crate) fn truncate_bytes(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
     }

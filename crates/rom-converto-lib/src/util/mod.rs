@@ -72,8 +72,9 @@ pub const BYTES_PER_MB: f64 = 1_000_000.0;
 /// the same set the frontend's derived-output helpers use.
 const DERIVE_IMAGE_EXTS: &[&str] = &[
     "3ds", "3dsx", "bcia", "bcci", "bcxi", "bin", "cci", "chd", "cia", "cso", "cue", "cxi", "dax",
-    "gcm", "gcz", "gdi", "iso", "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs", "wia", "wua",
-    "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi", "zso",
+    "gcm", "gcz", "gdi", "iso", "m3u", "nds", "nsp", "nsz", "pbp", "pkg", "rvz", "wbfs", "wia",
+    "wua", "wud", "wux", "xci", "xcz", "xiso", "z3ds", "z3dsx", "zar", "zcia", "zcci", "zcxi",
+    "zso",
 ];
 
 /// The file-name stem a default output derives from. An archive extension
@@ -270,9 +271,46 @@ pub(crate) fn publish_temp(
     let result = if overwrite {
         temp.persist(output)
     } else {
-        temp.persist_noclobber(output)
+        match temp.persist_noclobber(output) {
+            Err(err) if lacks_exclusive_rename(&err.error) => {
+                return persist_over_claim(err.path, output);
+            }
+            other => other,
+        }
     };
-    result.map(|_| ()).map_err(|err| err.error)
+    result.map_err(|err| err.error)
+}
+
+/// Publishes `temp` at `output` on a filesystem without an exclusive rename.
+/// Creating a file is still exclusive there, so claiming the name first keeps
+/// a file another publisher made from being replaced; the rename then only
+/// replaces the empty placeholder.
+fn persist_over_claim(temp: tempfile::TempPath, output: &std::path::Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
+    temp.persist(output).map_err(|err| {
+        // The placeholder is ours and empty.
+        let _ = std::fs::remove_file(output);
+        err.error
+    })
+}
+
+/// Whether `err` says the filesystem has no exclusive rename. macOS reports
+/// ENOTSUP on FAT32 and exFAT, which std decodes as `Uncategorized`.
+fn lacks_exclusive_rename(err: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        use rustix::io::Errno;
+        let errno = Errno::from_io_error(err);
+        // NOTSUP and OPNOTSUPP are one value off Apple, so compare instead of
+        // matching to avoid an unreachable-pattern lint.
+        if errno == Some(Errno::NOTSUP) || errno == Some(Errno::OPNOTSUPP) {
+            return true;
+        }
+    }
+    err.kind() == std::io::ErrorKind::Unsupported
 }
 
 /// Write `output` through [`scratch_output_file`]: `write` fills a sibling
@@ -654,10 +692,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use super::lacks_exclusive_rename;
     use super::{
         derive_output_stem, extent_end, is_safe_dirent_name, is_safe_relative_path,
-        is_windows_reserved_stem, place_in_dir_mirrored, publish_set, publish_temp,
-        scratch_output_path,
+        is_windows_reserved_stem, persist_over_claim, place_in_dir_mirrored, publish_set,
+        publish_temp, scratch_output_path,
     };
     use crate::util::{NoProgress, ProgressReporter};
     use std::path::{Path, PathBuf};
@@ -672,6 +712,7 @@ mod tests {
             ("game.nsp.zip", "game"),
             ("game.zip", "game"),
             ("game.cue.rar", "game"),
+            ("game.m3u", "game"),
             ("x.tar.nsp", "x.tar"),
             ("game.tar.zip", "game.tar"),
             ("game.nsp", "game"),
@@ -877,6 +918,44 @@ mod tests {
         std::fs::write(&overwrite, b"new").unwrap();
         publish_temp(overwrite, &output, true).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"new");
+    }
+
+    #[test]
+    fn persist_over_claim_publishes_a_missing_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        let temp = scratch_output_path(&output).unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        persist_over_claim(temp, &output).unwrap();
+
+        assert_eq!(std::fs::read(&output).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn persist_over_claim_keeps_an_existing_output_and_drops_the_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out.bin");
+        std::fs::write(&output, b"old").unwrap();
+        let temp = scratch_output_path(&output).unwrap();
+        std::fs::write(&temp, b"new").unwrap();
+
+        let err = persist_over_claim(temp, &output).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&output).unwrap(), b"old");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exclusive_rename_predicate_matches_not_supported_errnos() {
+        use rustix::io::Errno;
+        let raw = |errno: Errno| std::io::Error::from_raw_os_error(errno.raw_os_error());
+        assert!(lacks_exclusive_rename(&raw(Errno::NOTSUP)));
+        assert!(lacks_exclusive_rename(&raw(Errno::OPNOTSUPP)));
+        assert!(!lacks_exclusive_rename(&raw(Errno::EXIST)));
     }
 
     #[test]
