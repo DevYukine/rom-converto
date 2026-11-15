@@ -489,13 +489,12 @@ impl Worker<WiaSegmentWork, Vec<u8>, WiaError> for WiaSegmentWorker {
                 for c in 0..clusters {
                     let sec0 = c * WII_BLOCKS_PER_GROUP;
                     let sec_count = (n_sectors - sec0).min(WII_BLOCKS_PER_GROUP);
-                    for s in 0..WII_BLOCKS_PER_GROUP {
+                    for (s, dst) in self.payloads.iter_mut().enumerate() {
                         if s < sec_count {
                             let p = (sec0 + s) * WII_SECTOR_PAYLOAD_SIZE;
-                            self.payloads[s]
-                                .copy_from_slice(&payload[p..p + WII_SECTOR_PAYLOAD_SIZE]);
+                            dst.copy_from_slice(&payload[p..p + WII_SECTOR_PAYLOAD_SIZE]);
                         } else {
-                            self.payloads[s] = [0u8; WII_SECTOR_PAYLOAD_SIZE];
+                            *dst = [0u8; WII_SECTOR_PAYLOAD_SIZE];
                         }
                     }
                     recompute_hash_regions_into(&self.payloads, &mut self.hash_regions);

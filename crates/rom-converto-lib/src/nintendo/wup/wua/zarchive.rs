@@ -337,8 +337,8 @@ impl ZArchiveReader {
             WupError::InvalidZArchive(format!("block {} past offset record table", block_index))
         })?;
         let mut compressed_offset = record.base_offset;
-        for s in 0..slot {
-            compressed_offset += record.sizes[s] as u64 + 1;
+        for &size in &record.sizes[..slot] {
+            compressed_offset += size as u64 + 1;
         }
         let block_size = record.sizes[slot] as usize + 1;
         if compressed_offset + block_size as u64 > self.compressed_data_size {

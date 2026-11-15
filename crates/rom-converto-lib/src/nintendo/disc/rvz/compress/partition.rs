@@ -349,9 +349,8 @@ fn encode_one_partition_cluster_with(
     } else {
         worker.padded_payloads[..WII_BLOCKS_PER_GROUP]
             .copy_from_slice(&cluster.payloads[..WII_BLOCKS_PER_GROUP]);
-        for b in valid_blocks..WII_BLOCKS_PER_GROUP {
-            worker.padded_payloads[b] = [0u8; WII_SECTOR_PAYLOAD_SIZE];
-        }
+        worker.padded_payloads[valid_blocks..WII_BLOCKS_PER_GROUP]
+            .fill([0u8; WII_SECTOR_PAYLOAD_SIZE]);
         &worker.padded_payloads[..]
     };
 

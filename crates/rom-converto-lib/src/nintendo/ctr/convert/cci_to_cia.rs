@@ -59,8 +59,7 @@ pub async fn cci_to_cia(
     debug!("CCI title ID: {title_id:016X}");
 
     let mut partitions: Vec<PartitionInfo> = Vec::new();
-    for i in 0..3usize {
-        let entry = &ncsd.partition_table[i];
+    for (i, entry) in ncsd.partition_table.iter().enumerate().take(3) {
         if entry.size == 0 {
             continue;
         }
