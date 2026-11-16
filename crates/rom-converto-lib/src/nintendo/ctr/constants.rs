@@ -1,26 +1,35 @@
-use hex_literal::hex;
+//! CTR (3DS) format constants. The console keys are only compiled in with
+//! the `embedded-keys` feature.
 
-pub const CTR_COMMON_KEYS_HEX: [[u8; 16]; 6] = [
-    hex!("64c5fd55dd3ad988325baaec5243db98"),
-    hex!("4aaa3d0e27d4d728d0b1b433f0f9cbc8"),
-    hex!("fbb0ef8cdbb0d8e453cd99344371697f"),
-    hex!("25959b7ad0409f72684198ba2ecd7dc6"),
-    hex!("7ada22caffc476cc8297a0c7ceeeeebe"),
-    hex!("a5051ca1b37dcf3afbcf8cc1edd9ce02"),
-];
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 
-pub const CTR_TITLE_KEY_SECRET: &str = "fd040105060b111c2d49";
+pub const CTR_COMMON_KEYS_HEX: EmbeddedKey<[[u8; 16]; 6]> = embedded_key!([
+    hex_literal::hex!("64c5fd55dd3ad988325baaec5243db98"),
+    hex_literal::hex!("4aaa3d0e27d4d728d0b1b433f0f9cbc8"),
+    hex_literal::hex!("fbb0ef8cdbb0d8e453cd99344371697f"),
+    hex_literal::hex!("25959b7ad0409f72684198ba2ecd7dc6"),
+    hex_literal::hex!("7ada22caffc476cc8297a0c7ceeeeebe"),
+    hex_literal::hex!("a5051ca1b37dcf3afbcf8cc1edd9ce02"),
+]);
 
-pub const CTR_DEFAULT_TITLE_KEY_PASSWORD: &str = "mypass";
+pub const CTR_TITLE_KEY_SECRET: EmbeddedKey<&str> = embedded_key!("fd040105060b111c2d49");
 
+pub const CTR_DEFAULT_TITLE_KEY_PASSWORD: EmbeddedKey<&str> = embedded_key!("mypass");
+
+#[cfg(feature = "embedded-keys")]
 pub const CTR_KEY_0X2C: u128 = 246647523836745093481291640204864831571;
+#[cfg(feature = "embedded-keys")]
 pub const CTR_KEY_0X25: u128 = 275024782269591852539264289417494026995;
+#[cfg(feature = "embedded-keys")]
 pub const CTR_KEY_0X18: u128 = 174013536497093865167571429864564540276;
+#[cfg(feature = "embedded-keys")]
 pub const CTR_KEY_0X1B: u128 = 92615092018138441822550407327763030402;
+#[cfg(feature = "embedded-keys")]
 pub const CTR_FIXED_SYS: u128 = 109645209274529458878270608689136408907;
 
-pub const CTR_KEYS_0: [u128; 4] = [CTR_KEY_0X2C, CTR_KEY_0X25, CTR_KEY_0X18, CTR_KEY_0X1B];
-pub const CTR_KEYS_1: [u128; 2] = [0, CTR_FIXED_SYS];
+pub const CTR_KEYS_0: EmbeddedKey<[u128; 4]> =
+    embedded_key!([CTR_KEY_0X2C, CTR_KEY_0X25, CTR_KEY_0X18, CTR_KEY_0X1B]);
+pub const CTR_KEYS_1: EmbeddedKey<[u128; 2]> = embedded_key!([0, CTR_FIXED_SYS]);
 
 pub const CTR_NCSD_PARTITIONS: [&str; 8] = [
     "Main",
@@ -74,7 +83,8 @@ pub const TMD_CONTENT_RECORDS_OFFSET: u64 = 0xB04;
 pub const TMD_CONTENT_RECORD_SIZE: u64 = 48;
 
 // Key scrambler constant used in 3DS key derivation
-pub const CTR_KEY_SCRAMBLE_C: u128 = 42503689118608475533858958821215598218;
+pub const CTR_KEY_SCRAMBLE_C: EmbeddedKey<u128> =
+    embedded_key!(42503689118608475533858958821215598218);
 
 // CIA format
 pub const CIA_CONTENT_INDEX_SIZE: usize = 0x2000;

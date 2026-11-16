@@ -7,14 +7,15 @@
 //! are not verified.
 //!
 //! The Vita is end-of-life and these keys are long published, so they are
-//! embedded here the way the package keys are.
+//! embedded here the way the package keys are, with the `embedded-keys`
+//! feature.
 
 use crate::util::bytes::u32_le;
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 use aes::Aes128;
 use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, BlockModeDecrypt, KeyInit, KeyIvInit};
 use anyhow::{Context, Result, anyhow, bail};
 use block_padding::NoPadding;
-use hex_literal::hex;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 
@@ -29,11 +30,14 @@ const TABLE_SEED_LEN: usize = 0x14;
 const TABLE_HEADER_LEN: usize = TABLE_SEED_OFFSET + TABLE_SEED_LEN;
 
 /// HMAC-SHA1 key the tweak key is derived under.
-const HMAC_KEY0: [u8; 20] = hex!("E462258B1F3121560745DB62B1436723D2BF80FE");
+const HMAC_KEY0: EmbeddedKey<[u8; 20]> = embedded_key!(hex_literal::hex!(
+    "E462258B1F3121560745DB62B1436723D2BF80FE"
+));
 
 /// Key behind the console's F00D service for PFS key slot 0: the sector
 /// key is the klicensee ECB-decrypted under it.
-const CONTRACT_KEY0: [u8; 16] = hex!("E12213B48016B0E99AB81F8EC02AD4A2");
+const CONTRACT_KEY0: EmbeddedKey<[u8; 16]> =
+    embedded_key!(hex_literal::hex!("E12213B48016B0E99AB81F8EC02AD4A2"));
 
 /// Decrypts `data`, the PFS ciphertext of the package file `path`, in place.
 ///
@@ -77,7 +81,7 @@ pub fn decrypt_file(
     }
 
     let seed = &table[TABLE_SEED_OFFSET..TABLE_SEED_OFFSET + TABLE_SEED_LEN];
-    let keys = SectorKeys::derive(klicensee, seed);
+    let keys = SectorKeys::derive(klicensee, seed)?;
     for (index, sector) in data.chunks_mut(sector_size).enumerate() {
         let offset = (sector_size as u64) * index as u64;
         keys.decrypt_sector(offset, sector)?;
@@ -94,17 +98,17 @@ struct SectorKeys {
 }
 
 impl SectorKeys {
-    fn derive(klicensee: &[u8; 16], seed: &[u8]) -> Self {
+    fn derive(klicensee: &[u8; 16], seed: &[u8]) -> EmbeddedKey<Self> {
         let mut mac =
-            Hmac::<Sha1>::new_from_slice(&HMAC_KEY0).expect("hmac-sha1 takes any key length");
+            Hmac::<Sha1>::new_from_slice(&HMAC_KEY0?).expect("hmac-sha1 takes any key length");
         mac.update(seed);
         let mut tweak = [0u8; 16];
         tweak.copy_from_slice(&mac.finalize().into_bytes()[..16]);
 
         let mut sector = *klicensee;
-        Aes128::new(&CONTRACT_KEY0.into()).decrypt_block((&mut sector).into());
+        Aes128::new(&CONTRACT_KEY0?.into()).decrypt_block((&mut sector).into());
 
-        Self { sector, tweak }
+        Ok(Self { sector, tweak })
     }
 
     /// AES-CBC over whole blocks with the sector tweak as IV, then
@@ -165,7 +169,7 @@ pub(crate) mod test_fixtures {
     /// Encrypts `data` the way a packaging tool would, so tests can build a
     /// package [`decrypt_file`] has to undo.
     pub fn encrypt_file(klicensee: &[u8; 16], seed: &[u8], sector_size: usize, data: &mut [u8]) {
-        let keys = SectorKeys::derive(klicensee, seed);
+        let keys = SectorKeys::derive(klicensee, seed).unwrap();
         for (index, sector) in data.chunks_mut(sector_size).enumerate() {
             let mut iv = [0u8; 16];
             iv[..8].copy_from_slice(&((sector_size as u64) * index as u64).to_le_bytes());
@@ -216,6 +220,7 @@ pub(crate) mod test_fixtures {
 mod tests {
     use super::test_fixtures::{build_unicv, encrypt_file};
     use super::*;
+    use hex_literal::hex;
 
     const KLICENSEE: [u8; 16] = hex!("000102030405060708090A0B0C0D0E0F");
     const SEED: [u8; 20] = hex!("6B424E9B3F566804D1FB2B7F64335981BE9093BC");
@@ -234,6 +239,7 @@ mod tests {
 
     /// The tail of a sector goes through ciphertext stealing, so a length
     /// that is neither block nor sector aligned exercises both paths.
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn round_trips_a_multi_sector_file() {
         let unicv = build_unicv(SECTOR as u32, &[(3, SEED)]);

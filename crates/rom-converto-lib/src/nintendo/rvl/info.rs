@@ -895,7 +895,7 @@ mod banner_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod container_tests {
     use super::*;
     use crate::nintendo::disc::wia::test_fixtures::make_wia;

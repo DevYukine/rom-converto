@@ -11,6 +11,9 @@ pub enum TitleKeyError {
 
     #[error("padding invalid: {0}")]
     PadError(String),
+
+    #[error(transparent)]
+    NoEmbeddedKeys(#[from] crate::util::embedded_keys::NoEmbeddedKeys),
 }
 
 pub type TitleKeyResult<T> = Result<T, TitleKeyError>;

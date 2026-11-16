@@ -318,7 +318,7 @@ fn read_game_id<R: Read + Seek>(reader: &mut R) -> Result<String> {
     Ok(id[..end].iter().map(|&b| b as char).collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::disc::rvz::{RvzCompressOptions, compress_disc};

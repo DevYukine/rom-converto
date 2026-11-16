@@ -14,6 +14,7 @@ use log::info;
 
 use crate::disc::cd::IO_BUFFER_SIZE;
 use crate::util::bytes::u32_le;
+use crate::util::embedded_keys::EmbeddedKey;
 use crate::util::{BYTES_PER_MB, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
 
 pub mod embedded_keys;
@@ -85,8 +86,8 @@ pub fn detect_state(
 
     let idcode = u32_le(header, 0x0C);
     let mut block = load_block(secure, 0);
-    Key1::new(idcode, 2, KEYCODE_MODULO).decrypt_block(&mut block);
-    Key1::new(idcode, 3, KEYCODE_MODULO).decrypt_block(&mut block);
+    Key1::new(idcode, 2, KEYCODE_MODULO)?.decrypt_block(&mut block);
+    Key1::new(idcode, 3, KEYCODE_MODULO)?.decrypt_block(&mut block);
     if block[0].to_le_bytes() == SECURE_AREA_ID[..4]
         && block[1].to_le_bytes() == SECURE_AREA_ID[4..]
     {
@@ -105,9 +106,18 @@ pub fn detect_state(
 /// carries [`SECURE_AREA_ID`] as the check value while encrypted; the
 /// remaining 0x7F8 bytes use level 3 only. Decryption leaves
 /// [`DECRYPTED_MARKER`] in the first block, as in the reference implementation.
-pub fn crypt_secure_area(buf: &mut [u8; SECURE_BLOCK_LEN], idcode: u32, encrypt: bool) {
-    let key2 = Key1::new(idcode, 2, KEYCODE_MODULO);
-    let key3 = Key1::new(idcode, 3, KEYCODE_MODULO);
+///
+/// # Errors
+///
+/// Returns [`crate::util::embedded_keys::NoEmbeddedKeys`] in a build
+/// without the `embedded-keys` feature.
+pub fn crypt_secure_area(
+    buf: &mut [u8; SECURE_BLOCK_LEN],
+    idcode: u32,
+    encrypt: bool,
+) -> EmbeddedKey<()> {
+    let key2 = Key1::new(idcode, 2, KEYCODE_MODULO)?;
+    let key3 = Key1::new(idcode, 3, KEYCODE_MODULO)?;
 
     if encrypt {
         for offset in (8..SECURE_BLOCK_LEN).step_by(8) {
@@ -132,6 +142,7 @@ pub fn crypt_secure_area(buf: &mut [u8; SECURE_BLOCK_LEN], idcode: u32, encrypt:
             store_block(buf, offset, block);
         }
     }
+    Ok(())
 }
 
 /// Default output path for an NDS encrypt: `.encrypted` before the extension.
@@ -198,7 +209,7 @@ async fn crypt_ntr_rom(
             (SecureAreaState::Decrypted, false) => return Err(NtrError::AlreadyDecrypted),
             _ => {}
         }
-        crypt_secure_area(&mut secure, u32_le(&header, 0x0C), encrypt);
+        crypt_secure_area(&mut secure, u32_le(&header, 0x0C), encrypt)?;
         Ok(secure)
     })
     .await??;
@@ -261,7 +272,7 @@ fn store_block(buf: &mut [u8; SECURE_BLOCK_LEN], offset: usize, block: [u32; 2])
     buf[offset + 4..offset + 8].copy_from_slice(&block[1].to_le_bytes());
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::test_fixtures::{SYNTH_IDCODE, synth_ntr};
     use super::*;
@@ -303,7 +314,7 @@ mod tests {
         let (_, plain) = parts(&rom);
 
         let mut block = plain;
-        crypt_secure_area(&mut block, idcode(), true);
+        crypt_secure_area(&mut block, idcode(), true).unwrap();
         assert_ne!(block, plain);
 
         let mut encrypted_rom = rom.clone();
@@ -314,7 +325,7 @@ mod tests {
             SecureAreaState::Encrypted
         );
 
-        crypt_secure_area(&mut block, idcode(), false);
+        crypt_secure_area(&mut block, idcode(), false).unwrap();
         assert_eq!(block, plain);
     }
 
@@ -350,8 +361,8 @@ mod tests {
         let plain = [0x0123_4567u32, 0x89AB_CDEFu32];
         let mut level2 = plain;
         let mut level3 = plain;
-        let key2 = Key1::new(idcode(), 2, KEYCODE_MODULO);
-        let key3 = Key1::new(idcode(), 3, KEYCODE_MODULO);
+        let key2 = Key1::new(idcode(), 2, KEYCODE_MODULO).unwrap();
+        let key3 = Key1::new(idcode(), 3, KEYCODE_MODULO).unwrap();
 
         key2.encrypt_block(&mut level2);
         key3.encrypt_block(&mut level3);
@@ -412,7 +423,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut rom = synth_ntr(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
         let (_, mut secure) = parts(&rom);
-        crypt_secure_area(&mut secure, idcode(), true);
+        crypt_secure_area(&mut secure, idcode(), true).unwrap();
         rom[SECURE_AREA_OFFSET..SECURE_AREA_OFFSET + SECURE_BLOCK_LEN].copy_from_slice(&secure);
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
@@ -446,7 +457,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut rom = synth_ntr(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
         let (_, mut secure) = parts(&rom);
-        crypt_secure_area(&mut secure, idcode(), true);
+        crypt_secure_area(&mut secure, idcode(), true).unwrap();
         rom[SECURE_AREA_OFFSET..SECURE_AREA_OFFSET + SECURE_BLOCK_LEN].copy_from_slice(&secure);
         let input = write_rom(dir.path(), "game.nds", &rom).await;
 
@@ -490,7 +501,7 @@ mod tests {
 
         let rom = synth_ntr(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
         let (_, mut secure) = parts(&rom);
-        crypt_secure_area(&mut secure, idcode(), true);
+        crypt_secure_area(&mut secure, idcode(), true).unwrap();
         assert_eq!(
             hex::encode(Sha256::digest(secure)),
             "86d31bc47af8118fc8fa92b7b7a3156dccc211fbb875a3c7b63ec8a307c83082"

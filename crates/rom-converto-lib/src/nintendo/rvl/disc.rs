@@ -114,7 +114,7 @@ pub fn read_partition_table<R: Read + Seek>(reader: &mut R) -> RvzResult<Vec<Wii
 pub fn decrypt_title_key(ticket: &[u8; WII_TICKET_SIZE]) -> RvzResult<[u8; 16]> {
     let common_key_index = ticket[WII_TICKET_COMMON_KEY_INDEX_OFFSET];
     let key =
-        common_key(common_key_index).ok_or(RvzError::UnknownCommonKeyIndex(common_key_index))?;
+        common_key(common_key_index)?.ok_or(RvzError::UnknownCommonKeyIndex(common_key_index))?;
 
     let mut iv = [0u8; 16];
     iv[..8].copy_from_slice(&ticket[WII_TICKET_TITLE_ID_OFFSET..WII_TICKET_TITLE_ID_OFFSET + 8]);
@@ -124,7 +124,7 @@ pub fn decrypt_title_key(ticket: &[u8; WII_TICKET_SIZE]) -> RvzResult<[u8; 16]> 
         .copy_from_slice(&ticket[WII_TICKET_TITLE_KEY_OFFSET..WII_TICKET_TITLE_KEY_OFFSET + 16]);
 
     let cipher =
-        Aes128CbcDec::new_from_slices(key, &iv).map_err(|e| RvzError::AesError(e.to_string()))?;
+        Aes128CbcDec::new_from_slices(&key, &iv).map_err(|e| RvzError::AesError(e.to_string()))?;
     let mut buf = encrypted;
     cipher
         .decrypt_padded::<NoPadding>(&mut buf)

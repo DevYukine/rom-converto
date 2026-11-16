@@ -8,6 +8,9 @@ pub enum NintendoCTRError {
     #[error(transparent)]
     IoError(#[from] std::io::Error),
 
+    #[error(transparent)]
+    NoEmbeddedKeys(#[from] crate::util::embedded_keys::NoEmbeddedKeys),
+
     #[error("could not find the title file in the specified path: {0}")]
     NoTitleFileFound(PathBuf),
 

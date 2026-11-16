@@ -47,7 +47,7 @@ impl NusSource {
                     read_ticket_file(path).map_err(|e| anyhow!("read ticket: {}", e))?;
                 key
             }
-            TicketSource::Derive => TitleKey(derive_title_key(tmd.title_id)),
+            TicketSource::Derive => TitleKey(derive_title_key(tmd.title_id)?),
         };
         Ok(Self {
             layout,

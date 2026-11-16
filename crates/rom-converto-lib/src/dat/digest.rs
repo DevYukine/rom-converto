@@ -634,6 +634,7 @@ mod tests {
         assert_eq!(decoded_digest(&gcz), plain_digest(&iso));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn wia_digest_matches_iso() {
         use crate::nintendo::disc::wia::test_fixtures::make_wia;
@@ -686,6 +687,7 @@ mod tests {
         assert_eq!(decoded_digest(&nkit_gcz), plain_digest(&iso));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn nkit_wii_iso_digest_matches_iso() {
         use crate::nintendo::disc::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};

@@ -630,6 +630,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn ctr_cdn_to_cia_dsiware_with_ticket_flag() {
         use crate::nintendo::ctr::models::cia::CiaFile;

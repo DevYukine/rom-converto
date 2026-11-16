@@ -119,12 +119,12 @@ fn convert<R: Read + Seek>(
         bail!("psp to-iso: unsupported DATA.PSAR block size of {iso_block} sectors");
     }
 
-    let mac = bb_mac(&header[..MAC_LEN]);
+    let mac = bb_mac(&header[..MAC_LEN])?;
     let cipher = BbCipher::new(
         &mac,
         &block_at(&header, MAC_LEN),
         &block_at(&header, KEY_MODIFIER),
-    );
+    )?;
     cipher.apply(0, &mut header[BODY]);
 
     let iso_start = le32(&header, 0x54);
@@ -220,7 +220,7 @@ fn block_at(buf: &[u8], offset: usize) -> [u8; 16] {
     buf[offset..offset + 16].try_into().expect("16-byte slice")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::sony::psp::amctrl::test_fixtures::{cipher_from_iv, version_key_for};
@@ -261,7 +261,7 @@ mod tests {
 
         // The version key sits outside the MAC range, so it can be solved for
         // once the rest of the header is final.
-        let mac = bb_mac(&header[..MAC_LEN]);
+        let mac = bb_mac(&header[..MAC_LEN]).unwrap();
         let version_key = version_key_for(&FIXTURE_IV, &mac, &KEY_MODIFIER_BYTES);
         header[MAC_LEN..MAC_LEN + 16].copy_from_slice(&version_key);
 

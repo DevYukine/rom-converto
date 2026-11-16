@@ -10,7 +10,10 @@ name = "rom_converto_ffi"
 crate-type = ["cdylib"]
 
 [dependencies]
-rom-converto-lib = { path = "../rom-converto-lib" }
+rom-converto-lib = { path = "../rom-converto-lib", default-features = false }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
+[features]
+default = ["embedded-keys"]
+embedded-keys = ["rom-converto-lib/embedded-keys"]

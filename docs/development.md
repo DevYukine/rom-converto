@@ -53,6 +53,24 @@ The CLI is `target/release/rom-converto`. The FFI build produces a `cdylib` in
 hash>`. Set `ROM_CONVERTO_RELEASE=1` to display the semantic version, as release
 automation does.
 
+### Builds without embedded keys
+
+The `embedded-keys` feature, on by default, compiles in the console keys and the
+Wii U and PS3 disc-key databases. Distributors who cannot ship key material can
+build without it:
+
+```sh
+cargo build --release -p rom-converto-cli --no-default-features
+```
+
+The FFI and the desktop app forward the same feature. In such a build every
+operation that needs an embedded key fails with "this build has no embedded
+console keys", and `info` leaves out the fields that sit behind encryption.
+Operations on unencrypted data work as usual. Keys the user supplies still work
+where no embedded key is needed alongside them: Switch `prod.keys` and PS3 `.dkey`
+files. Wii U titles also need the embedded common key, so a Wii U `--key` alone is
+not enough.
+
 ## Checks
 
 The GitHub workflow runs these Rust checks:

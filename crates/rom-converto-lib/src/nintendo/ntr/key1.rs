@@ -9,6 +9,7 @@
 //! the table before expanding it.
 
 use crate::nintendo::ntr::embedded_keys::blowfish_table;
+use crate::util::embedded_keys::EmbeddedKey;
 
 /// Words in the KEY1 key buffer: 18 P-array entries plus four 256-word S-boxes.
 const KEYBUF_WORDS: usize = 0x412;
@@ -25,9 +26,14 @@ impl Key1 {
     /// it into the P-array; the secure area uses 8. Levels are cumulative:
     /// level 3 additionally doubles/halves the key code words before its
     /// final round, exactly as the reference `init1` plus `init2` sequence.
-    pub fn new(idcode: u32, level: u8, modulo: usize) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::util::embedded_keys::NoEmbeddedKeys`] in a build
+    /// without the `embedded-keys` feature.
+    pub fn new(idcode: u32, level: u8, modulo: usize) -> EmbeddedKey<Self> {
         let mut keybuf = [0u32; KEYBUF_WORDS];
-        for (word, chunk) in keybuf.iter_mut().zip(blowfish_table().as_chunks::<4>().0) {
+        for (word, chunk) in keybuf.iter_mut().zip(blowfish_table()?.as_chunks::<4>().0) {
             *word = u32::from_le_bytes(*chunk);
         }
 
@@ -44,7 +50,7 @@ impl Key1 {
             keycode[2] >>= 1;
             key.apply_keycode(&mut keycode, modulo);
         }
-        key
+        Ok(key)
     }
 
     /// Encrypts one 64-bit block held as `[low_word, high_word]`.

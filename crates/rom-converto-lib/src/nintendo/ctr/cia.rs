@@ -727,6 +727,7 @@ mod tests {
     /// A CIA whose header declares a Meta section must keep that section in
     /// the decrypted output, both in the header's meta_size field and as
     /// trailing bytes after the content.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_from_encrypted_cia_preserves_meta_section() {
         use crate::nintendo::ctr::test_fixtures::{make_meta, synth_cia_with_meta};
@@ -787,6 +788,7 @@ mod tests {
 
     /// A CIA whose header declares meta_size = 0 must not gain a meta block
     /// in the decrypted output.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_from_encrypted_cia_skips_meta_when_absent() {
         use crate::nintendo::ctr::models::cia::MetaData;
@@ -838,6 +840,7 @@ mod tests {
     /// On case-insensitive macOS/Windows the two spellings alias the same file,
     /// which is why it never reproduced on the dev machine; this test only
     /// fails on the buggy code on a case-sensitive FS (the CI runners).
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_from_encrypted_cia_round_trips_letter_bearing_content_id() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -907,6 +910,7 @@ mod tests {
     // Older CIAs produced by this tool never set the header's content_index
     // bitmap; one with an all-zero bitmap must still decrypt every declared
     // record instead of producing empty output.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_from_encrypted_cia_legacy_all_zero_index_decrypts_all() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1099,6 +1103,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_partial_cia_round_trips() {
         use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_ncch_header_bytes};

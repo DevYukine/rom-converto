@@ -8,12 +8,14 @@ use std::io::{Read, Seek, SeekFrom};
 use super::{Compression, FileFormatInfo, SecurityInfo, read_u32};
 use crate::microsoft::read_extent_at;
 use crate::util::aes::aes128_cbc_decrypt_nopad;
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 
 /// The 360 is end of life and this key is public, so metadata reads work
-/// without the user supplying anything.
-pub(super) const RETAIL_KEY: [u8; 16] = [
+/// without the user supplying anything. Only compiled in with the
+/// `embedded-keys` feature.
+pub(super) const RETAIL_KEY: EmbeddedKey<[u8; 16]> = embedded_key!([
     0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91,
-];
+]);
 const DEVKIT_KEY: [u8; 16] = [0u8; 16];
 
 const ENCRYPTION_NONE: u16 = 0;
@@ -77,7 +79,7 @@ impl ResourceSource {
             base,
             stored_len,
             image_size: security.image_size,
-            key: session_key(&RETAIL_KEY, &security.aes_key)?,
+            key: session_key(&RETAIL_KEY.ok()?, &security.aes_key)?,
             encrypted,
         })
     }
@@ -369,7 +371,7 @@ impl NormalResourceReader {
             ENCRYPTION_NORMAL => true,
             _ => return None,
         };
-        let retail_key = session_key(&RETAIL_KEY, &security.aes_key)?;
+        let retail_key = session_key(&RETAIL_KEY.ok()?, &security.aes_key)?;
         let devkit_key = session_key(&DEVKIT_KEY, &security.aes_key)?;
         Self::new(
             window,
@@ -793,7 +795,7 @@ pub(super) fn cbc_encrypt_zero_iv(key: &[u8; 16], buf: &mut [u8]) {
         .expect("buffer length is a multiple of the block size");
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::microsoft::xex::xdbf;
@@ -868,10 +870,10 @@ mod tests {
     #[test]
     fn session_key_is_one_cbc_block_under_the_base_key() {
         let mut encrypted = SESSION_KEY;
-        cbc_encrypt_zero_iv(&RETAIL_KEY, &mut encrypted);
+        cbc_encrypt_zero_iv(&RETAIL_KEY.unwrap(), &mut encrypted);
         assert_ne!(encrypted, SESSION_KEY);
         assert_eq!(
-            session_key(&RETAIL_KEY, &encrypted).expect("valid key"),
+            session_key(&RETAIL_KEY.unwrap(), &encrypted).expect("valid key"),
             SESSION_KEY
         );
     }

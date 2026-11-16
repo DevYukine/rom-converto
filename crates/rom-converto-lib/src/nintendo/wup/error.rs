@@ -21,6 +21,9 @@ pub enum WupError {
     #[error(transparent)]
     Zar(#[from] ZarError),
 
+    #[error(transparent)]
+    NoEmbeddedKeys(#[from] crate::util::embedded_keys::NoEmbeddedKeys),
+
     #[error("invalid zstd compression level {level}: must be in the range {min}..={max}")]
     InvalidCompressionLevel { level: i32, min: i32, max: i32 },
 

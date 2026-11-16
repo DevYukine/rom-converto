@@ -438,7 +438,8 @@ fn fake_wii_fs_iso(data_sectors: usize) -> Vec<u8> {
     let mut iv = [0u8; 16];
     iv[..8].copy_from_slice(&title_id);
     use aes::cipher::{BlockModeEncrypt, KeyIvInit};
-    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
+    let cipher =
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_COMMON_KEY.unwrap(), &iv).unwrap();
     let mut enc_key = [0u8; 16];
     cipher
         .encrypt_padded_b2b::<block_padding::NoPadding>(&plaintext_title_key, &mut enc_key)

@@ -6,7 +6,7 @@ authors.workspace = true
 description = "GUI for converting, compressing, decompressing, encrypting, and decrypting ROMs."
 
 [dependencies]
-rom-converto-lib = { path = "../../rom-converto-lib" }
+rom-converto-lib = { path = "../../rom-converto-lib", default-features = false }
 tauri = { version = "^2", features = [] }
 tauri-plugin-dialog = "^2"
 tauri-plugin-shell = "^2"
@@ -22,6 +22,8 @@ parking_lot = "^0.13"
 ts-rs = { workspace = true, optional = true }
 
 [features]
+default = ["embedded-keys"]
+embedded-keys = ["rom-converto-lib/embedded-keys"]
 ts-export = ["dep:ts-rs", "rom-converto-lib/ts-export"]
 
 [build-dependencies]

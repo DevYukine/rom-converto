@@ -161,7 +161,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod wii_tests {
     use super::test_fixtures::{make_fake_wii_fs_iso, make_fake_wii_fs_iso_partial, make_nkit_wii};
     use super::*;

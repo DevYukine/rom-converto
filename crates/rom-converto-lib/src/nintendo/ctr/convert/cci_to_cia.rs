@@ -3,7 +3,7 @@
 //! needs but a cartridge dump does not carry.
 
 use crate::nintendo::ctr::constants::{
-    CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE, CTR_KEY_0X2C, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
+    CIA_CERT_CHAIN_SIZE, CIA_CONTENT_INDEX_SIZE, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE,
     NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
 };
 use crate::nintendo::ctr::convert::template::{retail_cert_chain, template_ticket};
@@ -229,9 +229,9 @@ async fn patch_cxi_prefix(file: &mut File, p: &PartitionInfo) -> Result<PatchedC
         let title_id_u64 = u64::from_le_bytes(ncch_header.titleid);
         let is_system = (title_id_u64 >> 32) & 0x10 != 0;
         let fixed = if is_system {
-            CTR_KEYS_1[1]
+            CTR_KEYS_1?[1]
         } else {
-            CTR_KEYS_1[0]
+            CTR_KEYS_1?[0]
         };
         Some(u128::to_be_bytes(fixed))
     } else {
@@ -240,7 +240,7 @@ async fn patch_cxi_prefix(file: &mut File, p: &PartitionInfo) -> Result<PatchedC
                 .try_into()
                 .expect("16-byte slice"),
         );
-        Some(derive_ctr_key(CTR_KEY_0X2C, key_y))
+        Some(derive_ctr_key(CTR_KEYS_0?[0], key_y)?)
     };
 
     let counter = get_ncch_aes_counter(&ncch_header, NcchSection::ExHeader);

@@ -446,7 +446,7 @@ pub fn read_xex_info(bytes: &[u8]) -> Option<XexInfo> {
     read_xex_info_at(&mut std::io::Cursor::new(bytes), 0, bytes.len() as u64)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
 
@@ -544,7 +544,7 @@ mod tests {
         basefile::cbc_encrypt_zero_iv(&SESSION_KEY, &mut pe_data);
 
         let mut aes_key = SESSION_KEY;
-        basefile::cbc_encrypt_zero_iv(&basefile::RETAIL_KEY, &mut aes_key);
+        basefile::cbc_encrypt_zero_iv(&basefile::RETAIL_KEY.unwrap(), &mut aes_key);
         if corrupt_key {
             aes_key[0] ^= 0xFF;
         }

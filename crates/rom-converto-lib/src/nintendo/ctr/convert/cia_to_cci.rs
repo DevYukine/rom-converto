@@ -262,7 +262,7 @@ async fn pad_with(out: &mut BufWriter<File>, count: u64, byte: u8) -> Result<()>
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;

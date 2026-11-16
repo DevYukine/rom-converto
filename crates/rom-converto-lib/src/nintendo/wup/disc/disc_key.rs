@@ -296,6 +296,7 @@ mod tests {
         assert!(!toc_key_matches(&cipher, &DiscKey([0x5Bu8; 16])));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn resolve_probes_embedded_set() {
         let key = embedded_keys()[0];
@@ -307,6 +308,7 @@ mod tests {
         assert_eq!(found, Some(DiscKey(key)));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn resolve_matches_by_filename() {
         // 007 Legends (USA) is in the baked set.

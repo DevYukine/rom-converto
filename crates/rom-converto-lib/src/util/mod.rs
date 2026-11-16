@@ -12,6 +12,7 @@ pub mod bounded_line;
 pub mod bytes;
 pub mod conflict;
 pub mod deflate;
+pub mod embedded_keys;
 pub mod footgun;
 pub mod frontends;
 pub mod fs;

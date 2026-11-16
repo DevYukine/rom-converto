@@ -69,7 +69,7 @@ pub(crate) fn prepare_nus_title(title_dir: &Path) -> WupResult<NusTitlePlan> {
             }
             key
         }
-        TicketSource::Derive => TitleKey(derive_title_key(tmd.title_id)),
+        TicketSource::Derive => TitleKey(derive_title_key(tmd.title_id)?),
     };
     let content_0 = tmd.contents.first().ok_or(WupError::InvalidTmd)?;
     let content_0_path =
@@ -166,7 +166,7 @@ pub(crate) fn compress_prepared_nus_title_with_cancel<W: Write>(
     Ok((title_id, title_version))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
@@ -220,7 +220,7 @@ mod tests {
             let mut iv = [0u8; 16];
             iv[0..8].copy_from_slice(&TEST_TITLE_ID.to_be_bytes());
             let mut encrypted_key = TEST_PLAIN_TITLE_KEY;
-            encrypt_in_place(&WII_U_COMMON_KEY, &iv, &mut encrypted_key);
+            encrypt_in_place(&WII_U_COMMON_KEY.unwrap(), &iv, &mut encrypted_key);
             bytes[0x1BF..0x1CF].copy_from_slice(&encrypted_key);
             bytes[0x1DC..0x1E4].copy_from_slice(&TEST_TITLE_ID.to_be_bytes());
             bytes[0x1E6..0x1E8].copy_from_slice(&TEST_TITLE_VERSION.to_be_bytes());
