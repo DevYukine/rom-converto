@@ -16,6 +16,9 @@ use std::time::Duration;
 use tower::limit::RateLimit;
 use tower::{Service, ServiceBuilder, ServiceExt};
 
+/// Release asset listing the SHA-256 of every other asset.
+const CHECKSUMS_NAME: &str = "SHA256SUMS";
+
 #[derive(Debug)]
 pub struct GithubApi {
     client: Client,
@@ -42,7 +45,8 @@ impl GithubApi {
     }
 
     /// Streams the latest release's asset matching `asset_query`, along with
-    /// the SHA-256 its `<asset>.sha256` sibling publishes.
+    /// the SHA-256 the release's `SHA256SUMS` lists for it, or its
+    /// `<asset>.sha256` sibling when the release has no `SHA256SUMS`.
     pub async fn get_latest_release_file_by_asset_query(
         &mut self,
         user: &str,
@@ -70,7 +74,12 @@ impl GithubApi {
             asset.name, asset_query.expected_name
         );
 
-        let checksum_name = format!("{}.sha256", asset.name);
+        // Older releases have no SHA256SUMS and publish one `.sha256` per asset.
+        let checksum_name = if response.assets.iter().any(|a| a.name == CHECKSUMS_NAME) {
+            CHECKSUMS_NAME.to_string()
+        } else {
+            format!("{}.sha256", asset.name)
+        };
         let checksum_asset = response
             .assets
             .iter()

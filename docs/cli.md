@@ -1577,6 +1577,7 @@ rom-converto self-update
 ```
 
 Check GitHub for a newer release and replace the current binary in place. The download is
-checked against the `.sha256` file published next to it in the release; the update is refused
-when that file is missing, does not list the download, or the hash differs. The release
-binaries have embedded keys, so on a build without them this installs one that has them.
+checked against the release's `SHA256SUMS`, or the `.sha256` file next to it for releases without
+one. The update is refused when the checksum file is missing, does not list the download, or the
+hash differs. The release binaries have embedded keys, so on a build without them this installs
+one that has them.

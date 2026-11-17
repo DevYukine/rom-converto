@@ -237,19 +237,22 @@ fn is_packaged_or_sidecar_asset(asset_name: &str) -> bool {
     .any(|suffix| lower_name.ends_with(suffix))
 }
 
-/// Reads a checksum line (`<hex>  <name>`) published for `asset_name`, with
-/// an optional `*` marking binary mode before the name. Returns `None` for
-/// a malformed line or a missing or different name.
+/// Reads the checksum line (`<hex>  <name>`) published for `asset_name` from
+/// a `.sha256` file or a `SHA256SUMS` list, with an optional `*` marking
+/// binary mode before the name. Lines for other names or malformed lines are
+/// skipped. Returns `None` when no line names the asset with a valid digest.
 pub fn parse_sha256_file(text: &str, asset_name: &str) -> Option<[u8; 32]> {
-    let mut fields = text.split_whitespace();
-    let digest = fields.next()?;
-    let name = fields.next()?;
-    if name.strip_prefix('*').unwrap_or(name) != asset_name || fields.next().is_some() {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    hex::decode_to_slice(digest, &mut out).ok()?;
-    Some(out)
+    text.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let digest = fields.next()?;
+        let name = fields.next()?;
+        if name.strip_prefix('*').unwrap_or(name) != asset_name || fields.next().is_some() {
+            return None;
+        }
+        let mut out = [0u8; 32];
+        hex::decode_to_slice(digest, &mut out).ok()?;
+        Some(out)
+    })
 }
 
 pub fn compare_latest_release_to_current_version(
@@ -311,6 +314,40 @@ mod tests {
         let short_digest = format!("{}  x", &DIGEST[..62]);
         assert!(parse_sha256_file(&short_digest, "x").is_none());
         assert!(parse_sha256_file("", "x").is_none());
+    }
+
+    #[test]
+    fn parse_sha256_file_picks_the_asset_line_from_a_sha256sums_list() {
+        let other = "a".repeat(64);
+        let text = format!(
+            "{other}  rom-converto-cli-linux-arm64\n{DIGEST}  rom-converto-cli-macos-arm64\n{other} *rom-converto-cli-windows-x64.exe\n"
+        );
+        let parsed = parse_sha256_file(&text, "rom-converto-cli-macos-arm64");
+        assert_eq!(parsed.map(hex::encode).as_deref(), Some(DIGEST));
+        let parsed = parse_sha256_file(&text, "rom-converto-cli-windows-x64.exe");
+        assert_eq!(parsed.map(hex::encode), Some(other));
+    }
+
+    #[test]
+    fn parse_sha256_file_never_mixes_up_names_sharing_a_prefix() {
+        let musl = "b".repeat(64);
+        let text = format!(
+            "{musl}  rom-converto-cli-linux-x64-musl\n{DIGEST}  rom-converto-cli-linux-x64\n"
+        );
+        let plain = parse_sha256_file(&text, "rom-converto-cli-linux-x64");
+        assert_eq!(plain.map(hex::encode).as_deref(), Some(DIGEST));
+        let suffixed = parse_sha256_file(&text, "rom-converto-cli-linux-x64-musl");
+        assert_eq!(suffixed.map(hex::encode), Some(musl));
+        let only_musl = format!("{DIGEST}  rom-converto-cli-linux-x64-musl\n");
+        assert!(parse_sha256_file(&only_musl, "rom-converto-cli-linux-x64").is_none());
+    }
+
+    #[test]
+    fn parse_sha256_file_refuses_a_list_without_the_asset_line() {
+        let text = format!(
+            "{DIGEST}  rom-converto-cli-linux-arm64\n{DIGEST}  rom-converto-cli-macos-arm64\n"
+        );
+        assert!(parse_sha256_file(&text, "rom-converto-cli-linux-x64").is_none());
     }
 
     fn v(major: u64, minor: u64, patch: u64) -> ReleaseVersion {
