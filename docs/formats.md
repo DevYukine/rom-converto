@@ -45,7 +45,7 @@ such as ARK.
 | Disc ID | Read from `SYSTEM.CNF`. Discs whose boot file is not named like a serial (homebrew `PSX.EXE`) need `--disc-id`. The PSP names the save folder after it |
 | Encoding | Deflate (default) or stored. Both are deflate-framed: a block stored raw never boots. A block deflate cannot shrink is written stored |
 | Audio tracks | Kept as raw CD audio in the image. Custom firmware such as ARK re-enables it; without that patch, the PSP's emulator plays silence in its place in homemade EBOOTs. The lead-out sits at the true end of the disc, so the last track plays to its end |
-| Multi-disc | Up to 5 discs in one EBOOT with **Switch Discs** in the HOME menu, when they fit in 4 GiB; saves stay on disc 1's memory card across a switch. Otherwise one EBOOT per disc, sharing one memory card |
+| Multi-disc | Up to 5 discs in one EBOOT with **Switch Discs** in the HOME menu, when they fit in 4 GiB; saves stay on disc 1's memory card across a switch. Otherwise one EBOOT per disc, sharing one memory card. A build without embedded keys always writes one EBOOT per disc |
 | Limits | 32,256 blocks (1.13 GiB) per disc; 4 GiB per EBOOT, the FAT32 file limit |
 | Not written | Sony's boot logo, encrypted footer, `KEYS.BIN`, and the per-block SHA-1. None is needed on custom firmware |
 

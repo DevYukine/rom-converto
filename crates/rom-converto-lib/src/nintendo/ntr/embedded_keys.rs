@@ -14,16 +14,25 @@
 //!
 //! DSi-enhanced and DSi-exclusive cartridges use a different KEY1 table
 //! plus modcrypt for the DSi-only regions; neither is handled here.
+//!
+//! The table is only compiled in with the `embedded-keys` feature.
+
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 
 /// Bytes in the KEY1 key buffer: 18 P-array words plus four 256-word S-boxes.
 pub const BLOWFISH_TABLE_SIZE: usize = 0x1048;
 
-const TABLE: &[u8; BLOWFISH_TABLE_SIZE] = include_bytes!(concat!(
+const TABLE: EmbeddedKey<&[u8; BLOWFISH_TABLE_SIZE]> = embedded_key!(include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../resources/nds_blowfish.bin"
-));
+)));
 
 /// Returns the embedded KEY1 Blowfish table in its on-disk byte order.
-pub fn blowfish_table() -> &'static [u8; BLOWFISH_TABLE_SIZE] {
+///
+/// # Errors
+///
+/// Returns [`crate::util::embedded_keys::NoEmbeddedKeys`] in a build
+/// without the `embedded-keys` feature.
+pub fn blowfish_table() -> EmbeddedKey<&'static [u8; BLOWFISH_TABLE_SIZE]> {
     TABLE
 }

@@ -14,9 +14,11 @@ use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CIA_HEADER_SIZE;
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
+use crate::nintendo::ctr::title_key::error::TitleKeyError;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::util::{check_cancel, hash_cbc_stream, mirrored_output, run_batch};
+use crate::nintendo::ctr::verify::ticket_signed_by_retail_xs;
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
 use crate::util::{
@@ -410,8 +412,21 @@ async fn convert_cdn_to_cia_single(
     // A ticket left on disk by an earlier `generate-cdn-ticket` run carries the
     // same derived key as one forged here, so key it off the key itself rather
     // than off who wrote the file. Only a ticket forged this run is ours to delete.
-    let derived_title_key = hex::decode(generate_title_key(&format!("{title_id:016X}"), None)?)?;
-    if ticket.ticket_data.title_key == derived_title_key
+    // A keyless build cannot derive the forged key, so it skips that check and
+    // packs the ticket it was given, warning when Nintendo did not sign it.
+    let derived_title_key = match generate_title_key(&format!("{title_id:016X}"), None) {
+        Ok(key) => Some(hex::decode(key)?),
+        Err(TitleKeyError::NoEmbeddedKeys(_)) => {
+            if !ticket_signed_by_retail_xs(&ticket) {
+                warn!(
+                    "ticket is not signed by Nintendo and this build cannot check a forged title key"
+                );
+            }
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if derived_title_key.is_some_and(|key| ticket.ticket_data.title_key == key)
         && let Err(err) =
             verify_forged_title_key(cdn_dir, &title_metadata, &ticket_bytes, &cancel).await
     {
@@ -754,15 +769,17 @@ mod tests {
 
     /// The plaintext title key a forged ticket for `title_id` carries, i.e. what
     /// `derive_title_key_from_ticket` recovers from the generated ticket.
+    #[cfg(feature = "embedded-keys")]
     fn derived_plain_title_key(title_id: u64) -> [u8; 16] {
         let key = crate::nintendo::ctr::title_key::generate_key(
             &format!("{title_id:016X}"),
-            crate::nintendo::ctr::constants::CTR_DEFAULT_TITLE_KEY_PASSWORD,
+            crate::nintendo::ctr::constants::CTR_DEFAULT_TITLE_KEY_PASSWORD.unwrap(),
         )
         .unwrap();
         hex::decode(key).unwrap().try_into().unwrap()
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
         use aes::Aes128;
         use block_padding::NoPadding;
@@ -799,6 +816,7 @@ mod tests {
         assert_eq!(std::fs::read(output).unwrap(), b"existing");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn generated_ticket_preserves_title_key_containing_version_placeholder() {
         let title_id = 0x0004008C001A6B00u64;
@@ -976,6 +994,7 @@ mod tests {
         assert!(parses_as_cia(&out));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_dsiware_with_ticket_flag_forges_ticket() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1016,6 +1035,7 @@ mod tests {
         assert!(parses_as_cia(&output));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_forged_ticket_rejects_undecryptable_content() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1055,6 +1075,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_forged_ticket_accepts_content_encrypted_with_derived_key() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1092,6 +1113,7 @@ mod tests {
         assert!(parses_as_cia(&output));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_preexisting_forged_ticket_is_verified_and_kept() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1295,11 +1317,13 @@ mod tests {
         assert!(path_is_within(&output, &cdn_dir).unwrap());
     }
 
+    #[cfg(feature = "embedded-keys")]
     struct CancelAfter {
         token: CancelToken,
         remaining: std::sync::atomic::AtomicUsize,
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl CancelAfter {
         fn new(token: CancelToken, after: usize) -> Self {
             Self {
@@ -1309,6 +1333,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl ProgressReporter for CancelAfter {
         fn start(&self, _: u64, _: &str) {}
         fn inc(&self, _: u64) {
@@ -1320,6 +1345,7 @@ mod tests {
         fn finish(&self) {}
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn ncch_scratch_present(dir: &Path) -> bool {
         std::fs::read_dir(dir)
             .unwrap()
@@ -1327,6 +1353,7 @@ mod tests {
             .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"))
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn rom_converto_staging_present(dir: &Path) -> bool {
         std::fs::read_dir(dir)
             .unwrap()
@@ -1338,6 +1365,7 @@ mod tests {
             })
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_cancel_before_start_leaves_no_output() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1365,6 +1393,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_leaves_only_final_output_no_scratch() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1406,6 +1435,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_cancel_after_completion_succeeds() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1431,6 +1461,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_force_overwrite_preexisting_survives_cancel() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;
@@ -1479,6 +1510,7 @@ mod tests {
         assert!(!dir.path().join("b.decrypted.cia").exists());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_batch_cancel_mid_stops_remaining() {
         use crate::nintendo::ctr::test_fixtures::synth_encrypted_cia_multi_content;

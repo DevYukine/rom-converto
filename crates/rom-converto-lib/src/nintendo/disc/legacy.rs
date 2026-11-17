@@ -683,6 +683,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test(flavor = "multi_thread")]
     async fn wia_migrates_to_rvz_byte_identical_to_iso_path() {
         use crate::nintendo::disc::wia::test_fixtures::make_wia;
@@ -803,6 +804,7 @@ mod tests {
         assert_eq!(std::fs::read(&restored).unwrap(), original);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test(flavor = "multi_thread")]
     async fn nkit_wii_migrates_to_rvz_byte_identical_to_iso_path() {
         use crate::nintendo::disc::nkit::test_fixtures::{make_fake_wii_fs_iso, make_nkit_wii};
@@ -868,6 +870,7 @@ mod tests {
         assert!(err.to_string().contains("not a GCZ"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn write_wia_fixture(dir: &Path) -> std::path::PathBuf {
         use crate::nintendo::disc::wia::test_fixtures::make_wia;
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
@@ -877,6 +880,7 @@ mod tests {
         wia
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dol_gate_rejects_wia_but_rvl_gate_accepts_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -921,6 +925,7 @@ mod tests {
         assert!(accepted.exists());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test(flavor = "multi_thread")]
     async fn dol_batch_skips_wia_and_migrates_the_rest() {
         let dir = tempfile::tempdir().unwrap();

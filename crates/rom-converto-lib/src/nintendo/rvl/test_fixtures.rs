@@ -240,7 +240,7 @@ pub fn make_fake_wii_iso_with_partition(n_clusters: usize) -> Vec<u8> {
     // IV for AES-CBC title key encryption is the title_id zero-padded to 16 bytes.
     let mut iv = [0u8; 16];
     iv[..8].copy_from_slice(&title_id);
-    let cipher = Aes128CbcEnc::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
+    let cipher = Aes128CbcEnc::new_from_slices(&WII_COMMON_KEY.unwrap(), &iv).unwrap();
     let mut enc_key = [0u8; 16];
     cipher
         .encrypt_padded_b2b::<NoPadding>(&plaintext_title_key, &mut enc_key)

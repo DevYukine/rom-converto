@@ -33,6 +33,7 @@ use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::title_metadata::{ContentInfoRecord, TitleMetadata};
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id, mirrored_output, run_batch};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
+use crate::util::embedded_keys::EmbeddedKey;
 use crate::util::{CancelToken, Cancelled, ProgressReporter, scratch_output_file};
 
 const ENCRYPT_EXTS: &[&str] = &["cia", "3ds", "cci", "cxi"];
@@ -373,7 +374,7 @@ async fn encrypt_ncch_at(
 
     if header.exhdrsize != 0 {
         let counter = get_ncch_aes_counter(&header, NcchSection::ExHeader);
-        let key = crypto.base_or_fixed_key();
+        let key = crypto.base_or_fixed_key()?;
         encrypt_stream_section(
             file,
             ncch_offset + EXEFS_HEADER_SIZE as u64,
@@ -400,7 +401,7 @@ async fn encrypt_ncch_at(
 
     if header.romfssize != 0 {
         let counter = get_ncch_aes_counter(&header, NcchSection::RomFS);
-        let key = crypto.romfs_key();
+        let key = crypto.romfs_key()?;
         encrypt_stream_section(
             file,
             ncch_offset + (header.romfsoffset as u64 * CTR_MEDIA_UNIT_SIZE as u64),
@@ -451,20 +452,25 @@ impl NcchCrypto {
         })
     }
 
-    fn base_or_fixed_key(&self) -> [u8; 16] {
-        fixed_key(self.fixed_crypto)
-            .unwrap_or_else(|| derive_ctr_key(CTR_KEYS_0[0], self.ncch_key_y))
+    fn base_or_fixed_key(&self) -> EmbeddedKey<[u8; 16]> {
+        match fixed_key(self.fixed_crypto)? {
+            Some(key) => Ok(key),
+            None => derive_ctr_key(CTR_KEYS_0?[0], self.ncch_key_y),
+        }
     }
 
-    fn extra_key(&self) -> [u8; 16] {
+    fn extra_key(&self) -> EmbeddedKey<[u8; 16]> {
         derive_ctr_key(
-            CTR_KEYS_0[extra_crypto_index(self.uses_extra_crypto)],
+            CTR_KEYS_0?[extra_crypto_index(self.uses_extra_crypto)],
             self.key_y,
         )
     }
 
-    fn romfs_key(&self) -> [u8; 16] {
-        fixed_key(self.fixed_crypto).unwrap_or_else(|| self.extra_key())
+    fn romfs_key(&self) -> EmbeddedKey<[u8; 16]> {
+        match fixed_key(self.fixed_crypto)? {
+            Some(key) => Ok(key),
+            None => self.extra_key(),
+        }
     }
 }
 
@@ -520,12 +526,12 @@ async fn encrypt_exefs_section(
     file.read_exact(&mut plain).await.context("reading ExeFS")?;
 
     let mut encrypted = plain.clone();
-    Aes128Ctr::new_from_slices(&crypto.base_or_fixed_key(), &counter)?
+    Aes128Ctr::new_from_slices(&crypto.base_or_fixed_key()?, &counter)?
         .apply_keystream(&mut encrypted);
 
     if crypto.uses_extra_crypto != 0 || crypto.use_seed_crypto {
         let mut extra_encrypted = plain.clone();
-        Aes128Ctr::new_from_slices(&crypto.extra_key(), &counter)?
+        Aes128Ctr::new_from_slices(&crypto.extra_key()?, &counter)?
             .apply_keystream(&mut extra_encrypted);
 
         for entry_idx in 0usize..EXEFS_MAX_FILE_ENTRIES {
@@ -752,11 +758,14 @@ impl CiaLayout {
 mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::CIA_CONTENT_INDEX_SIZE;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_ncch;
-    use crate::nintendo::ctr::test_fixtures::{
-        SYNTH_CIA_TITLE_ID, make_cert, make_ncch_header_bytes, make_ticket, make_tmd,
-    };
+    use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_tmd};
+    #[cfg(feature = "embedded-keys")]
+    use crate::nintendo::ctr::test_fixtures::{make_cert, make_ncch_header_bytes, make_ticket};
+    #[cfg(feature = "embedded-keys")]
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use binrw::{BinWrite, Endian};
 
     #[test]
@@ -784,6 +793,7 @@ mod tests {
         assert_eq!(error.to_string(), "TMD content info range out of bounds");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn make_plain_ncch_with_romfs() -> Vec<u8> {
         let romfs_offset_mu = 2u32;
         let romfs_size_mu = 1u32;
@@ -803,6 +813,7 @@ mod tests {
         data
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn ncch_encrypt_decrypt_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -832,6 +843,7 @@ mod tests {
     /// The staged copy is normalized, so a read-only input encrypts instead
     /// of failing its rewrite open, and an executable, world-writable input
     /// (common on FAT and SMB mounts) does not pass those bits on.
+    #[cfg(feature = "embedded-keys")]
     #[cfg(unix)]
     #[tokio::test]
     async fn encrypt_ncch_normalizes_the_input_mode() {
@@ -865,6 +877,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_encrypt_decrypt_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -960,6 +973,7 @@ mod tests {
         assert_bytes_eq(&decrypted_bytes, &buf);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_twl_encrypt_round_trip() {
         use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
@@ -986,7 +1000,7 @@ mod tests {
         let mut tid_iv = [0u8; 16];
         tid_iv[..8].copy_from_slice(&TWL_TITLE_ID.to_be_bytes());
         let mut title_key = [0xFFu8; 16]; // make_ticket's title_key field
-        cbc_decrypt(&CTR_COMMON_KEYS_HEX[1], &tid_iv, &mut title_key).unwrap();
+        cbc_decrypt(&CTR_COMMON_KEYS_HEX.unwrap()[1], &tid_iv, &mut title_key).unwrap();
 
         let mut enc_content = plain_content.clone();
         {
@@ -1086,6 +1100,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_encrypt_decrypt_preserves_nonzero_index_romfs() {
         use crate::nintendo::ctr::decrypt::util::cbc_decrypt;
@@ -1170,7 +1185,7 @@ mod tests {
         let mut romfs =
             second_content[romfs_offset..romfs_offset + CTR_MEDIA_UNIT_SIZE as usize].to_vec();
         Aes128Ctr::new_from_slices(
-            &crypto.romfs_key(),
+            &crypto.romfs_key().unwrap(),
             &get_ncch_aes_counter(&ncch_header, NcchSection::RomFS),
         )
         .unwrap()
@@ -1178,6 +1193,7 @@ mod tests {
         assert_eq!(&romfs[..4], b"IVFC");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn assert_bytes_eq(left: &[u8], right: &[u8]) {
         if left == right {
             return;

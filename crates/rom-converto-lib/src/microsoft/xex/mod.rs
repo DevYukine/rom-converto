@@ -452,23 +452,31 @@ mod tests {
 
     const LOAD_ADDRESS: u32 = 0x8200_0000;
     const TITLE_ID: u32 = 0x4541_1234;
+    #[cfg(feature = "embedded-keys")]
     const SESSION_KEY: [u8; 16] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF, 0xFE, 0xDC, 0xBA, 0x98, 0x76, 0x54, 0x32,
         0x10,
     ];
 
+    #[cfg(feature = "embedded-keys")]
     const HEADER_SIZE: usize = 0x1000;
     const SECURITY_OFFSET: usize = 0x400;
+    #[cfg(feature = "embedded-keys")]
     const EXEC_AT: usize = 0x100;
+    #[cfg(feature = "embedded-keys")]
     const RESOURCE_AT: usize = 0x200;
+    #[cfg(feature = "embedded-keys")]
     const FORMAT_AT: usize = 0x300;
+    #[cfg(feature = "embedded-keys")]
     const PE_NAME_AT: usize = 0x380;
+    #[cfg(feature = "embedded-keys")]
     const XDBF_AT: u32 = 0x40;
 
     fn put32(buf: &mut [u8], at: usize, value: u32) {
         buf[at..at + 4].copy_from_slice(&value.to_be_bytes());
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn put16(buf: &mut [u8], at: usize, value: u16) {
         buf[at..at + 2].copy_from_slice(&value.to_be_bytes());
     }
@@ -533,6 +541,7 @@ mod tests {
 
     /// ENCRYPTION_NORMAL + COMPRESSION_NONE, basefile carrying an XDBF at
     /// `XDBF_AT` that the RESOURCE_INFO entry points at.
+    #[cfg(feature = "embedded-keys")]
     fn build_xex(title: &str, png: &[u8], corrupt_key: bool) -> Vec<u8> {
         let xdbf = xdbf::build_xdbf(title, png);
         let mut basefile = vec![0u8; XDBF_AT as usize];
@@ -544,7 +553,7 @@ mod tests {
         basefile::cbc_encrypt_zero_iv(&SESSION_KEY, &mut pe_data);
 
         let mut aes_key = SESSION_KEY;
-        basefile::cbc_encrypt_zero_iv(&basefile::RETAIL_KEY, &mut aes_key);
+        basefile::cbc_encrypt_zero_iv(&basefile::RETAIL_KEY.unwrap(), &mut aes_key);
         if corrupt_key {
             aes_key[0] ^= 0xFF;
         }
@@ -601,6 +610,7 @@ mod tests {
         buf
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn read_xex_info_extracts_title_and_icon() {
         let png = xdbf::tests::build_png(64, 64);
@@ -622,6 +632,7 @@ mod tests {
         assert_eq!((icon.width, icon.height), (64, 64));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn seekable_xex_reader_preserves_encrypted_title_and_icon() {
         let png = xdbf::tests::build_png(64, 64);
@@ -637,6 +648,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn read_xex_info_keeps_plaintext_when_key_is_wrong() {
         let png = xdbf::tests::build_png(64, 64);
@@ -654,6 +666,7 @@ mod tests {
         assert!(read_xex_info(b"XEX1").is_none());
         assert!(read_xex_info(&[]).is_none());
     }
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn large_seekable_xex_reads_only_required_stored_data_and_preserves_icon() {
         use std::io::{Read, Seek, SeekFrom};
@@ -728,6 +741,7 @@ mod tests {
         assert!(source.bytes_read <= stored_len + 12);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn seekable_xex_does_not_materialize_declared_header_extent() {
         use std::io::{Read, Seek, SeekFrom};
@@ -795,6 +809,7 @@ mod tests {
         assert_eq!(actual.title_id, expected.title_id);
         assert!(source.bytes_read < 4096);
     }
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn plaintext_metadata_survives_header_extent_mismatches() {
         let mut bytes = build_xex("Header Bounds", &xdbf::tests::build_png(1, 1), false);

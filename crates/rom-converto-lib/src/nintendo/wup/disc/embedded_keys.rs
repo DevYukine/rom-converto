@@ -14,11 +14,15 @@ use std::sync::LazyLock;
 use crate::nintendo::wup::disc::disc_key::DiscKey;
 
 /// `NAME<TAB>32-hex-key` per line, sorted by `NAME`. `NAME` is the
-/// redump game name, which is also the disc file's stem.
+/// redump game name, which is also the disc file's stem. Empty without the
+/// `embedded-keys` feature, so every lookup misses.
+#[cfg(feature = "embedded-keys")]
 const DB: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../resources/wup_disc_keys.tsv"
 ));
+#[cfg(not(feature = "embedded-keys"))]
+const DB: &str = "";
 
 /// Name (lowercased) to raw 16-byte key.
 static KEYS_BY_NAME: LazyLock<HashMap<String, [u8; 16]>> = LazyLock::new(|| {
@@ -61,12 +65,14 @@ pub fn embedded_keys() -> &'static [[u8; 16]] {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn table_parses_to_full_length() {
         assert_eq!(KEYS_BY_NAME.len(), 501);
         assert_eq!(ALL_KEYS.len(), 501);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn known_name_resolves() {
         assert_eq!(

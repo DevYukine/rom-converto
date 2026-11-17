@@ -28,7 +28,8 @@ pub fn decrypt_title_key(
     title_id_be: &[u8; 8],
     mut key: [u8; 16],
 ) -> NintendoCTRResult<[u8; 16]> {
-    let common_key = CTR_COMMON_KEYS_HEX
+    let common_keys = CTR_COMMON_KEYS_HEX?;
+    let common_key = common_keys
         .get(common_key_index)
         .ok_or(NintendoCTRError::TicketCommonKeyIndex(common_key_index))?;
     let mut iv = [0u8; 16];
@@ -126,6 +127,7 @@ mod tests {
         assert!(iv[2..].iter().all(|&b| b == 0));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn title_key_round_trip_through_ticket() {
         use crate::nintendo::ctr::constants::{
@@ -143,9 +145,11 @@ mod tests {
         iv[..8].copy_from_slice(&title_id_bytes);
         let mut enc_title_key = plaintext_title_key;
         type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
-        let mut enc =
-            Aes128CbcEnc::new_from_slices(&CTR_COMMON_KEYS_HEX[common_key_idx as usize], &iv)
-                .unwrap();
+        let mut enc = Aes128CbcEnc::new_from_slices(
+            &CTR_COMMON_KEYS_HEX.unwrap()[common_key_idx as usize],
+            &iv,
+        )
+        .unwrap();
         for block in enc_title_key.chunks_mut(16) {
             let array_block = <&mut aes::cipher::array::Array<_, _>>::try_from(block)
                 .expect("chunk is exactly one AES block");

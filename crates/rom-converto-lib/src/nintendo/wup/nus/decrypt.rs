@@ -46,7 +46,7 @@ fn decrypt_nus_title_with_cancel(
             }
             key
         }
-        TicketSource::Derive => TitleKey(derive_title_key(title_id)),
+        TicketSource::Derive => TitleKey(derive_title_key(title_id)?),
     };
 
     let content_0 = tmd.contents.first().ok_or(WupError::InvalidTmd)?;
@@ -232,7 +232,7 @@ async fn scan_content_bytes(title_dir: &Path) -> u64 {
     total
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
@@ -315,7 +315,7 @@ mod tests {
                 let mut enc_title_key = self.title_key;
                 let mut iv = [0u8; 16];
                 iv[0..8].copy_from_slice(&ticket_title_id.to_be_bytes());
-                encrypt(&WII_U_COMMON_KEY, &iv, &mut enc_title_key);
+                encrypt(&WII_U_COMMON_KEY.unwrap(), &iv, &mut enc_title_key);
                 ticket[0x1BF..0x1CF].copy_from_slice(&enc_title_key);
                 ticket[0x1DC..0x1E4].copy_from_slice(&ticket_title_id.to_be_bytes());
                 ticket[0x1E6..0x1E8].copy_from_slice(&self.title_version.to_be_bytes());
@@ -541,7 +541,7 @@ mod tests {
         // title_key_derive::tests. Matching that here keeps this test
         // decoupled from the exact key bytes.
         let title_id = 0x0005_000E_1010_1E00u64;
-        let derived = derive_title_key(title_id);
+        let derived = derive_title_key(title_id).unwrap();
         let fx = NusFixture {
             title_id,
             title_key: derived,

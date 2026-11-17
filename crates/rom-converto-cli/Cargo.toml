@@ -11,7 +11,7 @@ name = "rom-converto"
 path = "src/main.rs"
 
 [dependencies]
-rom-converto-lib = { path = "../rom-converto-lib" }
+rom-converto-lib = { path = "../rom-converto-lib", default-features = false }
 anyhow.workspace = true
 log.workspace = true
 dotenv = "^0.15"
@@ -34,6 +34,10 @@ indicatif = "^0.18"
 indicatif-log-bridge = "0.2.3"
 sha2 = "^0.11"
 hex = "^0.4"
+
+[features]
+default = ["embedded-keys"]
+embedded-keys = ["rom-converto-lib/embedded-keys"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "^0.2"

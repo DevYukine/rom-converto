@@ -15,11 +15,15 @@ use std::sync::LazyLock;
 
 use crate::sony::ps3::key::Ps3Key;
 
-/// `TITLE_ID<TAB>32-hex-key` per line, sorted by `TITLE_ID`.
+/// `TITLE_ID<TAB>32-hex-key` per line, sorted by `TITLE_ID`. Empty without the
+/// `embedded-keys` feature, so every lookup misses.
+#[cfg(feature = "embedded-keys")]
 const DB: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../resources/ps3_disc_keys.tsv"
 ));
+#[cfg(not(feature = "embedded-keys"))]
+const DB: &str = "";
 
 static KEYS: LazyLock<HashMap<&'static str, [u8; 16]>> = LazyLock::new(|| {
     DB.lines()
@@ -41,6 +45,7 @@ pub fn embedded_key(title_id: &str) -> Option<Ps3Key> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn known_title_id_resolves() {
         // 3D Dot Game Heroes (USA), redump serial BLUS-30490.
@@ -52,6 +57,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn multi_region_serial_shares_one_key() {
         // Rainbow Six Vegas 2 ships under four serials, one disc key.
@@ -65,6 +71,7 @@ mod tests {
         assert_eq!(embedded_key("ZZZZ00000"), None);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn table_parses_and_is_nonempty() {
         assert!(KEYS.len() > 4000);

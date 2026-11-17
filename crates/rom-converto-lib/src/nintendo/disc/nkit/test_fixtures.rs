@@ -370,31 +370,43 @@ fn solve_gf2(cols: &[u32; 32], target: u32) -> Option<u32> {
     Some(x)
 }
 
+#[cfg(feature = "embedded-keys")]
 use crate::nintendo::rvl::common_keys::WII_COMMON_KEY;
+#[cfg(feature = "embedded-keys")]
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_PAYLOAD_SIZE, WII_GROUP_TOTAL_SIZE, WII_MAGIC,
     WII_MAGIC_OFFSET, WII_PARTITION_HEADER_DATA_OFFSET_OFFSET,
     WII_PARTITION_HEADER_DATA_SIZE_OFFSET, WII_PARTITION_INFO_OFFSET, WII_SECTOR_PAYLOAD_SIZE,
     WII_SECTOR_SIZE, WII_SECTOR_SIZE_U64, WII_TICKET_TITLE_ID_OFFSET, WII_TICKET_TITLE_KEY_OFFSET,
 };
+#[cfg(feature = "embedded-keys")]
 use crate::nintendo::rvl::disc::decrypt_sector;
+#[cfg(feature = "embedded-keys")]
 use crate::nintendo::rvl::partition::{
     HASH_REGION_BYTES, recompute_hash_regions_into, reencrypt_cluster_into,
 };
 
+#[cfg(feature = "embedded-keys")]
 const WII_DISC_ID: &[u8; 4] = b"RNKE";
+#[cfg(feature = "embedded-keys")]
 const WII_PART_ID: &[u8; 4] = b"GALE";
+#[cfg(feature = "embedded-keys")]
 const PART_OFFSET: usize = 0x60000;
+#[cfg(feature = "embedded-keys")]
 const PART_DATA_OFFSET: usize = 0x20000;
+#[cfg(feature = "embedded-keys")]
 const N_CLUSTERS: usize = 3;
+#[cfg(feature = "embedded-keys")]
 const TRAILING: usize = 0x8000;
 
 /// Number of data sectors in a partition whose final group is partial,
 /// so the restored data size is not 0x8000-aligned. 168 = two whole
 /// groups plus 40 sectors; 168 is not a multiple of 32, so 168 * 0x7C00
 /// leaves a 0x6000 tail past the last full 0x8000 block.
+#[cfg(feature = "embedded-keys")]
 const PARTIAL_TAIL_SECTORS: usize = 2 * WII_BLOCKS_PER_GROUP + 40;
 
+#[cfg(feature = "embedded-keys")]
 fn group_blocks_at(data_sectors: usize, group: usize) -> usize {
     (data_sectors - group * WII_BLOCKS_PER_GROUP).min(WII_BLOCKS_PER_GROUP)
 }
@@ -403,6 +415,7 @@ fn group_blocks_at(data_sectors: usize, group: usize) -> usize {
 /// content is a real filesystem with junk gaps, plus a deliberately
 /// corrupted hash region in cluster 1 to exercise preservation of the
 /// original hash sectors.
+#[cfg(feature = "embedded-keys")]
 pub(crate) fn make_fake_wii_fs_iso() -> Vec<u8> {
     fake_wii_fs_iso(N_CLUSTERS * WII_BLOCKS_PER_GROUP)
 }
@@ -410,10 +423,12 @@ pub(crate) fn make_fake_wii_fs_iso() -> Vec<u8> {
 /// Same fixture but with a partial final group, so the partition data
 /// size is not 0x8000-aligned and NKit's junk gap spills into a tail
 /// that Nintendo zero-padded. Exercises `zero_pad_partial_tail`.
+#[cfg(feature = "embedded-keys")]
 pub(crate) fn make_fake_wii_fs_iso_partial() -> Vec<u8> {
     fake_wii_fs_iso(PARTIAL_TAIL_SECTORS)
 }
 
+#[cfg(feature = "embedded-keys")]
 fn fake_wii_fs_iso(data_sectors: usize) -> Vec<u8> {
     let data_size = data_sectors * WII_SECTOR_PAYLOAD_SIZE;
     let hashed_size = data_sectors as u64 * WII_SECTOR_SIZE_U64;
@@ -438,7 +453,8 @@ fn fake_wii_fs_iso(data_sectors: usize) -> Vec<u8> {
     let mut iv = [0u8; 16];
     iv[..8].copy_from_slice(&title_id);
     use aes::cipher::{BlockModeEncrypt, KeyIvInit};
-    let cipher = cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_COMMON_KEY, &iv).unwrap();
+    let cipher =
+        cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_COMMON_KEY.unwrap(), &iv).unwrap();
     let mut enc_key = [0u8; 16];
     cipher
         .encrypt_padded_b2b::<block_padding::NoPadding>(&plaintext_title_key, &mut enc_key)
@@ -558,6 +574,7 @@ fn fake_wii_fs_iso(data_sectors: usize) -> Vec<u8> {
 /// Nintendo zero-pads the final partial 0x8000 block, but NKit's junk
 /// record still spans it, so the record covers the zero tail and the
 /// reader must force that tail back to zero on restore.
+#[cfg(feature = "embedded-keys")]
 fn emit_trailing_junk_gap(out: &mut Vec<u8>, data: &[u8], from: usize, lead: usize) {
     let len = data.len() - from;
     assert_eq!(len % 4, 0, "gaps are 4-byte aligned");
@@ -577,6 +594,7 @@ fn emit_trailing_junk_gap(out: &mut Vec<u8>, data: &[u8], from: usize, lead: usi
 }
 
 /// Encode a Wii ISO to the native NKit layout (no update partition).
+#[cfg(feature = "embedded-keys")]
 pub(crate) fn make_nkit_wii(iso: &[u8]) -> Vec<u8> {
     let data_start = PART_OFFSET + PART_DATA_OFFSET;
     let ds_off = PART_OFFSET + WII_PARTITION_HEADER_DATA_SIZE_OFFSET;

@@ -13,6 +13,10 @@ pub enum NtrError {
     #[error(transparent)]
     Join(#[from] tokio::task::JoinError),
 
+    /// The build carries no KEY1 table.
+    #[error(transparent)]
+    NoEmbeddedKeys(#[from] crate::util::embedded_keys::NoEmbeddedKeys),
+
     /// The input is shorter than the header plus the secure-area block.
     #[error("NDS ROM is too small to hold a secure area")]
     TooSmall,

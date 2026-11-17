@@ -12,6 +12,9 @@ pub enum RvzError {
     JoinError(#[from] tokio::task::JoinError),
 
     #[error(transparent)]
+    NoEmbeddedKeys(#[from] crate::util::embedded_keys::NoEmbeddedKeys),
+
+    #[error(transparent)]
     BinRWError(#[from] binrw::Error),
 
     #[error(transparent)]

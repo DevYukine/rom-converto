@@ -1,4 +1,4 @@
-mod error;
+pub(crate) mod error;
 
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_DEFAULT_TITLE_KEY_PASSWORD, CTR_TITLE_KEY_PBKDF2_ITERATIONS,
@@ -28,7 +28,7 @@ pub fn generate_key(mut title_id: &str, password: &str) -> TitleKeyResult<String
     let tid = &title_id[2..];
 
     // secret || trimmed-title-id → bytes
-    let secret_hex = format!("{CTR_TITLE_KEY_SECRET}{tid}");
+    let secret_hex = format!("{}{tid}", CTR_TITLE_KEY_SECRET?);
     let secret_bytes = decode(&secret_hex)?;
 
     let salt = md5::compute(&secret_bytes);
@@ -81,8 +81,11 @@ fn encrypt_title_key(
 /// Returns an error if `title_id` or its derived key cannot be decoded, or
 /// if AES-CBC encryption fails.
 pub fn generate_title_key(title_id: &str, password: Option<String>) -> TitleKeyResult<String> {
-    let password = password.unwrap_or_else(|| CTR_DEFAULT_TITLE_KEY_PASSWORD.to_string());
-    let common_key = hex::encode(CTR_COMMON_KEYS_HEX[0]);
+    let password = match password {
+        Some(password) => password,
+        None => CTR_DEFAULT_TITLE_KEY_PASSWORD?.to_string(),
+    };
+    let common_key = hex::encode(CTR_COMMON_KEYS_HEX?[0]);
 
     debug!("Using title id: {title_id}");
     debug!("Using common key: {common_key}");
@@ -97,7 +100,7 @@ pub fn generate_title_key(title_id: &str, password: Option<String>) -> TitleKeyR
     Ok(encrypted)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
 

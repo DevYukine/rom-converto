@@ -898,9 +898,12 @@ mod banner_tests {
 #[cfg(test)]
 mod container_tests {
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::disc::wia::test_fixtures::make_wia;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn info_reports_container() {
         let dir = tempfile::tempdir().unwrap();

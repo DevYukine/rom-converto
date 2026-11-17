@@ -4,6 +4,7 @@
 
 use crate::nintendo::ctr::constants::CTR_MEDIA_UNIT_SIZE;
 use crate::nintendo::ctr::decrypt::util::{cbc_decrypt, derive_title_key, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CiaFileWithoutContent;
 use crate::nintendo::ctr::models::ncsd_header::{
     NCSD_FIRST_PARTITION_OFFSET, NCSD_HEADER_SIZE, NCSD_PARTITION_FS_TYPE_NORMAL, NcsdHeader,
@@ -46,7 +47,17 @@ pub async fn cia_to_cci(
         used_size,
         image_size,
     } = plan_layout(&read_preamble(&mut in_file).await?)?;
-    let title_key = derive_title_key(&pre.ticket).context("deriving title key")?;
+    // A keyless build can still copy a decrypted CIA; only encrypted
+    // content needs the title key.
+    let title_key = match derive_title_key(&pre.ticket) {
+        Ok(k) => Some(k),
+        Err(NintendoCTRError::NoEmbeddedKeys(_))
+            if !placements.iter().any(|p| p.layout.encrypted) =>
+        {
+            None
+        }
+        Err(e) => return Err(e).context("deriving title key"),
+    };
     for idx in dropped {
         warn!("Dropping content index {idx} (only indices 0/1/2 fit into NCSD)");
     }
@@ -107,7 +118,10 @@ pub async fn cia_to_cci(
                     }
                     let next_iv: [u8; 16] =
                         buf[to_read - 16..to_read].try_into().expect("16 bytes");
-                    cbc_decrypt(&title_key, &cbc_iv, &mut buf[..to_read])?;
+                    let title_key = title_key
+                        .as_ref()
+                        .expect("an encrypted placement means the title key was derived");
+                    cbc_decrypt(title_key, &cbc_iv, &mut buf[..to_read])?;
                     cbc_iv = next_iv;
                 }
                 out.write_all(&buf[..to_read]).await?;
@@ -332,6 +346,12 @@ mod tests {
             .unwrap();
         let trimmed_bytes = std::fs::read(&trimmed).unwrap();
         assert_eq!(trimmed_bytes, full_head);
+        // The unencrypted content is copied as is, with or without embedded keys.
+        let partition = NCSD_FIRST_PARTITION_OFFSET as usize;
+        assert_eq!(
+            &trimmed_bytes[partition..partition + content.len()],
+            &content[..]
+        );
 
         let header =
             NcsdHeader::read(&mut Cursor::new(&trimmed_bytes[..NCSD_HEADER_SIZE])).unwrap();

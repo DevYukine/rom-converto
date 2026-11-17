@@ -29,6 +29,7 @@ use crate::nintendo::ctr::models::seeddb::SeedDatabase;
 use crate::nintendo::ctr::models::title_metadata::ContentChunkRecord;
 use crate::nintendo::ctr::util::{align_64, is_twl_title_id};
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
+use crate::util::embedded_keys::EmbeddedKey;
 use crate::util::worker_pool::{Pool, PoolChannelClosed, PoolOutcome, parallelism};
 use crate::util::{CancelToken, Cancelled, ProgressReporter, extent_end};
 use anyhow::{Context, anyhow};
@@ -60,12 +61,17 @@ pub(crate) fn extra_crypto_index(uses_extra_crypto: u8) -> usize {
     }
 }
 
-pub(crate) fn derive_ctr_key(key_x: u128, key_y: u128) -> [u8; 16] {
-    u128::to_be_bytes(scramblekey(key_x, key_y))
+pub(crate) fn derive_ctr_key(key_x: u128, key_y: u128) -> EmbeddedKey<[u8; 16]> {
+    Ok(u128::to_be_bytes(scramblekey(key_x, key_y)?))
 }
 
-pub(crate) fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
-    (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
+pub(crate) fn fixed_key(fixed_crypto: u8) -> EmbeddedKey<Option<[u8; 16]>> {
+    if fixed_crypto == 0 {
+        return Ok(None);
+    }
+    Ok(Some(u128::to_be_bytes(
+        CTR_KEYS_1?[(fixed_crypto as usize) - 1],
+    )))
 }
 
 type ContentHasher<'a> = Option<&'a mut Sha256>;
@@ -163,7 +169,7 @@ async fn write_exheader_section(
     progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut key = crypto.base_key;
-    if let Some(fixed) = fixed_key(crypto.fixed_crypto) {
+    if let Some(fixed) = fixed_key(crypto.fixed_crypto)? {
         key = fixed;
     }
 
@@ -204,7 +210,7 @@ async fn write_exefs_section(
     progress: &dyn ProgressReporter,
 ) -> anyhow::Result<()> {
     let mut working_key = opts.base_key;
-    if let Some(fixed) = fixed_key(opts.fixed_crypto) {
+    if let Some(fixed) = fixed_key(opts.fixed_crypto)? {
         working_key = fixed;
     }
 
@@ -212,12 +218,14 @@ async fn write_exefs_section(
     {
         anyhow::bail!("ExeFS section is shorter than its header");
     }
-    let extra_key = (opts.uses_extra_crypto != 0 || opts.use_seed_crypto).then(|| {
-        derive_ctr_key(
-            CTR_KEYS_0[extra_crypto_index(opts.uses_extra_crypto)],
-            opts.key_y,
-        )
-    });
+    let extra_key = (opts.uses_extra_crypto != 0 || opts.use_seed_crypto)
+        .then(|| {
+            derive_ctr_key(
+                CTR_KEYS_0?[extra_crypto_index(opts.uses_extra_crypto)],
+                opts.key_y,
+            )
+        })
+        .transpose()?;
     let mut base_cipher = Aes128Ctr::new_from_slices(&working_key, &opts.ctr)?;
     let mut extra_cipher = extra_key
         .as_ref()
@@ -326,10 +334,10 @@ async fn write_romfs_section(
     cancel: &CancelToken,
 ) -> anyhow::Result<()> {
     let mut key = derive_ctr_key(
-        CTR_KEYS_0[extra_crypto_index(crypto.uses_extra_crypto)],
+        CTR_KEYS_0?[extra_crypto_index(crypto.uses_extra_crypto)],
         crypto.key_y,
-    );
-    if let Some(fixed) = fixed_key(crypto.fixed_crypto) {
+    )?;
+    if let Some(fixed) = fixed_key(crypto.fixed_crypto)? {
         key = fixed;
     }
 
@@ -421,13 +429,13 @@ pub(crate) fn get_ncch_aes_counter(hdr: &NcchHeader, section: NcchSection) -> [u
     counter
 }
 
-fn scramblekey(key_x: u128, key_y: u128) -> u128 {
+fn scramblekey(key_x: u128, key_y: u128) -> EmbeddedKey<u128> {
     const MAX_BITS: u32 = 128;
 
     let rol = |val: u128, r_bits: u32| (val << r_bits) | (val >> (MAX_BITS - r_bits));
 
     let value = rol(key_x, 2) ^ key_y;
-    rol(value.wrapping_add(CTR_KEY_SCRAMBLE_C), 87)
+    Ok(rol(value.wrapping_add(CTR_KEY_SCRAMBLE_C?), 87))
 }
 
 async fn fetch_seed(title_id: &str) -> anyhow::Result<[u8; 16]> {
@@ -496,7 +504,7 @@ async fn write_to_file(
         return Ok(());
     }
 
-    let base_key = derive_ctr_key(CTR_KEYS_0[0], opts.keys[0]);
+    let base_key = derive_ctr_key(CTR_KEYS_0?[0], opts.keys[0])?;
 
     match opts.section {
         NcchSection::ExHeader => {
@@ -1140,8 +1148,11 @@ async fn copy_twl_content(
 mod tests {
     use super::*;
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use binrw::BinWrite;
+    #[cfg(feature = "embedded-keys")]
     use tokio::io::AsyncReadExt;
+    #[cfg(feature = "embedded-keys")]
     fn make_sectioned_ncch(title_id: u64) -> (Vec<u8>, Vec<u8>) {
         use crate::nintendo::ctr::constants::{NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO};
         use crate::nintendo::ctr::test_fixtures::make_ncch_header_bytes;
@@ -1156,7 +1167,7 @@ mod tests {
         header[0x1B0..0x1B4].copy_from_slice(&3u32.to_le_bytes());
         header[0x1B4..0x1B8].copy_from_slice(&1u32.to_le_bytes());
         let parsed = NcchHeader::read(&mut Cursor::new(&header)).unwrap();
-        let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
+        let key = derive_ctr_key(CTR_KEYS_0.unwrap()[0], key_y).unwrap();
 
         let mut ncch = vec![0xA5; 0x800];
         ncch[..0x200].copy_from_slice(&header);
@@ -1203,13 +1214,14 @@ mod tests {
             .to_vec()
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn synthetic_title_key(title_id: u64) -> [u8; 16] {
         use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
 
         let mut iv = [0u8; 16];
         iv[..8].copy_from_slice(&title_id.to_be_bytes());
         let mut title_key = [0xFFu8; 16];
-        cbc_decrypt(&CTR_COMMON_KEYS_HEX[1], &iv, &mut title_key).unwrap();
+        cbc_decrypt(&CTR_COMMON_KEYS_HEX.unwrap()[1], &iv, &mut title_key).unwrap();
         title_key
     }
     #[tokio::test]
@@ -1266,6 +1278,7 @@ mod tests {
         assert_eq!(tokio::fs::read(out_path).await.unwrap(), plaintext);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_exefs_section_streams_multiple_chunks() {
         let key = [0x24; 16];
@@ -1288,7 +1301,7 @@ mod tests {
         Aes128Ctr::new_from_slices(&key, &counter)
             .unwrap()
             .apply_keystream(&mut encrypted);
-        let extra_key = derive_ctr_key(CTR_KEYS_0[1], key_y);
+        let extra_key = derive_ctr_key(CTR_KEYS_0.unwrap()[1], key_y).unwrap();
         let mut extra_encrypted = plaintext.clone();
         Aes128Ctr::new_from_slices(&extra_key, &counter)
             .unwrap()
@@ -1528,6 +1541,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_ncch_romfs_without_titlekey_cbc_preserves_ivfc_magic() {
         use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
@@ -1552,6 +1566,7 @@ mod tests {
         assert_eq!(decrypted, expected);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_titlekey_encrypted_multi_content_sections_round_trip() {
         use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
@@ -1631,6 +1646,7 @@ mod tests {
 
     /// The pooled RomFS path must invert one continuous AES-CTR stream,
     /// regardless of how the section is split across worker chunks.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_romfs_section_matches_continuous_stream() {
         let key_y: u128 = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
@@ -1643,7 +1659,7 @@ mod tests {
         let plaintext: Vec<u8> = (0..size)
             .map(|i| (i.wrapping_mul(31) % 251) as u8)
             .collect();
-        let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
+        let key = derive_ctr_key(CTR_KEYS_0.unwrap()[0], key_y).unwrap();
 
         // Reference: encrypt the plaintext with one continuous keystream; the
         // decrypt must invert it back to the plaintext.
@@ -1708,6 +1724,7 @@ mod tests {
     }
 
     /// The outer CBC layer must decrypt continuously across RomFS read chunks.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_romfs_section_streams_titlekey_cbc_across_chunks() {
         let key_y: u128 = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
@@ -1721,7 +1738,7 @@ mod tests {
         let plaintext: Vec<u8> = (0..size)
             .map(|i| (i.wrapping_mul(31) % 251) as u8)
             .collect();
-        let key = derive_ctr_key(CTR_KEYS_0[0], key_y);
+        let key = derive_ctr_key(CTR_KEYS_0.unwrap()[0], key_y).unwrap();
         let mut inner_encrypted = plaintext.clone();
         Aes128Ctr::new_from_slices(&key, &counter)
             .unwrap()
@@ -1785,6 +1802,7 @@ mod tests {
     /// the outer titlekey CBC layer: the content is a modcrypt SRL, not an NCCH,
     /// so the NCCH probe/gate and parse must be skipped. Drives the full assembly
     /// so the output is a real CIA with the TMD encrypted bit cleared.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_twl_dsiware_cia_strips_titlekey_layer() {
         use crate::nintendo::ctr::cia::decrypt_from_encrypted_cia;
@@ -1814,7 +1832,7 @@ mod tests {
         let mut tid = [0u8; 16];
         tid[..8].copy_from_slice(&title_id.to_be_bytes());
         let mut title_key = [0xFFu8; 16];
-        cbc_decrypt(&CTR_COMMON_KEYS_HEX[1], &tid, &mut title_key).unwrap();
+        cbc_decrypt(&CTR_COMMON_KEYS_HEX.unwrap()[1], &tid, &mut title_key).unwrap();
 
         let plaintexts: Vec<Vec<u8>> = (0..2u32)
             .map(|c| {
@@ -1868,27 +1886,30 @@ mod tests {
         assert_eq!(extra_crypto_index(255), 0);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_deterministic() {
         let key_x: u128 = 0x1234_5678_9ABC_DEF0_1234_5678_9ABC_DEF0;
         let key_y: u128 = 0xFEDC_BA98_7654_3210_FEDC_BA98_7654_3210;
-        let result1 = scramblekey(key_x, key_y);
-        let result2 = scramblekey(key_x, key_y);
+        let result1 = scramblekey(key_x, key_y).unwrap();
+        let result2 = scramblekey(key_x, key_y).unwrap();
         assert_eq!(result1, result2);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_zero_inputs() {
         // ROL(ROL(0, 2) ^ 0 + C, 87) = ROL(C, 87)
-        let result = scramblekey(0, 0);
-        let expected = CTR_KEY_SCRAMBLE_C.rotate_left(87);
+        let result = scramblekey(0, 0).unwrap();
+        let expected = CTR_KEY_SCRAMBLE_C.unwrap().rotate_left(87);
         assert_eq!(result, expected);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_different_inputs_different_outputs() {
-        let r1 = scramblekey(1, 0);
-        let r2 = scramblekey(0, 1);
+        let r1 = scramblekey(1, 0).unwrap();
+        let r2 = scramblekey(0, 1).unwrap();
         assert_ne!(r1, r2);
     }
 
@@ -1929,9 +1950,10 @@ mod tests {
         assert_eq!(out.metadata().await.unwrap().len(), 0);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn derive_ctr_key_returns_16_bytes() {
-        let key = derive_ctr_key(12345, 67890);
+        let key = derive_ctr_key(12345, 67890).unwrap();
         assert_eq!(key.len(), 16);
     }
 }

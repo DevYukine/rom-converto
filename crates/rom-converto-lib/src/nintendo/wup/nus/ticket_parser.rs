@@ -46,7 +46,7 @@ pub fn read_ticket_file(path: &Path) -> WupResult<(WupTicket, TitleKey)> {
     parse_ticket_bytes(&bytes)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
@@ -67,7 +67,7 @@ mod tests {
         let mut iv = [0u8; 16];
         iv[0..8].copy_from_slice(&title_id.to_be_bytes());
         let mut encrypted = *plain_key;
-        Aes128CbcEnc::new_from_slices(&WII_U_COMMON_KEY, &iv)
+        Aes128CbcEnc::new_from_slices(&WII_U_COMMON_KEY.unwrap(), &iv)
             .unwrap()
             .encrypt_padded::<NoPadding>(&mut encrypted, 16)
             .unwrap();

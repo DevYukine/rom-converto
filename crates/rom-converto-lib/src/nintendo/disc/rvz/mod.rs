@@ -708,6 +708,7 @@ mod integration_tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn rvz_to_wbfs_preserves_wii_partition() {
         use crate::nintendo::disc::wbfs::WbfsReader;
@@ -783,6 +784,7 @@ mod integration_tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn wii_partition_round_trips_at_small_chunk_size() {
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
@@ -816,6 +818,7 @@ mod integration_tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn wii_partial_last_cluster_round_trips() {
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partial_partition;
@@ -929,6 +932,7 @@ mod integration_tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn streaming_disc_reader_matches_full_decompress_on_wii_partition() {
         use crate::nintendo::disc::rvz::decompress::RvzDiscReader;
@@ -988,6 +992,7 @@ mod integration_tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn wii_with_real_partition_round_trips() {
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;

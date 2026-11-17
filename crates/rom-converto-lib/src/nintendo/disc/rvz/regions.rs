@@ -145,6 +145,7 @@ mod tests {
     /// A dump cut inside the partition header span: the header fits, its
     /// data start does not, so the planner keeps everything raw instead of
     /// emitting a partition the geometry check would reject.
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn partition_starting_past_eof_stays_raw() {
         use crate::nintendo::rvl::constants::WII_PARTITION_HEADER_SIZE;

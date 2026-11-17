@@ -822,6 +822,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn compress_titles_bundles_two_nus_titles() {
         use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
@@ -866,7 +867,7 @@ mod tests {
             let mut enc_key = title_key;
             let mut key_iv = [0u8; 16];
             key_iv[0..8].copy_from_slice(&title_id.to_be_bytes());
-            encrypt(&WII_U_COMMON_KEY, &key_iv, &mut enc_key);
+            encrypt(&WII_U_COMMON_KEY.unwrap(), &key_iv, &mut enc_key);
             ticket[0x1BF..0x1CF].copy_from_slice(&enc_key);
             ticket[0x1DC..0x1E4].copy_from_slice(&title_id.to_be_bytes());
             ticket[0x1E6..0x1E8].copy_from_slice(&title_version.to_be_bytes());

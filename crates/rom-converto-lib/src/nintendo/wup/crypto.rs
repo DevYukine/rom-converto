@@ -47,7 +47,7 @@ pub fn decrypt_title_key(encrypted_title_key: &[u8; 16], title_id: u64) -> WupRe
     iv[0..8].copy_from_slice(&title_id.to_be_bytes());
 
     let mut buf = *encrypted_title_key;
-    aes_cbc_decrypt_in_place(&WII_U_COMMON_KEY, &iv, &mut buf)?;
+    aes_cbc_decrypt_in_place(&WII_U_COMMON_KEY?, &iv, &mut buf)?;
     Ok(buf)
 }
 
@@ -92,6 +92,7 @@ mod tests {
         assert!(matches!(err, Err(WupError::AesError(_))));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn title_key_decrypts_matching_encryption() {
         // Encrypt a known title key the same way the reference ticket
@@ -106,12 +107,13 @@ mod tests {
         let mut iv = [0u8; 16];
         iv[0..8].copy_from_slice(&title_id.to_be_bytes());
         let mut encrypted = plain_title_key;
-        aes_cbc_encrypt_in_place(&WII_U_COMMON_KEY, &iv, &mut encrypted);
+        aes_cbc_encrypt_in_place(&WII_U_COMMON_KEY.unwrap(), &iv, &mut encrypted);
 
         let recovered = decrypt_title_key(&encrypted, title_id).unwrap();
         assert_eq!(recovered, plain_title_key);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn title_key_iv_differs_per_title_id() {
         // Same encrypted bytes should decrypt to different plain

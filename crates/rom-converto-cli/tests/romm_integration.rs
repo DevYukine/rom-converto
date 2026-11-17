@@ -24,6 +24,19 @@ fn capabilities_output_is_json_with_operations_and_info_extensions() {
 }
 
 #[test]
+fn capabilities_reports_whether_the_build_embeds_keys() {
+    let output = bin().arg("capabilities").output().unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["embedded_keys"],
+        serde_json::Value::Bool(cfg!(feature = "embedded-keys")),
+        "{json}"
+    );
+}
+
+#[test]
 fn info_paths_file_reports_per_file_failures_without_failing_the_process() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.iso");

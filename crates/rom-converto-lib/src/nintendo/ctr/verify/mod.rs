@@ -6,6 +6,7 @@ mod chain;
 /// verification.
 pub mod root_key;
 
+pub(crate) use chain::ticket_signed_by_retail_xs;
 pub use chain::{
     BatchVerifySummary, CiaLegitimacy, CiaLegitimacySubType, CiaVerifyOptions, CiaVerifyResult,
     CtrVerifyOptions, CtrVerifyResult, NcchPartitionResult, NcsdVerifyResult, StandardSubType,

@@ -122,6 +122,9 @@ Key files are supplied separately from TOML configuration.
 | Wii U disc input | `--key <FILE>`, then sibling `<input>.key` or `game.key`, then the built-in database by filename, then a database probe |
 | PS3 decrypt | `--key <FILE>`, then the built-in database by title ID, then sibling `<input>.dkey` |
 
+Builds made without the `embedded-keys` feature have no built-in database; see
+[Builds without embedded keys](development.md#builds-without-embedded-keys).
+
 Wii U key discovery applies to `.wud` and `.wux` inputs. `wup compress` may receive
 multiple `--key` arguments; they are paired with disc inputs in command-line order.
 A Wii U key is 16 raw bytes or 32 hexadecimal characters. A PS3 `.dkey` contains the

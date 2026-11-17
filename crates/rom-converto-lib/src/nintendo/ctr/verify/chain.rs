@@ -2,7 +2,9 @@ use crate::nintendo::ctr::constants::{
     CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
     NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
 };
+use crate::nintendo::ctr::convert::retail_cert_chain;
 use crate::nintendo::ctr::decrypt::util::{derive_title_key, gen_iv};
+use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::certificate::{Certificate, PublicKey};
 use crate::nintendo::ctr::models::cia::{CIA_HEADER_SIZE, CiaFileWithoutContent, CiaHeader};
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
@@ -163,6 +165,11 @@ impl CtrVerifyResult {
 
 /// Verify the CTR container at `input`, dispatching on its magic to
 /// the CIA or NCSD check.
+///
+/// # Errors
+/// Fails when the input cannot be read or parsed, the run is cancelled, or
+/// content hashing needs the title key and the build embeds no keys
+/// ([`NoEmbeddedKeys`](crate::util::embedded_keys::NoEmbeddedKeys)).
 pub async fn verify_ctr(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -287,6 +294,11 @@ async fn verify_compressed(
 }
 
 /// Verify the signatures and content hashes of the CIA at `input`.
+///
+/// # Errors
+/// Fails when the input cannot be read or parsed, the run is cancelled, or
+/// the CIA has encrypted content to hash and the build embeds no keys
+/// ([`NoEmbeddedKeys`](crate::util::embedded_keys::NoEmbeddedKeys)).
 pub async fn verify_cia(
     input: &Path,
     options: &CtrVerifyOptions,
@@ -341,8 +353,22 @@ pub async fn verify_cia(
 
     let content_hashes_valid = if options.verify_content_hashes {
         // A ticket this crate cannot key off leaves the contents unverifiable
-        // rather than aborting: the hash check reports them as failures.
-        let title_key_opt = derive_title_key(&cia_without_content.ticket).ok();
+        // rather than aborting: the hash check reports them as failures. A
+        // keyless build cannot hash encrypted content at all, so that fails
+        // the run instead of reporting a verdict nobody computed.
+        let title_key_opt = match derive_title_key(&cia_without_content.ticket) {
+            Ok(k) => Some(k),
+            Err(NintendoCTRError::NoEmbeddedKeys(e))
+                if cia_without_content
+                    .tmd
+                    .content_chunk_records
+                    .iter()
+                    .any(|r| r.content_type.is_encrypted()) =>
+            {
+                return Err(e.into());
+            }
+            Err(_) => None,
+        };
         match verify_content_hashes_streaming(
             &mut file,
             content_start,
@@ -982,6 +1008,21 @@ fn serialize_ticket_body(ticket: &Ticket) -> BinResult<Vec<u8>> {
     Ok(buf)
 }
 
+/// Whether `ticket` carries a signature from the built-in retail XS
+/// certificate. Certs shipped inside the ticket's own file are never used,
+/// since a forger can append one.
+pub(crate) fn ticket_signed_by_retail_xs(ticket: &Ticket) -> bool {
+    let chain = retail_cert_chain();
+    let Some((modulus, exponent)) = find_cert_by_name_prefix(&chain, "XS0000000c")
+        .and_then(|xs| extract_rsa_key(&xs.public_key))
+    else {
+        return false;
+    };
+    serialize_ticket_body(ticket).is_ok_and(|body| {
+        verify_rsa_signature(modulus, exponent, &ticket.signature_data.signature, &body)
+    })
+}
+
 /// Streaming content hash verify: seeks the file to each content chunk's offset
 /// and computes SHA-256 incrementally with a reusable 4 MB buffer instead of
 /// loading the entire CIA into memory. For encrypted contents the bytes are
@@ -1204,6 +1245,12 @@ mod tests {
     use super::*;
     use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, TestProgress, synth_cia};
     use std::io::Write as _;
+
+    #[test]
+    fn ticket_signed_by_retail_xs_rejects_an_unsigned_ticket() {
+        let ticket = crate::nintendo::ctr::test_fixtures::make_ticket(SYNTH_CIA_TITLE_ID);
+        assert!(!ticket_signed_by_retail_xs(&ticket));
+    }
 
     #[test]
     fn verify_rsa_signature_accepts_a_valid_pkcs1v15_sha256_signature() {
@@ -1480,6 +1527,55 @@ mod tests {
             "details should report FAIL, got: {:?}",
             result.details
         );
+    }
+
+    #[cfg(not(feature = "embedded-keys"))]
+    #[tokio::test]
+    async fn keyless_content_hashes_of_encrypted_content_fail_with_no_embedded_keys() {
+        use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
+        use crate::util::embedded_keys::NoEmbeddedKeys;
+
+        let content = vec![0x5Au8; 0x200];
+        let hash: [u8; 32] = Sha256::digest(&content).into();
+        let (_tmp, path) = synth_cia_with_content(
+            SYNTH_CIA_TITLE_ID,
+            vec![(0, 0, content.clone(), hash)],
+            content,
+            true,
+        );
+
+        let err = verify_ctr(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &TestProgress::default(),
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.downcast_ref::<NoEmbeddedKeys>().is_some(),
+            "error was {err:#}"
+        );
+    }
+
+    #[cfg(not(feature = "embedded-keys"))]
+    #[tokio::test]
+    async fn keyless_content_hashes_of_unencrypted_content_still_verify() {
+        let (_tmp, path, _) = synth_cia(SYNTH_CIA_TITLE_ID, 0x4000);
+
+        let result = verify_cia(
+            &path,
+            &CtrVerifyOptions {
+                verify_content_hashes: true,
+            },
+            &TestProgress::default(),
+            &CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.content_hashes_valid, Some(true));
     }
 
     #[test]

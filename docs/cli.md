@@ -1004,7 +1004,7 @@ size and under 1 MiB is kept as it is; any other image is scaled to fit, keeping
 transparent icon, or on black for the two full-screen images.
 
 A playlist of 2 to 5 discs becomes one EBOOT with **Switch Discs** in the HOME menu when
-the discs fit in 4 GiB. Otherwise every disc
+the discs fit in 4 GiB and the build has embedded keys. Otherwise every disc
 becomes its own EBOOT, titled `<TITLE> (Disc N)`, all carrying disc 1's ID, so they share
 one memory card: save before a disc change, quit, and start the next disc's EBOOT; the
 command warns when it falls back to this. If any disc fails, none of the set's EBOOTs is
@@ -1551,7 +1551,9 @@ rom-converto capabilities
 Print the operations and info extensions the installed binary supports as JSON, for
 frontends and scripts that need to know what this build can do before calling it. The
 payload carries the supported operations, the full `info` extension list, and the JSON
-runner schema.
+runner schema. `embedded_keys` is `false` for a build without embedded console keys,
+where operations that need one fail; see
+[Builds without embedded keys](development.md#builds-without-embedded-keys).
 
 ## shell-completions
 
@@ -1576,4 +1578,5 @@ rom-converto self-update
 
 Check GitHub for a newer release and replace the current binary in place. The download is
 checked against the `.sha256` file published next to it in the release; the update is refused
-when that file is missing, does not list the download, or the hash differs.
+when that file is missing, does not list the download, or the hash differs. The release
+binaries have embedded keys, so on a build without them this installs one that has them.

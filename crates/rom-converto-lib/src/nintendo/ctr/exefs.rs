@@ -32,11 +32,17 @@ use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::models::exe_fs_header::ExeFSHeader;
 use crate::nintendo::ctr::models::ncch_header::NcchHeader;
 use crate::nintendo::ctr::models::smdh::SMDH_TOTAL_SIZE;
+use crate::util::embedded_keys::EmbeddedKey;
 
 type Aes128Ctr = ctr::Ctr128BE<Aes128>;
 
-fn fixed_key(fixed_crypto: u8) -> Option<[u8; 16]> {
-    (fixed_crypto != 0).then(|| u128::to_be_bytes(CTR_KEYS_1[(fixed_crypto as usize) - 1]))
+fn fixed_key(fixed_crypto: u8) -> EmbeddedKey<Option<[u8; 16]>> {
+    if fixed_crypto == 0 {
+        return Ok(None);
+    }
+    Ok(Some(u128::to_be_bytes(
+        CTR_KEYS_1?[(fixed_crypto as usize) - 1],
+    )))
 }
 
 /// Builds an AES-128-CTR stream positioned at `at` bytes into the
@@ -85,10 +91,13 @@ pub fn read_exefs_section<R: Read + Seek>(
     };
 
     let key_y = BigEndian::read_u128(header.signature[0..16].try_into()?);
-    let base_key = derive_ctr_key(CTR_KEYS_0[0], key_y);
-    let working_key = match fixed_key(fixed_crypto) {
-        Some(fk) => fk,
-        None => base_key,
+    let working_key = if nocrypto {
+        None
+    } else {
+        Some(match fixed_key(fixed_crypto)? {
+            Some(fk) => fk,
+            None => derive_ctr_key(CTR_KEYS_0?[0], key_y)?,
+        })
     };
 
     let ctr = get_ncch_aes_counter(header, NcchSection::ExeFS);
@@ -96,8 +105,8 @@ pub fn read_exefs_section<R: Read + Seek>(
     reader.seek(SeekFrom::Start(exefs_abs))?;
     let mut hdr = [0u8; EXEFS_HEADER_SIZE];
     reader.read_exact(&mut hdr)?;
-    if !nocrypto {
-        exefs_cipher(&working_key, &ctr, 0)?.apply_keystream(&mut hdr);
+    if let Some(key) = &working_key {
+        exefs_cipher(key, &ctr, 0)?.apply_keystream(&mut hdr);
     }
 
     // Sections like `icon` / `banner` never want the extra-crypto
@@ -129,8 +138,8 @@ pub fn read_exefs_section<R: Read + Seek>(
     reader.seek(SeekFrom::Start(exefs_abs + start))?;
     let mut section = vec![0u8; size as usize];
     reader.read_exact(&mut section)?;
-    if !nocrypto {
-        exefs_cipher(&working_key, &ctr, start)?.apply_keystream(&mut section);
+    if let Some(key) = &working_key {
+        exefs_cipher(key, &ctr, start)?.apply_keystream(&mut section);
     }
     Ok(section)
 }
@@ -203,6 +212,7 @@ mod tests {
 
     /// ExeFS with `.code` first (so the icon entry has a nonzero
     /// offset) and `icon` second, as on real titles.
+    #[cfg(feature = "embedded-keys")]
     fn synth_code_then_icon_exefs(code: &[u8], icon: &[u8]) -> Vec<u8> {
         let icon_offset = EXEFS_HEADER_SIZE + code.len();
         let mut exefs = vec![0u8; icon_offset + icon.len()];
@@ -234,6 +244,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn reads_icon_when_encrypted() {
         let code = vec![0x41u8; 700];
@@ -252,7 +263,7 @@ mod tests {
         // symmetric, so applying the keystream from offset 0 flips it
         // back to plaintext on read.
         let key_y = BigEndian::read_u128(header.signature[0..16].try_into().unwrap());
-        let working_key = derive_ctr_key(CTR_KEYS_0[0], key_y);
+        let working_key = derive_ctr_key(CTR_KEYS_0.unwrap()[0], key_y).unwrap();
         let ctr = get_ncch_aes_counter(&header, NcchSection::ExeFS);
         Aes128Ctr::new_from_slices(&working_key, &ctr)
             .unwrap()

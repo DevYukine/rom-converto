@@ -493,6 +493,7 @@ mod tests {
         assert!(titles.is_empty());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn resolve_si_titles_keeps_paired_title_with_empty_tmd_on_tmd_preflight_failure() {
         // A directory with both files present, whose TMD failed its

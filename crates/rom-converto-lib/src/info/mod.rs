@@ -937,6 +937,7 @@ mod tests {
         assert!(detect_console(&unknown).is_err());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn detect_gcz_and_wia_sniff_legacy_disc() {
         use crate::nintendo::disc::gcz::test_fixtures::make_gcz;

@@ -1268,6 +1268,7 @@ mod tests {
     /// the tail falls into the following raw region and the
     /// decompressed image matches the input byte-exact, tail
     /// included.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn compress_truncates_non_sector_multiple_partition_data_size() {
         use crate::nintendo::disc::rvz::compress::{RvzCompressOptions, compress_disc};
@@ -1341,6 +1342,7 @@ mod tests {
     /// bytes the ISO actually has (zero-filling the rest) instead of
     /// `read_exact`-ing a full cluster past EOF, and the result must
     /// decompress back byte-identical.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn compresses_partition_ending_inside_final_cluster() {
         use crate::nintendo::disc::rvz::compress::{RvzCompressOptions, compress_disc};
@@ -1394,6 +1396,7 @@ mod tests {
     /// writer never emits
     /// partition groups its own geometry
     /// check rejects; the output verifies and round-trips byte-identical.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn compresses_partition_declared_past_iso_end() {
         use crate::nintendo::disc::rvz::compress::{RvzCompressOptions, compress_disc};
@@ -1671,6 +1674,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn generic_gcz_to_wbfs_matches_rvz_pipeline() {
         use crate::nintendo::disc::gcz;

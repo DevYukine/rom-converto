@@ -79,7 +79,8 @@ pub struct PbpOptions {
 /// Builds PS1 EBOOTs from `input` (`.cue`, `.chd` or `.m3u`) into
 /// `output_dir`, one game folder each, ready to copy into `PSP/GAME`.
 /// Returns the EBOOTs written, none when [`ExistingEboot::Keep`] kept the
-/// game's existing ones.
+/// game's existing ones. Without the `embedded-keys` feature there is no
+/// multi-disc table, so each disc of a playlist gets its own EBOOT.
 ///
 /// # Errors
 /// Returns [`PsxPbpError`] when an input cannot become an EBOOT (see its
@@ -97,7 +98,7 @@ pub async fn to_pbp(
         input,
         output_dir,
         options,
-        Some(&POPS_MULTIDISC_TABLE),
+        POPS_MULTIDISC_TABLE.as_ref().ok(),
         cancel,
     )
     .await
@@ -125,8 +126,8 @@ struct Images {
     pic1: Option<Vec<u8>>,
 }
 
-/// [`to_pbp`] with the multi-disc table given, so tests can exercise the
-/// one-EBOOT-per-disc layout with `None`.
+/// [`to_pbp`] with the multi-disc table given. `None`, from a keyless build
+/// or a test, writes one EBOOT per disc.
 async fn build_eboots(
     progress: &dyn ProgressReporter,
     input: &Path,
@@ -835,6 +836,43 @@ mod tests {
             assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SLPS_99998\0");
             assert!(read_back(&eboot, psar, image.len()) == *image);
         }
+    }
+
+    #[cfg(not(feature = "embedded-keys"))]
+    #[tokio::test]
+    async fn a_keyless_build_writes_one_eboot_per_disc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+
+        let written = to_pbp(
+            &NoProgress,
+            &m3u,
+            &dir.path().join("out"),
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            written,
+            vec![
+                dir.path().join("out/SLPS99998-DISC1/EBOOT.PBP"),
+                dir.path().join("out/SLPS99998-DISC2/EBOOT.PBP"),
+            ]
+        );
+    }
+
+    #[cfg(feature = "embedded-keys")]
+    #[tokio::test]
+    async fn a_keyed_build_writes_one_eboot_with_the_multidisc_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+
+        let eboot = build_one(&m3u, &dir.path().join("out"), &PbpOptions::default()).await;
+        let psar = word(&eboot, 0x24) as usize;
+        assert_eq!(&eboot[psar..psar + 16], b"PSTITLEIMG000000");
+        let table = POPS_MULTIDISC_TABLE.as_ref().expect("keyed build");
+        assert_eq!(&eboot[psar + 0x28C..psar + 0x2CC], table);
     }
 
     #[tokio::test]

@@ -104,6 +104,7 @@ mod tests {
     use super::test_fixtures::make_wia;
     use super::*;
     use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::rvl::test_fixtures::{
         make_fake_wii_iso_with_partial_partition, make_fake_wii_iso_with_partition,
     };
@@ -161,6 +162,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn wii_partition_round_trips() {
         let iso = make_fake_wii_iso_with_partition(3);
@@ -168,6 +170,7 @@ mod tests {
         assert_round_trip(&iso, WIA_COMPR_LZMA, 0x20_0000);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn wii_round_trips_with_multi_cluster_groups() {
         // 4 MiB chunks: one partition group spans two hash clusters,
@@ -177,6 +180,7 @@ mod tests {
         assert_round_trip(&iso, WIA_COMPR_LZMA2, 0x40_0000);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn wii_round_trips_partial_cluster() {
         let iso = make_fake_wii_iso_with_partial_partition(2, 5);
@@ -184,6 +188,7 @@ mod tests {
         assert_round_trip(&iso, WIA_COMPR_LZMA, 0x40_0000);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn wii_reproduces_on_disc_hash_deviations_via_exceptions() {
         // Flip bytes inside the encrypted hash area of two sectors:
@@ -282,6 +287,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     async fn assert_writer_round_trip(iso: &[u8], compression: WiaCompression, level: u32) {
         use crate::nintendo::disc::rvz::format::{WiaDisc, WiaFileHead};
         use crate::util::NoProgress;
@@ -353,6 +359,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn writer_round_trips_raw_and_partitioned_wii_with_every_codec() {
         let raw = crate::nintendo::rvl::test_fixtures::make_fake_wii_iso(5 * 1024 * 1024 + 123);
@@ -368,6 +375,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn writer_round_trips_partial_partition_and_raw_zero_sentinel() {
         let partial = make_fake_wii_iso_with_partial_partition(1, 5);

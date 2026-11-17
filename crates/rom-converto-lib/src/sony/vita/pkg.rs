@@ -3,7 +3,8 @@
 //! in [`extract`].
 //!
 //! All three consoles are end-of-life and their package keys are long
-//! published, so they are embedded here. Key selection and derivation
+//! published, so they are embedded here with the `embedded-keys` feature.
+//! Key selection and derivation
 //! follow the reference package implementation: PS3 packages always use
 //! the PS3 key, PSP/Vita key type 1 uses the PSP key directly, and types
 //! 2 to 4 derive the CTR key by AES-ECB encrypting the header's
@@ -24,6 +25,7 @@ use super::{nonpdrm, pfs};
 use crate::info::{ContentKind, Image};
 use crate::util::ProgressReporter;
 use crate::util::bytes::{u16_be, u32_be, u64_be};
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 use crate::util::extent_end;
 use crate::util::sfo::Sfo;
 
@@ -47,21 +49,21 @@ const MAX_ICON_BYTES: u64 = 4 << 20;
 /// with the file count, so they need far more headroom than an icon.
 const MAX_PFS_DB_BYTES: u64 = 64 << 20;
 
-const PKG_PS3_KEY: [u8; 16] = [
+const PKG_PS3_KEY: EmbeddedKey<[u8; 16]> = embedded_key!([
     0x2e, 0x7b, 0x71, 0xd7, 0xc9, 0xc9, 0xa1, 0x4e, 0xa3, 0x22, 0x1f, 0x18, 0x88, 0x28, 0xb8, 0xf8,
-];
-const PKG_PSP_KEY: [u8; 16] = [
+]);
+const PKG_PSP_KEY: EmbeddedKey<[u8; 16]> = embedded_key!([
     0x07, 0xf2, 0xc6, 0x82, 0x90, 0xb5, 0x0d, 0x2c, 0x33, 0x81, 0x8d, 0x70, 0x9b, 0x60, 0xe6, 0x2b,
-];
-const PKG_VITA_2: [u8; 16] = [
+]);
+const PKG_VITA_2: EmbeddedKey<[u8; 16]> = embedded_key!([
     0xe3, 0x1a, 0x70, 0xc9, 0xce, 0x1d, 0xd7, 0x2b, 0xf3, 0xc0, 0x62, 0x29, 0x63, 0xf2, 0xec, 0xcb,
-];
-const PKG_VITA_3: [u8; 16] = [
+]);
+const PKG_VITA_3: EmbeddedKey<[u8; 16]> = embedded_key!([
     0x42, 0x3a, 0xca, 0x3a, 0x2b, 0xd5, 0x64, 0x9f, 0x96, 0x86, 0xab, 0xad, 0x6f, 0xd8, 0x80, 0x1f,
-];
-const PKG_VITA_4: [u8; 16] = [
+]);
+const PKG_VITA_4: EmbeddedKey<[u8; 16]> = embedded_key!([
     0xaf, 0x07, 0xfd, 0x59, 0x65, 0x25, 0x27, 0xba, 0xf1, 0x33, 0x89, 0x66, 0x8b, 0x17, 0xd9, 0xea,
-];
+]);
 
 /// Console family a PSN `.pkg` targets.
 ///
@@ -749,7 +751,7 @@ fn read_items(
             }
 
             let key = if psp_style && psp_type != 0x90 {
-                PKG_PS3_KEY
+                PKG_PS3_KEY?
             } else {
                 *main_key
             };
@@ -881,13 +883,13 @@ fn ctr_at(key: &[u8; 16], iv: &[u8; 16], offset: u64) -> Result<Aes128Ctr> {
 /// PS3 packages always use the PS3 key, regardless of `key_type`.
 fn derive_key(key_type: u8, iv: &[u8; 16], platform: PkgPlatform) -> Result<[u8; 16]> {
     if platform == PkgPlatform::Ps3 {
-        return Ok(PKG_PS3_KEY);
+        return Ok(PKG_PS3_KEY?);
     }
     let vita_key = match key_type {
-        1 => return Ok(PKG_PSP_KEY),
-        2 => PKG_VITA_2,
-        3 => PKG_VITA_3,
-        4 => PKG_VITA_4,
+        1 => return Ok(PKG_PSP_KEY?),
+        2 => PKG_VITA_2?,
+        3 => PKG_VITA_3?,
+        4 => PKG_VITA_4?,
         other => bail!("vita pkg: unsupported key type {other}"),
     };
     let mut block = *iv;
@@ -987,7 +989,7 @@ fn content_type_label(content_type: u32, category: Option<&str>) -> Option<Strin
     Some(label.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 pub(crate) mod test_fixtures {
     use super::*;
     use crate::util::sfo::test_fixtures::{Val, build_sfo};
@@ -1082,7 +1084,7 @@ pub(crate) mod test_fixtures {
         let mut table = Vec::new();
         for e in entries {
             let item_key = if psp_style && e.psp_type != 0x90 {
-                PKG_PS3_KEY
+                PKG_PS3_KEY.unwrap()
             } else {
                 key
             };
@@ -1168,13 +1170,17 @@ pub(crate) mod test_fixtures {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "embedded-keys")]
     use super::test_fixtures::{
         Entry, build_pkg, build_pkg_with_category, build_pkg_without_meta_sfo,
     };
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use crate::util::sfo::test_fixtures::{Val, build_sfo};
 
+    #[cfg(feature = "embedded-keys")]
     fn entries_with(psp_type: u8) -> Vec<Entry> {
         vec![
             Entry {
@@ -1198,10 +1204,12 @@ mod tests {
         ]
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn entries() -> Vec<Entry> {
         entries_with(0x90)
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn reads_header_and_plaintext_metadata() {
         let dir = tempfile::tempdir().unwrap();
@@ -1223,6 +1231,7 @@ mod tests {
         assert!(info.icon.is_none());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn corrupted_magic_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1235,6 +1244,7 @@ mod tests {
         assert!(err.contains("bad magic"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn non_finalized_pkg_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1247,6 +1257,7 @@ mod tests {
         assert!(err.contains("non-finalized"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn extracts_items_for_every_vita_key_type() {
         for key_type in [2u8, 3, 4] {
@@ -1270,6 +1281,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn invalid_utf8_item_name_fails_extract_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -1318,6 +1330,7 @@ mod tests {
         assert!(read_info(&path).is_ok());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_duplicate_item_paths_without_overwriting() {
         for (second, expected_name) in [
@@ -1361,6 +1374,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn repeated_directory_records_extract_without_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1396,6 +1410,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_key_type_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -1408,6 +1423,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn ps3_shaped_pkg_reports_ps3_platform_and_decrypts_with_the_ps3_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -1427,6 +1443,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_shaped_pkg_reports_psp_platform_and_game_kind() {
         let dir = tempfile::tempdir().unwrap();
@@ -1444,6 +1461,7 @@ mod tests {
         assert_eq!(info.content_kind, Some(ContentKind::Game));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_shaped_pkg_without_category_falls_back_to_content_type() {
         let dir = tempfile::tempdir().unwrap();
@@ -1457,6 +1475,7 @@ mod tests {
     }
 
     /// A real, minimal PNG so `Image::from_png` parses it as a valid image.
+    #[cfg(feature = "embedded-keys")]
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         out.extend_from_slice(&13u32.to_be_bytes());
@@ -1467,6 +1486,7 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn icon_is_decoded_when_present() {
         let dir = tempfile::tempdir().unwrap();
@@ -1485,6 +1505,7 @@ mod tests {
         assert_eq!((icon.width, icon.height), (64, 48));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// PSP and PS3 packages carry no metadata-region SFO; the title comes
     /// from a top-level `PARAM.SFO` item, and the backdrop from `PIC1`/`PIC0`.
     #[test]
@@ -1531,6 +1552,7 @@ mod tests {
         assert_eq!((bg.width, bg.height), (310, 180));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// `PIC1` is the full-screen backdrop and wins over the smaller `PIC0`
     /// when a package ships both.
     #[test]
@@ -1567,6 +1589,7 @@ mod tests {
         assert_eq!((bg.width, bg.height), (480, 272));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// Vita artwork carries a second, PFS encryption layer that only comes
     /// off with the klicensee from the license sitting beside the package.
     #[test]
@@ -1631,6 +1654,7 @@ mod tests {
         assert_eq!((background.width, background.height), (960, 544));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// Without a license the package layer alone leaves the artwork
     /// unreadable, and that stays a `None` field rather than an error.
     #[test]
@@ -1667,6 +1691,7 @@ mod tests {
         assert!(info.background.is_none());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_items_without_type_0x90_use_the_ps3_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -1680,6 +1705,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn item_reader_matches_the_extracted_bytes_at_any_offset() {
         let dir = tempfile::tempdir().unwrap();
@@ -1712,6 +1738,7 @@ mod tests {
         assert!(reader.seek(SeekFrom::Current(-1)).is_err());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn open_item_names_the_package_when_nothing_matches() {
         let dir = tempfile::tempdir().unwrap();
@@ -1752,6 +1779,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn truncated_pkg_errors_without_panic() {
         let full = build_pkg(2, 3, 0x15, &entries());

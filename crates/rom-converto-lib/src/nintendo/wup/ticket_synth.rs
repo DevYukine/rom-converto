@@ -12,6 +12,7 @@
 
 use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
 use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
+use crate::util::embedded_keys::EmbeddedKey;
 
 use aes::cipher::{BlockModeEncrypt, KeyIvInit};
 use block_padding::NoPadding;
@@ -32,11 +33,16 @@ const SIG_TYPE_RSA2048_SHA256: u32 = 0x0001_0004;
 /// and plaintext title key. The key is AES-CBC encrypted under
 /// [`WII_U_COMMON_KEY`] with IV = title_id big-endian followed by
 /// 8 zero bytes, matching the shape of real tickets.
+///
+/// # Errors
+///
+/// Returns [`crate::util::embedded_keys::NoEmbeddedKeys`] in a build
+/// without the `embedded-keys` feature.
 pub fn synthesize_wup_ticket(
     title_id: u64,
     title_version: u16,
     plain_title_key: &[u8; 16],
-) -> Vec<u8> {
+) -> EmbeddedKey<Vec<u8>> {
     let mut ticket = vec![0u8; WUP_TICKET_BASE_SIZE];
 
     ticket[OFFSET_SIGNATURE_TYPE..OFFSET_SIGNATURE_TYPE + 4]
@@ -51,7 +57,7 @@ pub fn synthesize_wup_ticket(
     let mut iv = [0u8; 16];
     iv[0..8].copy_from_slice(&title_id.to_be_bytes());
     let mut ciphertext = *plain_title_key;
-    cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_U_COMMON_KEY, &iv)
+    cbc::Encryptor::<aes::Aes128>::new_from_slices(&WII_U_COMMON_KEY?, &iv)
         .expect("common key and IV are exactly 16 bytes")
         .encrypt_padded::<NoPadding>(&mut ciphertext, plain_title_key.len())
         .expect("16 byte plaintext always encrypts cleanly with NoPadding");
@@ -71,12 +77,12 @@ pub fn synthesize_wup_ticket(
     ticket[OFFSET_TITLE_VERSION..OFFSET_TITLE_VERSION + 2]
         .copy_from_slice(&title_version.to_be_bytes());
 
-    ticket
+    Ok(ticket)
 }
 
 // Test helper: round-trip a synthesized ticket through the real
 // parser and recover the plaintext title key.
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 pub(crate) fn decrypt_synth_title_key(
     synth_ticket: &[u8],
 ) -> crate::nintendo::wup::error::WupResult<[u8; 16]> {
@@ -84,11 +90,11 @@ pub(crate) fn decrypt_synth_title_key(
     let mut iv = [0u8; 16];
     iv[0..8].copy_from_slice(&ticket.title_id.to_be_bytes());
     let mut key = ticket.encrypted_title_key;
-    crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place(&WII_U_COMMON_KEY, &iv, &mut key)?;
+    crate::nintendo::wup::crypto::aes_cbc_decrypt_in_place(&WII_U_COMMON_KEY?, &iv, &mut key)?;
     Ok(key)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 mod tests {
     use super::*;
     use crate::nintendo::wup::nus::ticket_parser::parse_ticket_bytes;
@@ -96,7 +102,7 @@ mod tests {
 
     #[test]
     fn synthesized_ticket_is_base_size() {
-        let bytes = synthesize_wup_ticket(0, 0, &[0u8; 16]);
+        let bytes = synthesize_wup_ticket(0, 0, &[0u8; 16]).unwrap();
         assert_eq!(bytes.len(), WUP_TICKET_BASE_SIZE);
     }
 
@@ -105,7 +111,7 @@ mod tests {
         let title_id = 0x0005_000E_1010_2000;
         let title_version: u16 = 32;
         let plain_key = [0xABu8; 16];
-        let bytes = synthesize_wup_ticket(title_id, title_version, &plain_key);
+        let bytes = synthesize_wup_ticket(title_id, title_version, &plain_key).unwrap();
 
         let (ticket, title_key) = parse_ticket_bytes(&bytes).unwrap();
         assert_eq!(ticket.title_id, title_id);
@@ -121,8 +127,8 @@ mod tests {
         // in one end-to-end shot.
         let title_id = 0x0005_000E_1010_1E00;
         let title_version: u16 = 80;
-        let derived = derive_title_key(title_id);
-        let bytes = synthesize_wup_ticket(title_id, title_version, &derived);
+        let derived = derive_title_key(title_id).unwrap();
+        let bytes = synthesize_wup_ticket(title_id, title_version, &derived).unwrap();
 
         let (ticket, title_key) = parse_ticket_bytes(&bytes).unwrap();
         assert_eq!(ticket.title_id, title_id);
@@ -140,7 +146,7 @@ mod tests {
     fn decrypt_synth_helper_matches_parser() {
         let title_id = 0x0005_000E_1010_2000;
         let plain_key = [0x33u8; 16];
-        let bytes = synthesize_wup_ticket(title_id, 1, &plain_key);
+        let bytes = synthesize_wup_ticket(title_id, 1, &plain_key).unwrap();
         let recovered = decrypt_synth_title_key(&bytes).unwrap();
         assert_eq!(recovered, plain_key);
     }

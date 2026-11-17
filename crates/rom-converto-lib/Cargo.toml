@@ -100,4 +100,8 @@ libc = "^0.2"
 rustix = { version = "^1.1", features = ["fs"] }
 
 [features]
+default = ["embedded-keys"]
+# Console keys and disc-key databases. Builds without it carry no key
+# material; operations that need a key fail with `NoEmbeddedKeys`.
+embedded-keys = []
 ts-export = ["dep:ts-rs"]
