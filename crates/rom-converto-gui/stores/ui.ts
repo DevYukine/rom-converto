@@ -138,10 +138,15 @@ export const useUiStore = defineStore("ui", () => {
 		if (isTauri) {
 			try {
 				await getCurrentWebview().setZoom(applied);
+				// On Windows a new minimum re-applies the current size, which
+				// un-maximizes the window. Restoring resizes the window, so the
+				// resize handler applies the minimum then.
+				const win = getCurrentWindow();
+				if (await win.isMaximized()) return;
 				const area = workArea.value;
 				const width = area ? Math.min(800 * applied, area.width) : 800 * applied;
 				const height = area ? Math.min(440 * applied, area.height) : 440 * applied;
-				await getCurrentWindow().setMinSize(new LogicalSize(width, height));
+				await win.setMinSize(new LogicalSize(width, height));
 			} catch {
 				// Without the zoom permission or a readable monitor the scale may
 				// not apply or clamp; the saved preference is unchanged either way.
@@ -153,7 +158,7 @@ export const useUiStore = defineStore("ui", () => {
 
 	// Moving the window between monitors changes the fit, so re-clamp; the
 	// preference restores itself when the window moves back. Debounced because
-	// onMoved fires on every drag frame.
+	// onMoved and onResized fire on every drag frame.
 	let scaleTimer: ReturnType<typeof setTimeout> | undefined;
 	function queueApplyScale() {
 		clearTimeout(scaleTimer);
@@ -161,6 +166,7 @@ export const useUiStore = defineStore("ui", () => {
 	}
 	if (isTauri) {
 		getCurrentWindow().onMoved(queueApplyScale).catch(() => {});
+		getCurrentWindow().onResized(queueApplyScale).catch(() => {});
 		getCurrentWindow().onScaleChanged(queueApplyScale).catch(() => {});
 	}
 
