@@ -50,6 +50,16 @@ jobs:
             classifier: linux-arm64-musl
             force_cross: true
           - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            classifier: keyless-linux-x64-musl
+            force_cross: true
+            keyless: true
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            classifier: keyless-linux-arm64-musl
+            force_cross: true
+            keyless: true
+          - os: ubuntu-22.04
             target: x86_64-unknown-freebsd
             classifier: freebsd-x64
             force_cross: false
@@ -82,7 +92,7 @@ jobs:
         with:
           command: build
           target: ${{ matrix.target }}
-          args: "--locked --release -p rom-converto-cli"
+          args: "--locked --release -p rom-converto-cli${{ matrix.keyless && ' --no-default-features' || '' }}"
           strip: true
           force-use-cross: ${{ matrix.force_cross }}
           # Keep in sync with the image digests in Cross.toml.
@@ -110,14 +120,38 @@ jobs:
           mkdir -p artifact
           cp "$src" "$dst"
 
+          # SHA256SUMS covers keyless builds. Only self-update reads the
+          # per-file checksum, and it must never pick a keyless build.
+          if [[ "${{ matrix.keyless }}" == "true" ]]; then
+            exit 0
+          fi
+
           sha_cmd="sha256sum"
           if ! command -v sha256sum >/dev/null 2>&1; then
             sha_cmd="shasum -a 256"
           fi
           (cd artifact && $sha_cmd "$(basename "$dst")" > "$(basename "$dst").sha256")
 
+      - name: Check the build has no embedded keys
+        if: ${{ matrix.keyless }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: artifact/rom-converto-cli-${{ matrix.classifier }}
+        run: |
+          set -euo pipefail
+          run=("$BIN")
+          if [[ "$TARGET" == aarch64-* ]]; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q qemu-user-static
+            run=(qemu-aarch64-static "${run[@]}")
+          fi
+          "${run[@]}" capabilities | jq -e '.embedded_keys == false'
+
+      # A release gets keyless builds from the release workflow once every other
+      # build is uploaded.
       - name: Upload workflow artifact
-        if: ${{ !inputs.release }}
+        if: ${{ !inputs.release || matrix.keyless }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rom-converto-cli-${{ matrix.classifier }}
@@ -131,7 +165,7 @@ jobs:
           subject-path: artifact/*
 
       - name: Upload to release
-        if: ${{ inputs.release }}
+        if: ${{ inputs.release && !matrix.keyless }}
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ inputs.release_tag }}
