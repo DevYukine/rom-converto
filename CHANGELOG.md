@@ -1,3 +1,31 @@
+# [0.25.0](https://github.com/DevYukine/rom-converto/compare/v0.24.0...v0.25.0) (2026-11-17)
+
+
+### Bug Fixes
+
+* **archive:** stop extracting a member on cancel and abort batch runs as cancelled ([0afccb5](https://github.com/DevYukine/rom-converto/commit/0afccb53ef6582bce1b07d395805de063dcb244d))
+* **cli:** cancel on ctrl-break and console close on windows ([f08d807](https://github.com/DevYukine/rom-converto/commit/f08d80711c225d986f0704f554bfed0c2fb01949))
+* **cli:** never self-update to a keyless build ([2decda2](https://github.com/DevYukine/rom-converto/commit/2decda24591d995377e6ff24188c5e9a2f6717b2))
+* **clippy:** resolve needless_range_loop lints from rust 1.100 ([ebd424c](https://github.com/DevYukine/rom-converto/commit/ebd424cebe5c1dcb7837c4106abf01b9b60edb58))
+* **cli:** run on an 8 MiB thread, cancel on SIGTERM and SIGHUP, accept BOM cue sheets ([8098151](https://github.com/DevYukine/rom-converto/commit/80981514466a237e0534f7e736a14e5978d952b3))
+* **cue:** convert mode 2 images with form 2 sectors to iso, cso and zso ([b23c14d](https://github.com/DevYukine/rom-converto/commit/b23c14d03de503dc4cbb6e55cf20efd1b9d1d0ce))
+* **dat:** rename onto fat32 and exfat and never overwrite a file while rolling back ([925636f](https://github.com/DevYukine/rom-converto/commit/925636f0d3a13965097b29c48dad3403a9968167))
+* **gui:** keep the window maximized on windows ([dd7b324](https://github.com/DevYukine/rom-converto/commit/dd7b324978f25b39b2b27e9db9e3beb5d6603ee5))
+* **psx:** remove an output folder a failed run created and replace an empty eboot ([86513d2](https://github.com/DevYukine/rom-converto/commit/86513d24a3b33081ecc947895ac70cf96cb7262f))
+* **sega,nx:** accept a utf-8 bom in gdi sheets and keys files ([8adca2c](https://github.com/DevYukine/rom-converto/commit/8adca2c85bc9d9b54a7634f51a1f79aa6df0c25c))
+* **sony:** read the serial from root-relative boot paths for psx titles ([#36](https://github.com/DevYukine/rom-converto/issues/36)) ([3ae3781](https://github.com/DevYukine/rom-converto/commit/3ae3781b8a40f511bdc8fef1004c721ff2187b63))
+
+
+### Features
+
+* **cli:** check self-update downloads against the release's SHA256SUMS ([0965d9b](https://github.com/DevYukine/rom-converto/commit/0965d9b02bfbf0670d818626a83e7df20d7f01e3))
+* **dol,rvl:** convert disc images between iso, wbfs, gcz, wia and rvz in one step across lib, cli and gui ([b47bfe8](https://github.com/DevYukine/rom-converto/commit/b47bfe895a77b44cae8ea6c3fdbdc8783aa7fb9f))
+* **lib:** add an embedded-keys feature to build without console keys ([#44](https://github.com/DevYukine/rom-converto/issues/44)) ([f109a4f](https://github.com/DevYukine/rom-converto/commit/f109a4f7a2cf95d904a5a74fa2de8d0536a66446))
+* **patch:** add a standalone patch apply command across lib, cli and gui ([eb4a99d](https://github.com/DevYukine/rom-converto/commit/eb4a99d4a3a5122afb105a501109af16524263b0))
+* **psx:** convert PS1 discs to PSP EBOOT.PBP files ([#37](https://github.com/DevYukine/rom-converto/issues/37)) ([f0c5912](https://github.com/DevYukine/rom-converto/commit/f0c5912ba38aa4dddbf9ab00ff7bced104d70736))
+
+
+
 # [0.24.0](https://github.com/DevYukine/rom-converto/compare/v0.23.2...v0.24.0) (2026-10-11)
 
 
@@ -141,23 +169,6 @@
 * **util:** budgeted worker admission and bounded group reader ([f494dac](https://github.com/DevYukine/rom-converto/commit/f494dacbd19eccefe1eb91ac1680350bcdad422e))
 * **wup:** decrypt by range and stream titles into wua ([34d6133](https://github.com/DevYukine/rom-converto/commit/34d613346a5aebb06f2c9e6954138ceed0d7adc9))
 * **zar:** bound writer buffers and reorder queue ([08b007b](https://github.com/DevYukine/rom-converto/commit/08b007b093374617f2a57a40a3da65f1e606b6fb))
-
-
-
-# [0.22.0](https://github.com/DevYukine/rom-converto/compare/v0.21.0...v0.22.0) (2026-09-11)
-
-
-### Features
-
-* **chd:** inspect CHD v1-v4 and migrate them to v5 across lib, CLI and GUI ([6cfa287](https://github.com/DevYukine/rom-converto/commit/6cfa2870fcb5b74fab64b180114fa868b0162488))
-* **ctr:** add a trim option to cia to 3ds conversion and size the free space check from the real cci output ([008d80e](https://github.com/DevYukine/rom-converto/commit/008d80eef5ca69440f9ba8010fe57b5aa74dbaa6))
-* **gui:** add disc conversion logo ([b8799f1](https://github.com/DevYukine/rom-converto/commit/b8799f1f304deddf84499d38cd75d6cf61562f1e))
-* **gui:** count files instead of bytes on the dat scan bar, add rate, eta, phases, relative paths, filtering and a virtual result list ([933fa9e](https://github.com/DevYukine/rom-converto/commit/933fa9e24c9ca58012c05d0738c12d7b57ce26a8))
-* **gui:** show an update notice with periodic checks and harden the cli self-update swap ([3eb004f](https://github.com/DevYukine/rom-converto/commit/3eb004f215071b90d181e9666c0d77c49dccbeb7))
-* **nx:** merge and split nsp/xci into super containers ([c07c464](https://github.com/DevYukine/rom-converto/commit/c07c464a574f79c766cf9b84166c747b2eea3ee2))
-* **runner:** route the cli and gui through the lib runner, add the missing ops and consolidated dat logic, generate gui types from rust and fold dat pages plus verify-after results into the gui registry ([c1ccd2e](https://github.com/DevYukine/rom-converto/commit/c1ccd2e711facef1abc096c350e1885113d574c1))
-* **sony:** inspect ps4 and ps5 pkg files without keys and label ps3 pkg content types across lib, cli and gui ([1e78d0e](https://github.com/DevYukine/rom-converto/commit/1e78d0eb617461ed8a1f2aaf5052ce8de7fcf37c))
-* **xenon:** convert xbox 360 disc images to games on demand containers ([ea2d52f](https://github.com/DevYukine/rom-converto/commit/ea2d52f30e70ae11ab2aacef9a650e9f0f719595))
 
 
 
