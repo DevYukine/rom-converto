@@ -163,6 +163,12 @@ fn score_release_asset_name(asset_name: &str, query: &ReleaseAssetQuery) -> Opti
         return None;
     }
 
+    // Builds without embedded keys are for distributors, so a release missing
+    // the usual binary must not swap one in.
+    if normalized_name.contains("keyless") {
+        return None;
+    }
+
     if let Some(required_suffix) = query.required_suffix
         && !asset_name
             .to_ascii_lowercase()
@@ -532,6 +538,14 @@ mod tests {
             select_release_asset_name(assets, &query),
             Some("rom-converto-cli-macos-arm64")
         );
+    }
+
+    #[test]
+    fn asset_selector_never_picks_a_keyless_build() {
+        let query = get_release_asset_query_for_target("x86_64-unknown-linux-musl").unwrap();
+        let assets = ["rom-converto-cli-keyless-linux-x64-musl"];
+
+        assert_eq!(select_release_asset_name(assets, &query), None);
     }
 
     #[test]
