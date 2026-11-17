@@ -326,9 +326,12 @@ jobs:
           # running copy was bundled as and falls back to "<os>-<arch>", so only
           # packages that differ from the fallback need their own key. The
           # portable Windows exe asks for its own key.
+          # The release body leads with a download table; the update dialog
+          # shows only the changelog after the marker.
+          notes="$(jq -r '.body | split("<!-- changelog -->") | last | sub("^\\s+"; "")' <<<"$release")"
           jq -n \
             --arg version "${RELEASE_TAG#v}" \
-            --arg notes "$(jq -r .body <<<"$release")" \
+            --arg notes "$notes" \
             --arg pub_date "$(jq -r .publishedAt <<<"$release")" \
             --arg base "$base" \
             --arg linux_x64_appimage "$(<updater/rom-converto-gui-linux-x64.AppImage.sig)" \
