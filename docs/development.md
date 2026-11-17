@@ -82,9 +82,11 @@ so a Wii U `--key` alone is not enough.
 | PS1 | A multi-disc set becomes one EBOOT per disc, sharing one memory card, without **Switch Discs** |
 | DAT, hash, organize | Hashing NKit Wii images fails. `organize` loses the naming tokens `info` cannot read, and its conversions that need a key fail |
 
-Everything else works as in the default build. `self-update` and the desktop
-app's updater install the official release, which has embedded keys, so update a
-keyless build by building it again.
+Everything else works as in the default build. Each release also ships the CLI
+built this way for Linux as `rom-converto-cli-keyless-linux-x64-musl` and
+`rom-converto-cli-keyless-linux-arm64-musl`. `self-update` and the desktop app's
+updater install the regular build, which has embedded keys, so update a keyless
+build by downloading or building it again.
 
 ## Checks
 
