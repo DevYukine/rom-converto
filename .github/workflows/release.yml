@@ -77,3 +77,22 @@ jobs:
       release: true
       release_tag: ${{ needs.changelog.outputs.tag }}
     secrets: inherit
+
+  checksums:
+    name: Checksums
+    needs: [changelog, build-cli, build-ffi, build-gui]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish SHA256SUMS
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.changelog.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir assets
+          cd assets
+          # The .sha256 and .sig files are checks themselves, and a rerun
+          # downloads the SHA256SUMS it replaces.
+          shopt -s extglob
+          sha256sum !(*.sha256|*.sig|SHA256SUMS) > ../SHA256SUMS
+          gh release upload "$RELEASE_TAG" ../SHA256SUMS --repo "$GITHUB_REPOSITORY" --clobber
