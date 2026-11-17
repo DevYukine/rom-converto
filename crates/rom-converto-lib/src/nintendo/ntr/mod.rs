@@ -67,9 +67,11 @@ pub enum SecureAreaState {
 /// # Errors
 ///
 /// [`NtrError::NoSecureArea`] when the ARM9 code sits outside the
-/// secure-area window or the window is blank, and
+/// secure-area window or the window is blank,
 /// [`NtrError::SecureAreaCorrupt`] when it is neither plaintext nor
-/// decryptable with the key derived from the header id code.
+/// decryptable with the key derived from the header id code, and
+/// [`NtrError::NoEmbeddedKeys`] when it is not plaintext and the build has
+/// no KEY1 table.
 pub fn detect_state(
     header: &[u8; HEADER_SIZE],
     secure: &[u8; SECURE_BLOCK_LEN],
@@ -84,6 +86,10 @@ pub fn detect_state(
         return Ok(SecureAreaState::Decrypted);
     }
 
+    if secure.iter().all(|&b| b == 0x00) || secure.iter().all(|&b| b == 0xFF) {
+        return Err(NtrError::NoSecureArea);
+    }
+
     let idcode = u32_le(header, 0x0C);
     let mut block = load_block(secure, 0);
     Key1::new(idcode, 2, KEYCODE_MODULO)?.decrypt_block(&mut block);
@@ -92,10 +98,6 @@ pub fn detect_state(
         && block[1].to_le_bytes() == SECURE_AREA_ID[4..]
     {
         return Ok(SecureAreaState::Encrypted);
-    }
-
-    if secure.iter().all(|&b| b == 0x00) || secure.iter().all(|&b| b == 0xFF) {
-        return Err(NtrError::NoSecureArea);
     }
     Err(NtrError::SecureAreaCorrupt)
 }
@@ -272,7 +274,7 @@ fn store_block(buf: &mut [u8; SECURE_BLOCK_LEN], offset: usize, block: [u32; 2])
     buf[offset + 4..offset + 8].copy_from_slice(&block[1].to_le_bytes());
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::test_fixtures::{SYNTH_IDCODE, synth_ntr};
     use super::*;
@@ -291,6 +293,7 @@ mod tests {
         detect_state(&header, &secure)
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn idcode() -> u32 {
         u32::from_le_bytes(SYNTH_IDCODE)
     }
@@ -308,6 +311,7 @@ mod tests {
         assert_eq!(state(&rom).expect("detects"), SecureAreaState::Decrypted);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn secure_area_round_trips() {
         let rom = synth_ntr(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
@@ -349,6 +353,7 @@ mod tests {
         assert!(matches!(state(&rom), Err(NtrError::NoSecureArea)));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn garbage_secure_area_is_corrupt() {
         let mut rom = synth_ntr(SYNTH_IDCODE, SECURE_AREA_OFFSET as u32);
@@ -356,6 +361,7 @@ mod tests {
         assert!(matches!(state(&rom), Err(NtrError::SecureAreaCorrupt)));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn key1_block_round_trips_at_both_levels() {
         let plain = [0x0123_4567u32, 0x89AB_CDEFu32];
@@ -381,6 +387,7 @@ mod tests {
         path
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn file_round_trip_restores_every_byte() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -418,6 +425,7 @@ mod tests {
         assert_eq!(tokio::fs::read(&decrypted).await.expect("reads"), rom);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn file_round_trip_from_encrypted_restores_every_byte() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -452,6 +460,7 @@ mod tests {
         assert_eq!(tokio::fs::read(&encrypted).await.expect("reads"), rom);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn encrypting_an_encrypted_rom_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -491,6 +500,7 @@ mod tests {
         assert!(matches!(err, NtrError::AlreadyDecrypted));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// Locks the port to the reference implementation. The expected digest comes
     /// from running a direct transcription of upstream `encryption.cpp`'s
     /// `encrypt_arm9` over the same fixture, so a drift in the key schedule fails

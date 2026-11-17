@@ -14,9 +14,11 @@ use crate::nintendo::ctr::error::NintendoCTRError;
 use crate::nintendo::ctr::models::cia::CIA_HEADER_SIZE;
 use crate::nintendo::ctr::models::ticket::Ticket;
 use crate::nintendo::ctr::models::title_metadata::TitleMetadata;
+use crate::nintendo::ctr::title_key::error::TitleKeyError;
 use crate::nintendo::ctr::title_key::generate_title_key;
 use crate::nintendo::ctr::util::fs::{find_title_file, find_tmd_file};
 use crate::nintendo::ctr::util::{check_cancel, hash_cbc_stream, mirrored_output, run_batch};
+use crate::nintendo::ctr::verify::ticket_signed_by_retail_xs;
 use crate::nintendo::ctr::z3ds::models::underlying_magic;
 use crate::nintendo::ctr::z3ds::{compress_rom, derive_compressed_path};
 use crate::util::{
@@ -410,8 +412,21 @@ async fn convert_cdn_to_cia_single(
     // A ticket left on disk by an earlier `generate-cdn-ticket` run carries the
     // same derived key as one forged here, so key it off the key itself rather
     // than off who wrote the file. Only a ticket forged this run is ours to delete.
-    let derived_title_key = hex::decode(generate_title_key(&format!("{title_id:016X}"), None)?)?;
-    if ticket.ticket_data.title_key == derived_title_key
+    // A keyless build cannot derive the forged key, so it skips that check and
+    // packs the ticket it was given, warning when Nintendo did not sign it.
+    let derived_title_key = match generate_title_key(&format!("{title_id:016X}"), None) {
+        Ok(key) => Some(hex::decode(key)?),
+        Err(TitleKeyError::NoEmbeddedKeys(_)) => {
+            if !ticket_signed_by_retail_xs(&ticket) {
+                warn!(
+                    "ticket is not signed by Nintendo and this build cannot check a forged title key"
+                );
+            }
+            None
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if derived_title_key.is_some_and(|key| ticket.ticket_data.title_key == key)
         && let Err(err) =
             verify_forged_title_key(cdn_dir, &title_metadata, &ticket_bytes, &cancel).await
     {
@@ -754,6 +769,7 @@ mod tests {
 
     /// The plaintext title key a forged ticket for `title_id` carries, i.e. what
     /// `derive_title_key_from_ticket` recovers from the generated ticket.
+    #[cfg(feature = "embedded-keys")]
     fn derived_plain_title_key(title_id: u64) -> [u8; 16] {
         let key = crate::nintendo::ctr::title_key::generate_key(
             &format!("{title_id:016X}"),
@@ -763,6 +779,7 @@ mod tests {
         hex::decode(key).unwrap().try_into().unwrap()
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn cbc_encrypt(key: &[u8; 16], iv: &[u8; 16], plain: &[u8]) -> Vec<u8> {
         use aes::Aes128;
         use block_padding::NoPadding;
@@ -827,7 +844,6 @@ mod tests {
         assert_eq!(&bytes[0x1E6..0x1E8], &0u16.to_be_bytes());
     }
 
-    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_recursive_converts_each_subfolder() {
         let tmp = tempfile::tempdir().unwrap();
@@ -881,7 +897,6 @@ mod tests {
         assert_eq!(std::fs::read(&existing).unwrap(), b"PREEXISTING");
     }
 
-    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_recursive_overwrite_replaces() {
         let tmp = tempfile::tempdir().unwrap();
@@ -899,7 +914,6 @@ mod tests {
         assert!(parses_as_cia(&existing));
     }
 
-    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_recursive_rename_writes_numbered_sibling() {
         let tmp = tempfile::tempdir().unwrap();
@@ -919,7 +933,6 @@ mod tests {
         assert!(parses_as_cia(&renamed));
     }
 
-    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_recursive_skips_non_cdn_subfolder() {
         let tmp = tempfile::tempdir().unwrap();
@@ -940,7 +953,6 @@ mod tests {
         assert!(!root.join("not_cdn.cia").exists());
     }
 
-    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cdn_to_cia_recursive_community_layout_variant() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1305,11 +1317,13 @@ mod tests {
         assert!(path_is_within(&output, &cdn_dir).unwrap());
     }
 
+    #[cfg(feature = "embedded-keys")]
     struct CancelAfter {
         token: CancelToken,
         remaining: std::sync::atomic::AtomicUsize,
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl CancelAfter {
         fn new(token: CancelToken, after: usize) -> Self {
             Self {
@@ -1319,6 +1333,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl ProgressReporter for CancelAfter {
         fn start(&self, _: u64, _: &str) {}
         fn inc(&self, _: u64) {
@@ -1330,6 +1345,7 @@ mod tests {
         fn finish(&self) {}
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn ncch_scratch_present(dir: &Path) -> bool {
         std::fs::read_dir(dir)
             .unwrap()
@@ -1337,6 +1353,7 @@ mod tests {
             .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("ncch"))
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn rom_converto_staging_present(dir: &Path) -> bool {
         std::fs::read_dir(dir)
             .unwrap()

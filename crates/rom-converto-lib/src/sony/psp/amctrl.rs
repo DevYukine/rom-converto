@@ -142,7 +142,7 @@ fn gf_double(block: &mut [u8; 16]) {
     block[15] ^= if carry != 0 { 0x87 } else { 0 };
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 pub(crate) mod test_fixtures {
     use super::*;
 
@@ -175,8 +175,9 @@ pub(crate) mod test_fixtures {
     }
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "embedded-keys")]
     use super::test_fixtures::{cipher_from_iv, version_key_for};
     use super::*;
 
@@ -203,6 +204,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn new_recovers_the_iv_the_version_key_encodes() {
         let iv = *b"an arbitrary iv.";
@@ -214,6 +216,7 @@ mod tests {
         assert_eq!(cipher.iv, iv);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn apply_is_its_own_inverse_at_any_index() {
         let cipher = cipher_from_iv(*b"another test iv.");
@@ -227,6 +230,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn the_keystream_depends_on_the_index() {
         let cipher = cipher_from_iv([0x42; 16]);
@@ -237,6 +241,7 @@ mod tests {
         assert_ne!(at_zero, at_one);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn apply_covers_a_trailing_partial_block() {
         let cipher = cipher_from_iv([7; 16]);

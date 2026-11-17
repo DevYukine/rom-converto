@@ -1,12 +1,11 @@
 //! The fixed structures of a PS1 EBOOT's `DATA.PSAR`: PSISOIMG and
 //! PSTITLEIMG headers, the table of contents, the block index, STARTDAT.
 
-use hex_literal::hex;
-
 use super::disc::{DiscId, DiscImage};
 use super::error::{PsxPbpError, PsxPbpResult};
 use crate::disc::cd::{FRAMES_PER_SECOND, SECONDS_PER_MINUTE};
 use crate::disc::cue::models::Msf;
+use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 use crate::util::template::truncate_bytes;
 
 /// Bytes of disc image per block: 16 raw sectors.
@@ -25,10 +24,13 @@ pub(crate) const MAX_DISCS: usize = 5;
 pub(crate) const MULTIDISC_TABLE_LEN: usize = 64;
 /// The multi-disc table: the key to the emulator's disc-switch menu text,
 /// the same for every game. Without it a multi-disc file freezes at boot.
-pub(crate) const POPS_MULTIDISC_TABLE: [u8; MULTIDISC_TABLE_LEN] = hex!(
-    "8C0EAE9D398CFE246521AD2D65A961DFD44A1303B4CD325FBDB0F4F98A70BE1E"
-    "392C7DC0C1C66B81AA3C0653941BCEE54416CFDBB1E3897BA2D2E7D6C1266B58"
-);
+/// Only compiled in with the `embedded-keys` feature. A `static` so
+/// [`super::to_pbp`] can lend it out for the whole build.
+pub(crate) static POPS_MULTIDISC_TABLE: EmbeddedKey<[u8; MULTIDISC_TABLE_LEN]> =
+    embedded_key!(hex_literal::hex!(
+        "8C0EAE9D398CFE246521AD2D65A961DFD44A1303B4CD325FBDB0F4F98A70BE1E"
+        "392C7DC0C1C66B81AA3C0653941BCEE54416CFDBB1E3897BA2D2E7D6C1266B58"
+    ));
 /// Bytes of the PSTITLEIMG header; disc 1's PSISOIMG follows it.
 pub(crate) const PSTITLEIMG_LEN: u64 = DISC_ALIGN;
 

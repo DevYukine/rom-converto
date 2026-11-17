@@ -8,6 +8,7 @@ mod template;
 pub use cci_to_cia::cci_to_cia;
 use cia_to_cci::cci_image_size;
 pub use cia_to_cci::cia_to_cci;
+pub(crate) use template::retail_cert_chain;
 
 use crate::nintendo::ctr::util::{mirrored_output, run_batch};
 use crate::util::{CancelToken, ProgressReporter};

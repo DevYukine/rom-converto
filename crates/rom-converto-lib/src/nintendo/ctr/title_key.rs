@@ -1,4 +1,4 @@
-mod error;
+pub(crate) mod error;
 
 use crate::nintendo::ctr::constants::{
     CTR_COMMON_KEYS_HEX, CTR_DEFAULT_TITLE_KEY_PASSWORD, CTR_TITLE_KEY_PBKDF2_ITERATIONS,

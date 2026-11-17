@@ -8,6 +8,9 @@
 #[error("this build has no embedded console keys (built without the `embedded-keys` feature)")]
 pub struct NoEmbeddedKeys;
 
+/// Whether this build carries the console keys (the `embedded-keys` feature).
+pub const ENABLED: bool = cfg!(feature = "embedded-keys");
+
 /// Key material that is only present in builds with the `embedded-keys`
 /// feature.
 pub type EmbeddedKey<T> = Result<T, NoEmbeddedKeys>;
@@ -33,6 +36,7 @@ pub(crate) use embedded_key;
 #[cfg(all(test, not(feature = "embedded-keys")))]
 mod tests {
     use super::NoEmbeddedKeys;
+    use crate::nintendo::ctr::title_key::error::TitleKeyError;
     use crate::nintendo::ctr::title_key::generate_title_key;
     use crate::nintendo::disc::rvz::error::RvzError;
     use crate::nintendo::ntr::{SECURE_BLOCK_LEN, crypt_secure_area};
@@ -45,12 +49,10 @@ mod tests {
             crate::nintendo::rvl::disc::decrypt_title_key(&[0; WII_TICKET_SIZE]),
             Err(RvzError::NoEmbeddedKeys(_))
         ));
-        assert_eq!(
-            generate_title_key("0004000000030800", None)
-                .unwrap_err()
-                .to_string(),
-            NoEmbeddedKeys.to_string()
-        );
+        assert!(matches!(
+            generate_title_key("0004000000030800", None),
+            Err(TitleKeyError::NoEmbeddedKeys(_))
+        ));
         assert!(matches!(
             crate::nintendo::wup::crypto::decrypt_title_key(&[0; 16], 0),
             Err(WupError::NoEmbeddedKeys(_))

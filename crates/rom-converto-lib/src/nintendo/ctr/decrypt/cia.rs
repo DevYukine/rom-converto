@@ -1144,12 +1144,15 @@ async fn copy_twl_content(
     Ok(())
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use binrw::BinWrite;
+    #[cfg(feature = "embedded-keys")]
     use tokio::io::AsyncReadExt;
+    #[cfg(feature = "embedded-keys")]
     fn make_sectioned_ncch(title_id: u64) -> (Vec<u8>, Vec<u8>) {
         use crate::nintendo::ctr::constants::{NCCH_FLAGS_OFFSET, NCCH_FLAGS7_NOCRYPTO};
         use crate::nintendo::ctr::test_fixtures::make_ncch_header_bytes;
@@ -1211,6 +1214,7 @@ mod tests {
             .to_vec()
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn synthetic_title_key(title_id: u64) -> [u8; 16] {
         use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
 
@@ -1274,6 +1278,7 @@ mod tests {
         assert_eq!(tokio::fs::read(out_path).await.unwrap(), plaintext);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_exefs_section_streams_multiple_chunks() {
         let key = [0x24; 16];
@@ -1536,6 +1541,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_ncch_romfs_without_titlekey_cbc_preserves_ivfc_magic() {
         use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
@@ -1560,6 +1566,7 @@ mod tests {
         assert_eq!(decrypted, expected);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_titlekey_encrypted_multi_content_sections_round_trip() {
         use crate::nintendo::ctr::test_fixtures::synth_cia_with_content;
@@ -1639,6 +1646,7 @@ mod tests {
 
     /// The pooled RomFS path must invert one continuous AES-CTR stream,
     /// regardless of how the section is split across worker chunks.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_romfs_section_matches_continuous_stream() {
         let key_y: u128 = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
@@ -1716,6 +1724,7 @@ mod tests {
     }
 
     /// The outer CBC layer must decrypt continuously across RomFS read chunks.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn write_romfs_section_streams_titlekey_cbc_across_chunks() {
         let key_y: u128 = 0x0123_4567_89AB_CDEF_0011_2233_4455_6677;
@@ -1793,6 +1802,7 @@ mod tests {
     /// the outer titlekey CBC layer: the content is a modcrypt SRL, not an NCCH,
     /// so the NCCH probe/gate and parse must be skipped. Drives the full assembly
     /// so the output is a real CIA with the TMD encrypted bit cleared.
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn decrypt_twl_dsiware_cia_strips_titlekey_layer() {
         use crate::nintendo::ctr::cia::decrypt_from_encrypted_cia;
@@ -1876,6 +1886,7 @@ mod tests {
         assert_eq!(extra_crypto_index(255), 0);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_deterministic() {
         let key_x: u128 = 0x1234_5678_9ABC_DEF0_1234_5678_9ABC_DEF0;
@@ -1885,6 +1896,7 @@ mod tests {
         assert_eq!(result1, result2);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_zero_inputs() {
         // ROL(ROL(0, 2) ^ 0 + C, 87) = ROL(C, 87)
@@ -1893,6 +1905,7 @@ mod tests {
         assert_eq!(result, expected);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn scramblekey_different_inputs_different_outputs() {
         let r1 = scramblekey(1, 0).unwrap();
@@ -1937,6 +1950,7 @@ mod tests {
         assert_eq!(out.metadata().await.unwrap().len(), 0);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn derive_ctr_key_returns_16_bytes() {
         let key = derive_ctr_key(12345, 67890).unwrap();

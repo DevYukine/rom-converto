@@ -220,17 +220,20 @@ fn block_at(buf: &[u8], offset: usize) -> [u8; 16] {
     buf[offset..offset + 16].try_into().expect("16-byte slice")
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::sony::psp::amctrl::test_fixtures::{cipher_from_iv, version_key_for};
     use crate::sony::psp::pbp::test_fixtures::build_pbp;
     use crate::util::NoProgress;
 
+    #[cfg(feature = "embedded-keys")]
     const FIXTURE_IV: [u8; 16] = [
         0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78, 0x87, 0x96, 0xa5, 0xb4, 0xc3, 0xd2, 0xe1,
         0xf0,
     ];
+    #[cfg(feature = "embedded-keys")]
     const KEY_MODIFIER_BYTES: [u8; 16] = [
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
         0x00,
@@ -238,6 +241,7 @@ mod tests {
 
     /// Builds an `NPUMDIMG` PSAR of `sectors.len()` uncompressed one-sector
     /// blocks, encrypted with the same BBCipher the reader derives.
+    #[cfg(feature = "embedded-keys")]
     fn build_npumdimg(sectors: &[Vec<u8>], plain_flags: bool) -> Vec<u8> {
         let iso_block = 1u32;
         let block_bytes = ISO_SECTOR_SIZE;
@@ -286,6 +290,7 @@ mod tests {
         psar
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn sector(fill: u8) -> Vec<u8> {
         (0..ISO_SECTOR_SIZE)
             .map(|i| fill ^ (i as u8).rotate_left(3))
@@ -304,6 +309,7 @@ mod tests {
     }
 
     /// Wraps `eboot` as the sole `EBOOT.PBP` item of a synthetic PSP package.
+    #[cfg(feature = "embedded-keys")]
     fn build_psp_pkg(content_type: u32, eboot: Vec<u8>) -> Vec<u8> {
         crate::sony::vita::pkg::test_fixtures::build_pkg(
             2,
@@ -318,6 +324,7 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn writes_the_decrypted_iso() {
         let sectors = vec![sector(0x01), sector(0x02), sector(0x03)];
@@ -330,6 +337,7 @@ mod tests {
         assert_eq!(iso, sectors.concat());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn honours_the_plain_block_flag() {
         let sectors = vec![sector(0xAB), sector(0xCD)];
@@ -370,6 +378,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_a_corrupt_header() {
         let mut psar = build_npumdimg(&[sector(0x10)], false);
@@ -388,6 +397,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn converts_an_eboot_read_straight_out_of_a_pkg() {
         let sectors = vec![sector(0x11), sector(0x22), sector(0x33)];
@@ -409,6 +419,7 @@ mod tests {
         assert_eq!(iso, std::fs::read(&pbp_output).expect("read iso"));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_a_pkg_without_an_eboot() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -436,6 +447,7 @@ mod tests {
         assert!(err.to_string().contains("EBOOT.PBP"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_a_ps1_classic_pkg() {
         let eboot = eboot_bytes(&build_npumdimg(&[sector(0x44)], false));
@@ -473,6 +485,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_a_block_table_past_the_end_of_the_psar() {
         let mut psar = build_npumdimg(&[sector(0x20)], false);
@@ -489,6 +502,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn a_failed_run_leaves_a_pre_existing_output_intact() {
         // Truncating after the block table makes every block read run past
@@ -505,6 +519,7 @@ mod tests {
         assert!(!crate::util::scratch_output_exists(&output).expect("scratch check"));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn a_cancelled_token_writes_nothing() {
         let sectors = vec![sector(0x10), sector(0x20)];

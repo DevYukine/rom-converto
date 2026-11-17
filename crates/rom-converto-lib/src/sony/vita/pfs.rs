@@ -164,10 +164,12 @@ fn pflist_entry<'a>(pflist: &'a str, path: &str) -> Result<(&'a str, u32)> {
 #[cfg(test)]
 pub(crate) mod test_fixtures {
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use aes::cipher::BlockModeEncrypt;
 
     /// Encrypts `data` the way a packaging tool would, so tests can build a
     /// package [`decrypt_file`] has to undo.
+    #[cfg(feature = "embedded-keys")]
     pub fn encrypt_file(klicensee: &[u8; 16], seed: &[u8], sector_size: usize, data: &mut [u8]) {
         let keys = SectorKeys::derive(klicensee, seed).unwrap();
         for (index, sector) in data.chunks_mut(sector_size).enumerate() {
@@ -218,7 +220,9 @@ pub(crate) mod test_fixtures {
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixtures::{build_unicv, encrypt_file};
+    use super::test_fixtures::build_unicv;
+    #[cfg(feature = "embedded-keys")]
+    use super::test_fixtures::encrypt_file;
     use super::*;
     use hex_literal::hex;
 
@@ -237,9 +241,9 @@ mod tests {
         .join("\n")
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// The tail of a sector goes through ciphertext stealing, so a length
     /// that is neither block nor sector aligned exercises both paths.
-    #[cfg(feature = "embedded-keys")]
     #[test]
     fn round_trips_a_multi_sector_file() {
         let unicv = build_unicv(SECTOR as u32, &[(3, SEED)]);

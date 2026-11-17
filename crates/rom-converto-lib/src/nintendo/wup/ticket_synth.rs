@@ -82,7 +82,7 @@ pub fn synthesize_wup_ticket(
 
 // Test helper: round-trip a synthesized ticket through the real
 // parser and recover the plaintext title key.
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 pub(crate) fn decrypt_synth_title_key(
     synth_ticket: &[u8],
 ) -> crate::nintendo::wup::error::WupResult<[u8; 16]> {

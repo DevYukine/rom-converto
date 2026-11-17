@@ -104,6 +104,7 @@ mod tests {
     use super::test_fixtures::make_wia;
     use super::*;
     use crate::nintendo::dol::test_fixtures::make_fake_gamecube_iso;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::rvl::test_fixtures::{
         make_fake_wii_iso_with_partial_partition, make_fake_wii_iso_with_partition,
     };
@@ -286,6 +287,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     async fn assert_writer_round_trip(iso: &[u8], compression: WiaCompression, level: u32) {
         use crate::nintendo::disc::rvz::format::{WiaDisc, WiaFileHead};
         use crate::util::NoProgress;

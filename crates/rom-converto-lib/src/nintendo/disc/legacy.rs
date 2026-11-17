@@ -870,6 +870,7 @@ mod tests {
         assert!(err.to_string().contains("not a GCZ"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn write_wia_fixture(dir: &Path) -> std::path::PathBuf {
         use crate::nintendo::disc::wia::test_fixtures::make_wia;
         use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;

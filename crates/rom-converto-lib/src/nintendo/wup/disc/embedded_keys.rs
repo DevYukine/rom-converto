@@ -61,16 +61,18 @@ pub fn embedded_keys() -> &'static [[u8; 16]] {
     &ALL_KEYS
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn table_parses_to_full_length() {
         assert_eq!(KEYS_BY_NAME.len(), 501);
         assert_eq!(ALL_KEYS.len(), 501);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn known_name_resolves() {
         assert_eq!(

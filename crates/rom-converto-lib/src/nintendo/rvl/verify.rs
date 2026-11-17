@@ -14,6 +14,7 @@
 //! everything else is scrubbing fallout.
 
 use crate::nintendo::disc::input::open_disc_input;
+use crate::nintendo::disc::rvz::error::RvzError;
 use crate::nintendo::disc::rvz::verify::RvzStructuralVerify;
 use crate::nintendo::rvl::constants::{
     WII_BLOCKS_PER_GROUP, WII_GROUP_TOTAL_SIZE, WII_SECTOR_SIZE, WII_SECTOR_SIZE_U64,
@@ -87,6 +88,11 @@ fn partition_kind_name(t: u32) -> &'static str {
 /// Verify the Wii disc image at `path`: game id and, for `.rvz` input,
 /// its structure, plus the per-partition hash trees when `options.full`
 /// is set.
+///
+/// # Errors
+/// Fails when the input cannot be read, the run is cancelled, or a full
+/// verify needs the Wii common key and the build embeds no keys
+/// ([`NoEmbeddedKeys`](crate::util::embedded_keys::NoEmbeddedKeys)).
 pub fn verify_rvl(
     path: &Path,
     options: &RvlVerifyOptions,
@@ -144,7 +150,11 @@ pub fn verify_rvl(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            let info = read_partition_info(&mut reader, e.offset, e.group, e.partition_type).ok();
+            let info = match read_partition_info(&mut reader, e.offset, e.group, e.partition_type) {
+                Ok(i) => Some(i),
+                Err(RvzError::NoEmbeddedKeys(err)) => return Err(err.into()),
+                Err(_) => None,
+            };
             infos.push((e.offset, e.partition_type, info));
         }
         let total_clusters: u64 = infos
@@ -318,19 +328,26 @@ fn read_game_id<R: Read + Seek>(reader: &mut R) -> Result<String> {
     Ok(id[..end].iter().map(|&b| b as char).collect())
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::disc::rvz::{RvzCompressOptions, compress_disc};
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso_with_partition;
-    use crate::util::{NoProgress, ProgressReporter};
+    use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
+    use crate::util::ProgressReporter;
+    #[cfg(feature = "embedded-keys")]
     use std::sync::Mutex;
 
     #[derive(Default)]
+    #[cfg(feature = "embedded-keys")]
     struct PhaseRecorder {
         phases: Mutex<Vec<String>>,
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl ProgressReporter for PhaseRecorder {
         fn start(&self, _: u64, _: &str) {}
         fn inc(&self, _: u64) {}
@@ -340,6 +357,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn full_verify_labels_per_partition_phases() {
         let dir = tempfile::tempdir().unwrap();
@@ -364,6 +382,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn full_verify_on_raw_iso_finds_consistent_hash_tree() {
         let dir = tempfile::tempdir().unwrap();
@@ -393,6 +412,7 @@ mod tests {
         assert!(res.ok);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn fast_verify_on_rvz_checks_structural_hashes() {
         let dir = tempfile::tempdir().unwrap();
@@ -445,6 +465,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// A container whose stored disc hash fails must produce the failed
     /// per-hash report instead of erroring the whole verify: opening it
     /// as a disc fails the same hash.
@@ -534,6 +555,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn full_verify_on_rvz_walks_partition_hash_tree() {
         let dir = tempfile::tempdir().unwrap();
@@ -562,5 +584,48 @@ mod tests {
             assert_eq!(p.mismatched_clusters, 0, "note={:?}", p.note);
         }
         assert!(res.ok);
+    }
+
+    /// A Wii image with one partition whose header is blank: enough for
+    /// `read_partition_info` to reach the common key lookup.
+    #[cfg(not(feature = "embedded-keys"))]
+    fn wii_iso_with_blank_partition() -> Vec<u8> {
+        use crate::nintendo::rvl::constants::{
+            WII_PARTITION_HEADER_SIZE, WII_PARTITION_INFO_OFFSET,
+        };
+        use crate::nintendo::rvl::test_fixtures::make_fake_wii_iso;
+
+        const PARTITION_OFFSET: usize = 0x50000;
+        let mut data = make_fake_wii_iso(PARTITION_OFFSET + WII_PARTITION_HEADER_SIZE);
+        let info = WII_PARTITION_INFO_OFFSET as usize;
+        let table = info + 0x100;
+        data[info..info + 4].copy_from_slice(&1u32.to_be_bytes());
+        data[info + 4..info + 8].copy_from_slice(&((table as u32) >> 2).to_be_bytes());
+        data[table..table + 4].copy_from_slice(&((PARTITION_OFFSET as u32) >> 2).to_be_bytes());
+        data[table + 4..table + 8].copy_from_slice(&0u32.to_be_bytes());
+        data[PARTITION_OFFSET..PARTITION_OFFSET + WII_PARTITION_HEADER_SIZE].fill(0);
+        data
+    }
+
+    #[cfg(not(feature = "embedded-keys"))]
+    #[test]
+    fn full_verify_fails_with_no_embedded_keys() {
+        use crate::util::embedded_keys::NoEmbeddedKeys;
+
+        let dir = tempfile::tempdir().unwrap();
+        let iso = dir.path().join("wii.iso");
+        std::fs::write(&iso, wii_iso_with_blank_partition()).unwrap();
+
+        let err = verify_rvl(
+            &iso,
+            &RvlVerifyOptions { full: true },
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.downcast_ref::<NoEmbeddedKeys>().is_some(),
+            "error was {err:#}"
+        );
     }
 }

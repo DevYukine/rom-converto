@@ -51,7 +51,7 @@ pub fn decrypt_title_key(encrypted_title_key: &[u8; 16], title_id: u64) -> WupRe
     Ok(buf)
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use aes::cipher::BlockModeEncrypt;
@@ -92,6 +92,7 @@ mod tests {
         assert!(matches!(err, Err(WupError::AesError(_))));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn title_key_decrypts_matching_encryption() {
         // Encrypt a known title key the same way the reference ticket
@@ -112,6 +113,7 @@ mod tests {
         assert_eq!(recovered, plain_title_key);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn title_key_iv_differs_per_title_id() {
         // Same encrypted bytes should decrypt to different plain

@@ -55,21 +55,36 @@ automation does.
 
 ### Builds without embedded keys
 
-The `embedded-keys` feature, on by default, compiles in the console keys and the
-Wii U and PS3 disc-key databases. Distributors who cannot ship key material can
-build without it:
+The `embedded-keys` feature, on by default, compiles in the console keys, the
+Wii U and PS3 disc-key databases, and the PS1 multi-disc table. Distributors who
+cannot ship key material can build without it:
 
 ```sh
 cargo build --release -p rom-converto-cli --no-default-features
 ```
 
-The FFI and the desktop app forward the same feature. In such a build every
-operation that needs an embedded key fails with "this build has no embedded
-console keys", and `info` leaves out the fields that sit behind encryption.
-Operations on unencrypted data work as usual. Keys the user supplies still work
-where no embedded key is needed alongside them: Switch `prod.keys` and PS3 `.dkey`
-files. Wii U titles also need the embedded common key, so a Wii U `--key` alone is
-not enough.
+The FFI and the desktop app forward the same feature. `rom-converto capabilities`
+reports `"embedded_keys": false` for such a build. Operations that need an
+embedded key fail with "this build has no embedded console keys". Keys the user
+supplies still work where no embedded key is needed alongside them: Switch
+`prod.keys` and PS3 `.dkey` files. Wii U titles also need the embedded common key,
+so a Wii U `--key` alone is not enough.
+
+| Area | Without embedded keys |
+|---|---|
+| 3DS | `decrypt`, `encrypt`, and `generate-cdn-ticket` fail, and so does `cdn-to-cia` with `--decrypt` or `--compress`, or with `--ensure-ticket-exists` when no ticket is on disk. `convert` works for decrypted content and fails for encrypted content. `info` fails for a CIA with encrypted content and leaves out the SMDH title and icon of an encrypted NCCH. `verify --full` fails for a CIA with encrypted content. `cdn-to-cia` cannot check whether a ticket Nintendo did not sign is a forged one with a wrong key, so it warns and packs it as is |
+| Wii | Every operation that reads an NKit Wii image fails: `info`, `verify`, conversion, migration, decompression, and hashing. For other images, compress and migrate to RVZ, conversion to WIA or RVZ, and `verify --full` fail, and `info` leaves out the TMD and banner. ISO to WBFS keeps every cluster instead of scrubbing. RVZ and WIA decompression, GCZ, and WBFS to ISO work |
+| Wii U | NUS and disc input fail for compress, decrypt, info, and verify. Loadiine input compresses. A disc without a key file reports the missing disc key first |
+| DS | Secure-area encrypt and decrypt fail |
+| Xbox 360 | `info` and GoD conversion leave out the title and icon of a retail-encrypted XEX. Unencrypted and devkit XEX keep them as in the default build |
+| PSP, Vita, PSN | `psp to-iso` and `vita extract` fail. `info` leaves out PKG items and Vita artwork |
+| PS3 | Decrypt needs a `.dkey` or `--key`, since the built-in database is empty. Without one, `info` cannot tell whether the disc is encrypted |
+| PS1 | A multi-disc set becomes one EBOOT per disc, sharing one memory card, without **Switch Discs** |
+| DAT, hash, organize | Hashing NKit Wii images fails. `organize` loses the naming tokens `info` cannot read, and its conversions that need a key fail |
+
+Everything else works as in the default build. `self-update` and the desktop
+app's updater install the official release, which has embedded keys, so update a
+keyless build by building it again.
 
 ## Checks
 
@@ -158,9 +173,10 @@ emulator uses it as the key to the disc-switch menu text it carries in every sys
 without a valid table the game freezes at boot, and with it the HOME menu offers **Switch
 Discs**. The table is the same for every game and PSP model, but it is derived from Sony's
 firmware (Sony's scrambled strings combined with Sony's text), and no working table can be
-made from facts about the format alone.
+made from facts about the format alone. Builds without the `embedded-keys` feature leave it out
+and write one EBOOT per disc.
 
-It is the `POPS_MULTIDISC_TABLE` const in `crates/rom-converto-lib/src/sony/psx/pbp/format.rs`,
+It is the `POPS_MULTIDISC_TABLE` static in `crates/rom-converto-lib/src/sony/psx/pbp/format.rs`,
 read from a reference two-disc EBOOT whose 128-byte slot has the SHA-256 the
 [POPS reference](https://github.com/chiva/skiff/blob/main/docs/development/pops.md#how-pops-uses-it)
 publishes, `70c0b99a16396068390533fa061a52493396596dca414a89a45cef8f63fb56b7`; the table is that

@@ -248,6 +248,7 @@ mod tests {
     }
 
     use crate::nintendo::wup::disc::partition_table::DECRYPTED_AREA_SIGNATURE;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::wup::disc::sector_stream::SECTOR_SIZE;
     use aes::Aes128;
     use aes::cipher::{BlockModeEncrypt, KeyIvInit};
@@ -270,10 +271,12 @@ mod tests {
     }
 
     /// Minimal disc whose sector 3 first block is a fixed ciphertext.
+    #[cfg(feature = "embedded-keys")]
     struct MockDisc {
         first_block: [u8; 16],
     }
 
+    #[cfg(feature = "embedded-keys")]
     impl DiscSectorSource for MockDisc {
         fn total_sectors(&self) -> u64 {
             4

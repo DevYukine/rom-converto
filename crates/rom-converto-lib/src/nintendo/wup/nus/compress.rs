@@ -166,34 +166,46 @@ pub(crate) fn compress_prepared_nus_title_with_cancel<W: Write>(
     Ok((title_id, title_version))
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::wup::common_keys::WII_U_COMMON_KEY;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::wup::models::ticket::{WUP_TICKET_BASE_SIZE, WUP_TICKET_FORMAT_V1};
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::wup::models::tmd::{
         TmdContentEntry, TmdContentFlags, WUP_TMD_CONTENT_ENTRY_SIZE, WUP_TMD_HEADER_SIZE,
     };
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::wup::nus::fst_parser::{
         FST_CLUSTER_ENTRY_SIZE, FST_FILE_ENTRY_SIZE, FST_HEADER_SIZE, FST_MAGIC,
     };
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use aes::{
         Aes128,
         cipher::{BlockModeEncrypt, KeyIvInit},
     };
+    #[cfg(feature = "embedded-keys")]
     use block_padding::NoPadding;
+    #[cfg(feature = "embedded-keys")]
     use cbc::Encryptor;
 
+    #[cfg(feature = "embedded-keys")]
     type Aes128CbcEnc = Encryptor<Aes128>;
 
+    #[cfg(feature = "embedded-keys")]
     const TEST_TITLE_ID: u64 = 0x0005_000E_1234_5678;
+    #[cfg(feature = "embedded-keys")]
     const TEST_TITLE_VERSION: u16 = 32;
+    #[cfg(feature = "embedded-keys")]
     const TEST_PLAIN_TITLE_KEY: [u8; 16] = [
         0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
         0x99,
     ];
 
+    #[cfg(feature = "embedded-keys")]
     fn encrypt_in_place(key: &[u8; 16], iv: &[u8; 16], data: &mut [u8]) {
         Aes128CbcEnc::new_from_slices(key, iv)
             .unwrap()
@@ -211,6 +223,7 @@ mod tests {
     ///   the plaintext of that virtual file under AES-CBC.
     ///
     /// Returns the expected plaintext bytes of the virtual file.
+    #[cfg(feature = "embedded-keys")]
     fn make_synthetic_nus_title(dir: &Path) -> Vec<u8> {
         // Ticket
         let ticket = {
@@ -360,6 +373,7 @@ mod tests {
         plaintext
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn end_to_end_nus_title_ends_up_in_archive() {
         let dir = tempfile::tempdir().unwrap();
@@ -387,9 +401,11 @@ mod tests {
     /// Capture every `progress.inc` delta so a test can assert the
     /// scan's total matches what actually streams through.
     #[derive(Default)]
+    #[cfg(feature = "embedded-keys")]
     struct RecordingProgress {
         events: std::sync::Mutex<Vec<u64>>,
     }
+    #[cfg(feature = "embedded-keys")]
     impl crate::util::ProgressReporter for RecordingProgress {
         fn start(&self, _total: u64, _msg: &str) {}
         fn inc(&self, delta: u64) {
@@ -398,6 +414,7 @@ mod tests {
         fn finish(&self) {}
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn estimate_matches_actual_inc_sum() {
         let dir = tempfile::tempdir().unwrap();

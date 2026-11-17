@@ -989,7 +989,7 @@ fn content_type_label(content_type: u32, category: Option<&str>) -> Option<Strin
     Some(label.to_string())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "embedded-keys"))]
 pub(crate) mod test_fixtures {
     use super::*;
     use crate::util::sfo::test_fixtures::{Val, build_sfo};
@@ -1168,15 +1168,19 @@ pub(crate) mod test_fixtures {
     }
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
+    #[cfg(feature = "embedded-keys")]
     use super::test_fixtures::{
         Entry, build_pkg, build_pkg_with_category, build_pkg_without_meta_sfo,
     };
     use super::*;
+    #[cfg(feature = "embedded-keys")]
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use crate::util::sfo::test_fixtures::{Val, build_sfo};
 
+    #[cfg(feature = "embedded-keys")]
     fn entries_with(psp_type: u8) -> Vec<Entry> {
         vec![
             Entry {
@@ -1200,10 +1204,12 @@ mod tests {
         ]
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn entries() -> Vec<Entry> {
         entries_with(0x90)
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn reads_header_and_plaintext_metadata() {
         let dir = tempfile::tempdir().unwrap();
@@ -1225,6 +1231,7 @@ mod tests {
         assert!(info.icon.is_none());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn corrupted_magic_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1237,6 +1244,7 @@ mod tests {
         assert!(err.contains("bad magic"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn non_finalized_pkg_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -1249,6 +1257,7 @@ mod tests {
         assert!(err.contains("non-finalized"), "{err}");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn extracts_items_for_every_vita_key_type() {
         for key_type in [2u8, 3, 4] {
@@ -1272,6 +1281,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn invalid_utf8_item_name_fails_extract_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -1320,6 +1330,7 @@ mod tests {
         assert!(read_info(&path).is_ok());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn rejects_duplicate_item_paths_without_overwriting() {
         for (second, expected_name) in [
@@ -1363,6 +1374,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn repeated_directory_records_extract_without_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1398,6 +1410,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_key_type_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
@@ -1410,6 +1423,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn ps3_shaped_pkg_reports_ps3_platform_and_decrypts_with_the_ps3_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -1429,6 +1443,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_shaped_pkg_reports_psp_platform_and_game_kind() {
         let dir = tempfile::tempdir().unwrap();
@@ -1446,6 +1461,7 @@ mod tests {
         assert_eq!(info.content_kind, Some(ContentKind::Game));
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_shaped_pkg_without_category_falls_back_to_content_type() {
         let dir = tempfile::tempdir().unwrap();
@@ -1459,6 +1475,7 @@ mod tests {
     }
 
     /// A real, minimal PNG so `Image::from_png` parses it as a valid image.
+    #[cfg(feature = "embedded-keys")]
     fn png(width: u32, height: u32) -> Vec<u8> {
         let mut out = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         out.extend_from_slice(&13u32.to_be_bytes());
@@ -1469,6 +1486,7 @@ mod tests {
         out
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn icon_is_decoded_when_present() {
         let dir = tempfile::tempdir().unwrap();
@@ -1487,6 +1505,7 @@ mod tests {
         assert_eq!((icon.width, icon.height), (64, 48));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// PSP and PS3 packages carry no metadata-region SFO; the title comes
     /// from a top-level `PARAM.SFO` item, and the backdrop from `PIC1`/`PIC0`.
     #[test]
@@ -1533,6 +1552,7 @@ mod tests {
         assert_eq!((bg.width, bg.height), (310, 180));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// `PIC1` is the full-screen backdrop and wins over the smaller `PIC0`
     /// when a package ships both.
     #[test]
@@ -1569,6 +1589,7 @@ mod tests {
         assert_eq!((bg.width, bg.height), (480, 272));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// Vita artwork carries a second, PFS encryption layer that only comes
     /// off with the klicensee from the license sitting beside the package.
     #[test]
@@ -1633,6 +1654,7 @@ mod tests {
         assert_eq!((background.width, background.height), (960, 544));
     }
 
+    #[cfg(feature = "embedded-keys")]
     /// Without a license the package layer alone leaves the artwork
     /// unreadable, and that stays a `None` field rather than an error.
     #[test]
@@ -1669,6 +1691,7 @@ mod tests {
         assert!(info.background.is_none());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn psp_items_without_type_0x90_use_the_ps3_key() {
         let dir = tempfile::tempdir().unwrap();
@@ -1682,6 +1705,7 @@ mod tests {
         assert_eq!(std::fs::read(out.join("eboot.bin")).unwrap(), want[2].data);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn item_reader_matches_the_extracted_bytes_at_any_offset() {
         let dir = tempfile::tempdir().unwrap();
@@ -1714,6 +1738,7 @@ mod tests {
         assert!(reader.seek(SeekFrom::Current(-1)).is_err());
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn open_item_names_the_package_when_nothing_matches() {
         let dir = tempfile::tempdir().unwrap();
@@ -1754,6 +1779,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn truncated_pkg_errors_without_panic() {
         let full = build_pkg(2, 3, 0x15, &entries());

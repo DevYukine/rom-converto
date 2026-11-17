@@ -212,6 +212,7 @@ mod tests {
 
     /// ExeFS with `.code` first (so the icon entry has a nonzero
     /// offset) and `icon` second, as on real titles.
+    #[cfg(feature = "embedded-keys")]
     fn synth_code_then_icon_exefs(code: &[u8], icon: &[u8]) -> Vec<u8> {
         let icon_offset = EXEFS_HEADER_SIZE + code.len();
         let mut exefs = vec![0u8; icon_offset + icon.len()];

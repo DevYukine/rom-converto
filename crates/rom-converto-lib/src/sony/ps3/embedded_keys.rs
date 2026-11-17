@@ -41,10 +41,11 @@ pub fn embedded_key(title_id: &str) -> Option<Ps3Key> {
     KEYS.get(title_id).copied().map(Ps3Key)
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn known_title_id_resolves() {
         // 3D Dot Game Heroes (USA), redump serial BLUS-30490.
@@ -56,6 +57,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn multi_region_serial_shares_one_key() {
         // Rainbow Six Vegas 2 ships under four serials, one disc key.
@@ -69,6 +71,7 @@ mod tests {
         assert_eq!(embedded_key("ZZZZ00000"), None);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn table_parses_and_is_nonempty() {
         assert!(KEYS.len() > 4000);

@@ -12,7 +12,8 @@ use crate::util::embedded_keys::{EmbeddedKey, embedded_key};
 
 /// The 360 is end of life and this key is public, so metadata reads work
 /// without the user supplying anything. Only compiled in with the
-/// `embedded-keys` feature.
+/// `embedded-keys` feature; without it, unencrypted and devkit files still
+/// read and retail-encrypted ones yield no title or icon.
 pub(super) const RETAIL_KEY: EmbeddedKey<[u8; 16]> = embedded_key!([
     0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91,
 ]);
@@ -57,7 +58,8 @@ pub(crate) struct ResourceSource {
     base: u64,
     stored_len: u64,
     image_size: u32,
-    key: [u8; 16],
+    /// `None` in a keyless build, where only unencrypted sources can be read.
+    key: Option<[u8; 16]>,
     encrypted: bool,
 }
 
@@ -79,7 +81,9 @@ impl ResourceSource {
             base,
             stored_len,
             image_size: security.image_size,
-            key: session_key(&RETAIL_KEY.ok()?, &security.aes_key)?,
+            key: RETAIL_KEY
+                .ok()
+                .and_then(|k| session_key(&k, &security.aes_key)),
             encrypted,
         })
     }
@@ -283,7 +287,7 @@ fn read_stored_range<R: Read + Seek>(
         source.base,
         capped_len,
         offset,
-        &source.key,
+        source.key.as_ref()?,
         source.encrypted,
     )?;
     let mut out = vec![0u8; length];
@@ -371,8 +375,13 @@ impl NormalResourceReader {
             ENCRYPTION_NORMAL => true,
             _ => return None,
         };
-        let retail_key = session_key(&RETAIL_KEY.ok()?, &security.aes_key)?;
         let devkit_key = session_key(&DEVKIT_KEY, &security.aes_key)?;
+        // Without the retail key a devkit file still reads; a retail file
+        // fails its block hash and yields no resources.
+        let retail_key = match RETAIL_KEY {
+            Ok(k) => session_key(&k, &security.aes_key)?,
+            Err(_) => devkit_key,
+        };
         Self::new(
             window,
             *first_block_size,
@@ -795,10 +804,10 @@ pub(super) fn cbc_encrypt_zero_iv(key: &[u8; 16], buf: &mut [u8]) {
         .expect("buffer length is a multiple of the block size");
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::microsoft::xex::xdbf;
+    use crate::microsoft::xex::xdbf::{self, XdbfMeta};
 
     const SESSION_KEY: [u8; 16] = [0xA5; 16];
 
@@ -867,6 +876,7 @@ mod tests {
             .expect("read ending at 16*k succeeds");
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[test]
     fn session_key_is_one_cbc_block_under_the_base_key() {
         let mut encrypted = SESSION_KEY;
@@ -976,31 +986,9 @@ mod tests {
 
     #[test]
     fn normal_reader_advances_to_resources_beyond_two_frames() {
-        fn uncompressed_chunk(first: bool, value: u8) -> Vec<u8> {
-            let mut bits = Vec::new();
-            if first {
-                bits.push(0);
-            }
-            bits.extend([0, 1, 1]);
-            let size = 32_768u32;
-            bits.extend((0..24).rev().map(|bit| ((size >> bit) & 1) as u8));
-            let mut chunk = Vec::new();
-            for word in bits.chunks(16) {
-                let value = word
-                    .iter()
-                    .fold(0u16, |value, bit| (value << 1) | u16::from(*bit));
-                chunk.extend_from_slice(&value.to_le_bytes());
-            }
-            for _ in 0..3 {
-                chunk.extend_from_slice(&1u32.to_le_bytes());
-            }
-            chunk.resize(chunk.len() + size as usize, value);
-            chunk
-        }
-
         let mut block = vec![0u8; BLOCK_INFO_LEN];
         for index in 0..4 {
-            let chunk = uncompressed_chunk(index == 0, index as u8 + 1);
+            let chunk = uncompressed_chunk(index == 0, &[index as u8 + 1; 32_768]);
             block.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
             block.extend_from_slice(&chunk);
         }
@@ -1092,5 +1080,92 @@ mod tests {
         let icon = meta.icon.expect("icon survives the zero run");
         assert_eq!((icon.width, icon.height), (64, 64));
         assert_eq!(icon.png_bytes, png);
+    }
+
+    fn xdbf_meta(
+        stored: Vec<u8>,
+        fmt: &FileFormatInfo,
+        security: &SecurityInfo,
+        xdbf_len: u64,
+    ) -> XdbfMeta {
+        let source = ResourceSource::new(0, stored.len() as u64, fmt, security)
+            .expect("a key-free basefile needs no embedded key");
+        let mut reader = std::io::Cursor::new(stored);
+        let mut resources = ResourceReader::new();
+        xdbf::parse_xdbf_ranges(xdbf_len, |offset, size| {
+            resources.read_resource_at(&mut reader, &source, fmt, security, offset, size)
+        })
+    }
+
+    #[test]
+    fn unencrypted_basefile_yields_title_and_icon() {
+        let png = xdbf::tests::build_png(64, 64);
+        let payload = xdbf::build_xdbf("Plain Title", &png);
+        let fmt = FileFormatInfo {
+            encryption_type: ENCRYPTION_NONE,
+            compression: Compression::None,
+        };
+        let security = security([0; 16], payload.len() as u32);
+
+        let xdbf_len = payload.len() as u64;
+        let meta = xdbf_meta(payload, &fmt, &security, xdbf_len);
+        assert_eq!(meta.title_name.as_deref(), Some("Plain Title"));
+        assert_eq!(meta.icon.expect("icon").png_bytes, png);
+    }
+
+    /// One LZX frame stored as an uncompressed block carrying `data`. Only the
+    /// stream's `first` frame carries the leading header bit.
+    fn uncompressed_chunk(first: bool, data: &[u8]) -> Vec<u8> {
+        let mut bits = Vec::new();
+        if first {
+            bits.push(0);
+        }
+        bits.extend([0, 1, 1]);
+        let size = data.len() as u32;
+        bits.extend((0..24).rev().map(|bit| ((size >> bit) & 1) as u8));
+        let mut chunk = Vec::new();
+        for word in bits.chunks(16) {
+            let value = word
+                .iter()
+                .fold(0u16, |value, bit| (value << 1) | u16::from(*bit));
+            chunk.extend_from_slice(&value.to_le_bytes());
+        }
+        for _ in 0..3 {
+            chunk.extend_from_slice(&1u32.to_le_bytes());
+        }
+        chunk.extend_from_slice(data);
+        chunk
+    }
+
+    #[test]
+    fn devkit_encrypted_basefile_yields_title_and_icon() {
+        let png = xdbf::tests::build_png(64, 64);
+        let mut frame = xdbf::build_xdbf("Devkit Title", &png);
+        let xdbf_len = frame.len() as u64;
+        frame.resize(LZX_CHUNK, 0);
+        let chunk = uncompressed_chunk(true, &frame);
+
+        let mut block = vec![0u8; BLOCK_INFO_LEN];
+        block.extend_from_slice(&(chunk.len() as u16).to_be_bytes());
+        block.extend_from_slice(&chunk);
+        block.extend_from_slice(&0u16.to_be_bytes());
+        block.resize(block.len().next_multiple_of(16), 0);
+        let fmt = FileFormatInfo {
+            encryption_type: ENCRYPTION_NORMAL,
+            compression: Compression::Normal {
+                window_size: 0x0000_8000,
+                first_block_size: block.len() as u32,
+                first_block_hash: Sha1::digest(&block).into(),
+            },
+        };
+
+        cbc_encrypt_zero_iv(&SESSION_KEY, &mut block);
+        let mut aes_key = SESSION_KEY;
+        cbc_encrypt_zero_iv(&DEVKIT_KEY, &mut aes_key);
+        let security = security(aes_key, LZX_CHUNK as u32);
+
+        let meta = xdbf_meta(block, &fmt, &security, xdbf_len);
+        assert_eq!(meta.title_name.as_deref(), Some("Devkit Title"));
+        assert_eq!(meta.icon.expect("icon").png_bytes, png);
     }
 }

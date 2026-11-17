@@ -29,13 +29,6 @@
 //! holds the shared conflict resolution, hashing, dry-run planning, and
 //! reporting machinery every format uses.
 
-// Without `embedded-keys` the tests that need console keys are compiled
-// out, which leaves the fixtures they share unused.
-#![cfg_attr(
-    all(test, not(feature = "embedded-keys")),
-    allow(dead_code, unused_imports)
-)]
-
 pub mod atari;
 pub mod bandai;
 pub mod config;

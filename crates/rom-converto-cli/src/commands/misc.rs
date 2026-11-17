@@ -19,6 +19,7 @@ pub async fn run(_cmd: CapabilitiesCommand) -> Result<()> {
         "schema": "rom-converto.capabilities.v1",
         "name": "rom-converto",
         "version": env!("ROM_CONVERTO_DISPLAY_VERSION"),
+        "embedded_keys": rom_converto_lib::util::embedded_keys::ENABLED,
         "info_extensions": rom_converto_lib::info::SUPPORTED_INFO_EXTENSIONS,
         "runner": rom_converto_lib::runner::schema_json(),
     });

@@ -754,15 +754,18 @@ impl CiaLayout {
     }
 }
 
-#[cfg(all(test, feature = "embedded-keys"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::nintendo::ctr::constants::CIA_CONTENT_INDEX_SIZE;
+    #[cfg(feature = "embedded-keys")]
     use crate::nintendo::ctr::decrypt::cia::parse_and_decrypt_ncch;
-    use crate::nintendo::ctr::test_fixtures::{
-        SYNTH_CIA_TITLE_ID, make_cert, make_ncch_header_bytes, make_ticket, make_tmd,
-    };
+    use crate::nintendo::ctr::test_fixtures::{SYNTH_CIA_TITLE_ID, make_tmd};
+    #[cfg(feature = "embedded-keys")]
+    use crate::nintendo::ctr::test_fixtures::{make_cert, make_ncch_header_bytes, make_ticket};
+    #[cfg(feature = "embedded-keys")]
     use crate::util::NoProgress;
+    #[cfg(feature = "embedded-keys")]
     use binrw::{BinWrite, Endian};
 
     #[test]
@@ -790,6 +793,7 @@ mod tests {
         assert_eq!(error.to_string(), "TMD content info range out of bounds");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn make_plain_ncch_with_romfs() -> Vec<u8> {
         let romfs_offset_mu = 2u32;
         let romfs_size_mu = 1u32;
@@ -809,6 +813,7 @@ mod tests {
         data
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn ncch_encrypt_decrypt_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -838,6 +843,7 @@ mod tests {
     /// The staged copy is normalized, so a read-only input encrypts instead
     /// of failing its rewrite open, and an executable, world-writable input
     /// (common on FAT and SMB mounts) does not pass those bits on.
+    #[cfg(feature = "embedded-keys")]
     #[cfg(unix)]
     #[tokio::test]
     async fn encrypt_ncch_normalizes_the_input_mode() {
@@ -871,6 +877,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_encrypt_decrypt_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -966,6 +973,7 @@ mod tests {
         assert_bytes_eq(&decrypted_bytes, &buf);
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_twl_encrypt_round_trip() {
         use crate::nintendo::ctr::constants::CTR_COMMON_KEYS_HEX;
@@ -1092,6 +1100,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "embedded-keys")]
     #[tokio::test]
     async fn cia_encrypt_decrypt_preserves_nonzero_index_romfs() {
         use crate::nintendo::ctr::decrypt::util::cbc_decrypt;
@@ -1184,6 +1193,7 @@ mod tests {
         assert_eq!(&romfs[..4], b"IVFC");
     }
 
+    #[cfg(feature = "embedded-keys")]
     fn assert_bytes_eq(left: &[u8], right: &[u8]) {
         if left == right {
             return;
