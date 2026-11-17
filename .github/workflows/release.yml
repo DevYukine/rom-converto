@@ -28,13 +28,38 @@ jobs:
           version-file: "./Cargo.toml"
           version-path: "workspace.package.version"
           pre-commit: ".github/scripts/pre-commit.js"
+      - name: Write release notes
+        if: ${{ steps.changelog.outputs.skipped == 'false' }}
+        env:
+          TAG: ${{ steps.changelog.outputs.tag }}
+          CHANGELOG: ${{ steps.changelog.outputs.clean_changelog }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          # The GUI updater shows only what follows the changelog marker.
+          sed "s|{base}|${base}|g" > notes.md <<'EOF'
+          ## Download
+
+          | | Desktop app | Command line |
+          |---|---|---|
+          | Windows | [Installer]({base}/rom-converto-gui-windows-x64-setup.exe) · [Portable]({base}/rom-converto-gui-windows-x64.exe) | [x64]({base}/rom-converto-cli-windows-x64.exe) |
+          | macOS | [Apple Silicon]({base}/rom-converto-gui-macos-arm64.dmg) · [Intel]({base}/rom-converto-gui-macos-x64.dmg) | [Apple Silicon]({base}/rom-converto-cli-macos-arm64) · [Intel]({base}/rom-converto-cli-macos-x64) |
+          | Linux | AppImage [x64]({base}/rom-converto-gui-linux-x64.AppImage) · [arm64]({base}/rom-converto-gui-linux-arm64.AppImage)<br>deb [x64]({base}/rom-converto-gui-linux-x64.deb) · [arm64]({base}/rom-converto-gui-linux-arm64.deb) | [x64]({base}/rom-converto-cli-linux-x64) · [arm64]({base}/rom-converto-cli-linux-arm64) · [ARMv7]({base}/rom-converto-cli-linux-arm7)<br>musl [x64]({base}/rom-converto-cli-linux-x64-musl) · [arm64]({base}/rom-converto-cli-linux-arm64-musl) |
+          | FreeBSD | | [x64]({base}/rom-converto-cli-freebsd-x64) |
+
+          After this first download, the desktop app updates itself and the CLI updates with `rom-converto self-update`. `SHA256SUMS` lists the checksum of every file. The FFI library (`rom-converto-ffi-*`) and the Linux CLI builds without embedded keys (`rom-converto-cli-keyless-*`) are in the assets below.
+
+          <!-- changelog -->
+          EOF
+          printf '%s\n' "$CHANGELOG" >> notes.md
+
       - name: Create Release
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1.21.0
         with:
           tag: ${{ steps.changelog.outputs.tag }}
           name: ${{ steps.changelog.outputs.tag }}
-          body: ${{ steps.changelog.outputs.clean_changelog }}
+          bodyFile: notes.md
 
   build-cli:
     needs: changelog
