@@ -131,7 +131,7 @@ pub(crate) async fn psx_to_pbp(
 ) -> Result<RunResponse> {
     use crate::sony::psx::pbp::{
         BlockEncoding, ExistingEboot, PbpOptions, PsxPbpError, derive_output_dir,
-        find_existing_eboot, required_bytes,
+        find_existing_eboot, is_file_output, required_bytes,
     };
     use crate::util::{PlanDecision, PlanLine};
 
@@ -143,7 +143,7 @@ pub(crate) async fn psx_to_pbp(
         .clone()
         .or_else(|| req.options.output_dir.clone())
         .unwrap_or_else(|| derive_output_dir(&input));
-    // The output folder holds one folder per game and may hold other games
+    // An output folder holds one folder per game and may hold other games
     // (PSP/GAME), so the conflict policy applies to this game's EBOOTs, not
     // to the folder being non-empty.
     let existing = match conflict_policy(&req)? {
@@ -152,14 +152,14 @@ pub(crate) async fn psx_to_pbp(
         ConflictPolicy::Error => ExistingEboot::Refuse,
         ConflictPolicy::Rename => {
             return Err(invalid_arg(format!(
-                "rename is not supported for directory outputs, use overwrite/skip/error: {}",
+                "rename is not supported for an EBOOT, use overwrite/skip/error: {}",
                 desired.display()
             )));
         }
     };
-    if desired.is_file() {
+    if desired.is_file() && !is_file_output(&desired) {
         return Err(invalid_arg(format!(
-            "output path is a file, expected a folder: {}",
+            "output path is a file, expected a folder or a .pbp file: {}",
             desired.display()
         )));
     }
@@ -474,6 +474,54 @@ mod tests {
             "{res:?}"
         );
         assert!(res.message.contains("EBOOT.PBP"), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn psx_to_pbp_writes_the_pbp_file_it_is_given() {
+        use crate::sony::psx::pbp::test_fixtures::{ps1_data_track, write_disc};
+
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let run = |output: std::path::PathBuf, policy: &str| {
+            let req = json!({
+                "operation": "psx.to_pbp",
+                "input": cue,
+                "output": output,
+                "options": { "on_conflict": policy },
+            });
+            async move { run_json(&req.to_string(), CancelToken::new()).await }
+        };
+        let file = dir.path().join("game.pbp");
+
+        let res = run(file.clone(), "error").await;
+        assert!(res.ok, "{res:?}");
+        assert!(file.is_file());
+        assert!(!dir.path().join("SLUS99999").exists());
+        assert_eq!(
+            std::path::Path::new(&res.records[0].output_path),
+            file,
+            "{res:?}"
+        );
+
+        let res = run(file.clone(), "error").await;
+        assert!(!res.ok && res.message.contains("game.pbp"), "{res:?}");
+        let res = run(file.clone(), "skip").await;
+        assert!(
+            res.ok && res.message.starts_with("Skipped existing"),
+            "{res:?}"
+        );
+        let res = run(file.clone(), "overwrite").await;
+        assert!(res.ok, "{res:?}");
+
+        let other = dir.path().join("notes.txt");
+        std::fs::write(&other, b"not an EBOOT").unwrap();
+        let res = run(other.clone(), "overwrite").await;
+        assert!(!res.ok, "{res:?}");
+        assert!(
+            res.message.contains("expected a folder or a .pbp file"),
+            "{res:?}"
+        );
+        assert_eq!(std::fs::read(&other).unwrap(), b"not an EBOOT");
     }
 
     #[tokio::test]
