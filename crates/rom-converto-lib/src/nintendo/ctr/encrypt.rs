@@ -17,11 +17,12 @@ use crate::nintendo::ctr::constants::{
     EXEFS_MAX_FILE_ENTRIES, EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON,
     NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
     NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
-    NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
+    NCSD_PARTITION_TABLE_OFFSET,
 };
 use crate::nintendo::ctr::copy_to_private_scratch;
 use crate::nintendo::ctr::decrypt::cia::{
     Aes128Ctr, derive_ctr_key, extra_crypto_index, fixed_key, get_ncch_aes_counter, get_new_key,
+    read_ncsd_title_id,
 };
 use crate::nintendo::ctr::decrypt::model::NcchSection;
 use crate::nintendo::ctr::decrypt::util::{derive_title_key_from_ticket, gen_iv};
@@ -172,9 +173,7 @@ async fn encrypt_ncsd_partitions(
         anyhow::bail!("not a valid NCSD file: wrong magic");
     }
 
-    let mut title_id = [0u8; 8];
-    rom_file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
-    rom_file.read_exact(&mut title_id).await?;
+    let title_id = read_ncsd_title_id(&mut rom_file).await?;
 
     rom_file
         .seek(SeekFrom::Start(NCSD_PARTITION_TABLE_OFFSET as u64))
@@ -838,6 +837,187 @@ mod tests {
         out.flush().await.unwrap();
 
         assert_eq!(std::fs::read(&decrypted_path).unwrap(), plain);
+    }
+
+    /// Decrypt must keep the flags7 bits it does not own, and flags[3] for 7.x
+    /// crypto, or re-encrypt cannot restore the original NCCH bytes.
+    #[cfg(feature = "embedded-keys")]
+    #[tokio::test]
+    async fn ncch_round_trip_preserves_flags7_bits() {
+        const MANUAL_DISCLOSURE: u8 = 0x40;
+        const NO_MOUNT_ROMFS: u8 = 0x02;
+
+        for (flags3, bits) in [
+            (0, MANUAL_DISCLOSURE),
+            (0, MANUAL_DISCLOSURE | NO_MOUNT_ROMFS),
+            (1, MANUAL_DISCLOSURE),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut plain = make_plain_ncch_with_romfs();
+            plain[NCCH_FLAGS_OFFSET + 7] |= bits;
+            plain[NCCH_FLAGS_OFFSET + NCCH_FLAGS_EXTRA_CRYPTO_INDEX] = flags3;
+            let plain_path = dir.path().join("plain.cxi");
+            let encrypted_path = dir.path().join("encrypted.cxi");
+            let decrypted_path = dir.path().join("decrypted.cxi");
+            let reencrypted_path = dir.path().join("reencrypted.cxi");
+            std::fs::write(&plain_path, &plain).unwrap();
+
+            encrypt_rom(
+                &plain_path,
+                &encrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+            crate::nintendo::ctr::decrypt_rom(
+                &encrypted_path,
+                &decrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+            encrypt_rom(
+                &decrypted_path,
+                &reencrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+
+            let encrypted = std::fs::read(&encrypted_path).unwrap();
+            assert_eq!(
+                std::fs::read(&decrypted_path).unwrap(),
+                plain,
+                "decrypt must restore the plaintext, flags3 {flags3}, flags7 {bits:#04x}"
+            );
+            assert_eq!(
+                std::fs::read(&reencrypted_path).unwrap(),
+                encrypted,
+                "re-encrypt must restore the ciphertext, flags3 {flags3}, flags7 {bits:#04x}"
+            );
+            assert_eq!(
+                encrypted[NCCH_FLAGS_OFFSET + 7],
+                plain[NCCH_FLAGS_OFFSET + 7] & !NCCH_FLAGS7_NOCRYPTO,
+                "encrypt must only clear NoCrypto, flags3 {flags3}, flags7 {bits:#04x}"
+            );
+        }
+    }
+
+    /// Decrypt clears the fixed-key bit and keeps the other flags, so a decrypted
+    /// image never asks readers for a fixed key. The seed bit is covered by
+    /// `decrypted_flags7_clears_only_fixed_key_and_seed`.
+    #[cfg(feature = "embedded-keys")]
+    #[tokio::test]
+    async fn decrypt_clears_fixed_key_keeps_other_flags() {
+        const MANUAL_DISCLOSURE: u8 = 0x40;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut plain = make_plain_ncch_with_romfs();
+        plain[NCCH_FLAGS_OFFSET + 7] =
+            NCCH_FLAGS7_NOCRYPTO | NCCH_FLAGS7_FIXED_KEY | MANUAL_DISCLOSURE;
+        let plain_path = dir.path().join("plain.cxi");
+        let encrypted_path = dir.path().join("encrypted.cxi");
+        let decrypted_path = dir.path().join("decrypted.cxi");
+        std::fs::write(&plain_path, &plain).unwrap();
+        let mut expected = plain.clone();
+        expected[NCCH_FLAGS_OFFSET + 7] = NCCH_FLAGS7_NOCRYPTO | MANUAL_DISCLOSURE;
+
+        encrypt_rom(
+            &plain_path,
+            &encrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        crate::nintendo::ctr::decrypt_rom(
+            &encrypted_path,
+            &decrypted_path,
+            &NoProgress,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        let decrypted = std::fs::read(&decrypted_path).unwrap();
+        assert_eq!(
+            decrypted[NCCH_FLAGS_OFFSET + 7],
+            NCCH_FLAGS7_NOCRYPTO | MANUAL_DISCLOSURE,
+            "decrypt must clear the fixed-key bit and keep ManualDisclosure"
+        );
+        assert_bytes_eq(&decrypted, &expected);
+    }
+
+    /// NCSD partitions go through the same NCCH header rewrite, so ManualDisclosure
+    /// and NoMountRomFS must survive a .3ds round trip with real RomFS sections.
+    #[cfg(feature = "embedded-keys")]
+    #[tokio::test]
+    async fn ncsd_round_trip_preserves_manual_disclosure() {
+        use crate::nintendo::ctr::test_fixtures::make_fake_ncsd;
+
+        const MANUAL_DISCLOSURE: u8 = 0x40;
+        const NO_MOUNT_ROMFS: u8 = 0x02;
+
+        // Partition 0 sits at media unit 4 and its RomFS at media unit 2 of the NCCH.
+        let partition0 = 4 * CTR_MEDIA_UNIT_SIZE as usize;
+        let romfs = partition0 + 2 * CTR_MEDIA_UNIT_SIZE as usize
+            ..partition0 + 3 * CTR_MEDIA_UNIT_SIZE as usize;
+
+        for bits in [MANUAL_DISCLOSURE, MANUAL_DISCLOSURE | NO_MOUNT_ROMFS] {
+            let dir = tempfile::tempdir().unwrap();
+            let ncch = make_plain_ncch_with_romfs();
+            let mut plain = make_fake_ncsd(SYNTH_CIA_TITLE_ID)[..partition0].to_vec();
+            let image_mu = (partition0 + ncch.len()) as u32 / CTR_MEDIA_UNIT_SIZE;
+            let partition_mu = ncch.len() as u32 / CTR_MEDIA_UNIT_SIZE;
+            plain[0x104..0x108].copy_from_slice(&image_mu.to_le_bytes());
+            plain[0x108..0x110].copy_from_slice(&SYNTH_CIA_TITLE_ID.to_le_bytes());
+            plain[0x124..0x128].copy_from_slice(&partition_mu.to_le_bytes());
+            plain.extend_from_slice(&ncch);
+            plain[partition0 + NCCH_FLAGS_OFFSET + 7] |= bits;
+
+            let plain_path = dir.path().join("plain.3ds");
+            let encrypted_path = dir.path().join("encrypted.3ds");
+            let decrypted_path = dir.path().join("decrypted.3ds");
+            let reencrypted_path = dir.path().join("reencrypted.3ds");
+            std::fs::write(&plain_path, &plain).unwrap();
+
+            encrypt_rom(
+                &plain_path,
+                &encrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+            crate::nintendo::ctr::decrypt_rom(
+                &encrypted_path,
+                &decrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+            encrypt_rom(
+                &decrypted_path,
+                &reencrypted_path,
+                &NoProgress,
+                CancelToken::new(),
+            )
+            .await
+            .unwrap();
+
+            let encrypted = std::fs::read(&encrypted_path).unwrap();
+            assert_bytes_eq(&std::fs::read(&decrypted_path).unwrap(), &plain);
+            assert_bytes_eq(&std::fs::read(&reencrypted_path).unwrap(), &encrypted);
+            assert_ne!(
+                &encrypted[romfs.clone()],
+                &plain[romfs.clone()],
+                "RomFS must be ciphertext after encrypt, bits {bits:#04x}"
+            );
+        }
     }
 
     /// The staged copy is normalized, so a read-only input encrypts instead

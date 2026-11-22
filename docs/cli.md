@@ -362,9 +362,12 @@ with the format detected automatically; a `seeddb.bin` in the current working di
 resolves seeds locally, otherwise the seed is fetched from Nintendo's API. `encrypt` is the
 inverse of the tool's decrypted output and rewrites CIA TMD hashes/content flags as it wraps
 content with the ticket title key, so encrypted CIA bytes may differ from an original source
-even when decrypting back to the same plaintext. `compress` inspects the crypto flags and
-refuses an input that still looks encrypted, pointing you to `ctr decrypt`, unless you pass
-`--allow-encrypted`.
+even when decrypting back to the same plaintext. `decrypt` sets the NoCrypto flag and clears the
+fixed-key and seed flags, keeping every other NCCH flag such as ManualDisclosure. A `.3ds` or
+`.cci` decrypted by this version therefore encrypts back byte for byte unless it uses seed or
+fixed-key crypto. A `.cxi` does too, except for bytes past its last section, which decrypt drops.
+`compress` inspects the crypto flags and refuses an input that still looks encrypted, pointing
+you to `ctr decrypt`, unless you pass `--allow-encrypted`.
 `convert` produces an unsigned CIA with a zero title key, compatible with CFW and emulators
 but not installable on stock hardware.
 

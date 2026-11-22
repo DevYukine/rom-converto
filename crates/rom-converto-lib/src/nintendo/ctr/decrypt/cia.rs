@@ -8,12 +8,11 @@ use crate::nintendo::ctr::constants::{
     CTR_KEY_SCRAMBLE_C, CTR_KEYS_0, CTR_KEYS_1, CTR_MEDIA_UNIT_SIZE, CTR_NCSD_PARTITIONS,
     CTR_SEED_COUNTRIES, EXEFS_ENTRY_SIZE, EXEFS_HEADER_SIZE, EXEFS_MAX_FILE_ENTRIES,
     EXEFS_SECTION_BANNER, EXEFS_SECTION_ICON, NCCH_FLAGS_EXTRA_CRYPTO_INDEX, NCCH_FLAGS_OFFSET,
-    NCCH_FLAGS7_CRYPTO_METHOD, NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO,
-    NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC, NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT,
-    NCSD_PARTITION_ENTRY_SIZE, NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET,
-    TICKET_COMMON_KEY_IDX_OFFSET, TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET,
-    TICKET_TITLE_KEY_OFFSET, TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE,
-    TMD_CONTENT_RECORDS_OFFSET,
+    NCCH_FLAGS7_FIXED_KEY, NCCH_FLAGS7_NOCRYPTO, NCCH_FLAGS7_SEED_CRYPTO, NCCH_MAGIC,
+    NCCH_MAGIC_OFFSET, NCSD_PARTITION_COUNT, NCSD_PARTITION_ENTRY_SIZE,
+    NCSD_PARTITION_TABLE_OFFSET, NCSD_TITLE_ID_OFFSET, TICKET_COMMON_KEY_IDX_OFFSET,
+    TICKET_SIG_BODY_OFFSET, TICKET_TITLE_ID_OFFSET, TICKET_TITLE_KEY_OFFSET,
+    TMD_CONTENT_COUNT_OFFSET, TMD_CONTENT_RECORD_SIZE, TMD_CONTENT_RECORDS_OFFSET,
 };
 use crate::nintendo::ctr::decrypt::model::{CiaContent, NcchSection};
 use crate::nintendo::ctr::decrypt::reader::{CiaReader, CiaReaderArgs};
@@ -707,9 +706,7 @@ pub async fn parse_ncch(
         debug!("Uses 9.6 NCCH Seed crypto with KeyY: {key_y:032X}");
     }
 
-    // Preserve the crypto-method bit, set the NoCrypto flag (content is now decrypted)
-    tmp[NCCH_FLAGS_OFFSET + 7] =
-        tmp[NCCH_FLAGS_OFFSET + 7] & NCCH_FLAGS7_CRYPTO_METHOD | NCCH_FLAGS7_NOCRYPTO;
+    tmp[NCCH_FLAGS_OFFSET + 7] = decrypted_flags7(tmp[NCCH_FLAGS_OFFSET + 7]);
 
     out.seek(SeekFrom::Start(out_base)).await?;
     let mut writer = BufWriter::new(out);
@@ -794,6 +791,23 @@ pub async fn parse_ncch(
     Ok(())
 }
 
+/// Keep every flag except the crypto-only fixed-key and seed bits, so `ctr encrypt`
+/// restores ManualDisclosure and the rest; readers such as pyctr look up a seed
+/// whenever the seed bit is set, even on decrypted data.
+fn decrypted_flags7(flags7: u8) -> u8 {
+    flags7 & !(NCCH_FLAGS7_FIXED_KEY | NCCH_FLAGS7_SEED_CRYPTO) | NCCH_FLAGS7_NOCRYPTO
+}
+
+/// Read the NCSD media id as a big-endian title id, the order the seed lookup
+/// takes; the header stores it little-endian.
+pub(crate) async fn read_ncsd_title_id(file: &mut File) -> anyhow::Result<[u8; 8]> {
+    let mut title_id = [0u8; 8];
+    file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
+    file.read_exact(&mut title_id).await?;
+    title_id.reverse();
+    Ok(title_id)
+}
+
 pub async fn parse_and_decrypt_ncsd(
     input: &Path,
     out: &mut File,
@@ -815,9 +829,7 @@ pub async fn parse_and_decrypt_ncsd(
         return Err(anyhow!("not a valid NCSD file: wrong magic"));
     }
 
-    let mut title_id = [0u8; 8];
-    rom_file.seek(SeekFrom::Start(NCSD_TITLE_ID_OFFSET)).await?;
-    rom_file.read_exact(&mut title_id).await?;
+    let title_id = read_ncsd_title_id(&mut rom_file).await?;
 
     // Partition table: 8 entries, each (offset_mu: u32, size_mu: u32) LE.
     rom_file
@@ -1911,6 +1923,30 @@ mod tests {
         let r1 = scramblekey(1, 0).unwrap();
         let r2 = scramblekey(0, 1).unwrap();
         assert_ne!(r1, r2);
+    }
+
+    /// The NCSD media id is stored little-endian, while the seed lookup keys
+    /// titles by the big-endian id.
+    #[tokio::test]
+    async fn read_ncsd_title_id_returns_big_endian() {
+        let tmp = tempfile::tempdir().unwrap();
+        let in_path = tmp.path().join("media-id.3ds");
+        let mut image = vec![0u8; 0x200];
+        image[0x108..0x110].copy_from_slice(&0x000400000C123456u64.to_le_bytes());
+        std::fs::write(&in_path, &image).unwrap();
+        let mut file = File::open(&in_path).await.unwrap();
+
+        let title_id = read_ncsd_title_id(&mut file).await.unwrap();
+        assert_eq!(title_id, 0x000400000C123456u64.to_be_bytes());
+    }
+
+    /// An encrypted seed fixture needs a seed, so the rewrite is checked on its
+    /// own: fixed-key (0x01) and seed (0x20) go, NoCrypto is set, the rest stays.
+    #[test]
+    fn decrypted_flags7_clears_only_fixed_key_and_seed() {
+        assert_eq!(decrypted_flags7(0x01 | 0x02 | 0x20 | 0x40), 0x46);
+        assert_eq!(decrypted_flags7(0xFF), 0xDE);
+        assert_eq!(decrypted_flags7(0x00), NCCH_FLAGS7_NOCRYPTO);
     }
 
     #[tokio::test]
