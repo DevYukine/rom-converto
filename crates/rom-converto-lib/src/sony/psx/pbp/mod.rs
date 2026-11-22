@@ -61,7 +61,8 @@ pub enum ExistingEboot {
 #[derive(Debug, Clone, Default)]
 pub struct PbpOptions {
     pub encoding: BlockEncoding,
-    /// What to do about this game's EBOOTs already in the output folder.
+    /// What to do about this game's EBOOTs already in the output folder, or
+    /// about the output file.
     pub existing: ExistingEboot,
     /// Title on the XMB; the input's file name when unset.
     pub title: Option<String>,
@@ -320,9 +321,16 @@ fn shares_disk(scratch: &Path, output: &Path) -> bool {
 }
 
 /// Whether `output` names the one EBOOT to write, rather than a folder of
-/// game folders: a `.pbp` path that is not a folder already.
+/// game folders: a `.pbp` path that is not a folder already and does not
+/// end in a separator or `/.`, which `extension()` ignores.
 pub fn is_file_output(output: &Path) -> bool {
-    has_ext(output, "pbp") && !output.is_dir()
+    let ends_in_name = output.file_name().is_some_and(|name| {
+        output
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(name.as_encoded_bytes())
+    });
+    ends_in_name && has_ext(output, "pbp") && !output.is_dir()
 }
 
 /// Whether `discs` discs go in one EBOOT, which more than one do only with
@@ -451,12 +459,12 @@ fn build(
         title,
         id: first_id,
         discs: discs.iter().zip(ids).collect(),
-        table: table.filter(|_| (2..=MAX_DISCS).contains(&discs.len())),
+        table: table.filter(|_| discs.len() > 1),
         encoding,
         assets: &assets,
     };
-    let fits_one =
-        discs.len() == 1 || (together.table.is_some() && together.max_size()? <= FAT32_MAX_FILE);
+    let fits_one = shares_one_eboot(discs.len(), table.is_some())
+        && (discs.len() == 1 || together.max_size()? <= FAT32_MAX_FILE);
     if fits_one {
         if discs.len() > 1 {
             log::info!(
@@ -553,23 +561,10 @@ fn write_and_publish(
         }
     }
     for (_, path) in &eboots {
-        let folder = path.parent().expect("an EBOOT path names its folder");
-        // An output file given as a bare name goes in the current folder.
-        if folder.as_os_str().is_empty() {
-            continue;
-        }
-        // The exists() check keeps a drive root, which create_dir refuses,
-        // out of the claim.
-        if let Some(output_dir) = folder.parent()
-            && !output_dir.as_os_str().is_empty()
-            && !output_dir.exists()
-        {
-            if let Some(parent) = output_dir.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            claim_dir(output_dir, claimed)?;
-        }
-        claim_dir(folder, claimed)?;
+        claim_dirs(
+            path.parent().expect("an EBOOT path names its folder"),
+            claimed,
+        )?;
     }
     let mut written = Vec::with_capacity(eboots.len());
     for (eboot, path) in &eboots {
@@ -611,13 +606,22 @@ fn write_and_publish(
     }
 }
 
-/// Creates `dir` and records it in `claimed`; a folder that already exists,
-/// perhaps made by another run just now, is used but not claimed.
-fn claim_dir(dir: &Path, claimed: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    match std::fs::create_dir(dir) {
-        Ok(()) => claimed.push(dir.to_path_buf()),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(err) => return Err(err),
+/// Creates `dir` and every missing folder above it, recording each one it
+/// creates in `claimed`, outermost first. A folder that already exists,
+/// perhaps made by another run just now, is used but not claimed. A root,
+/// which create_dir refuses, and the empty parent of a bare name are never
+/// created.
+fn claim_dirs(dir: &Path, claimed: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let missing: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|dir| dir.parent().is_some() && !dir.exists())
+        .collect();
+    for dir in missing.into_iter().rev() {
+        match std::fs::create_dir(dir) {
+            Ok(()) => claimed.push(dir.to_path_buf()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }
@@ -958,6 +962,30 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(written, vec![folder.join("SLUS99999/EBOOT.PBP")]);
+    }
+
+    #[tokio::test]
+    async fn a_trailing_separator_names_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let out = PathBuf::from(format!(
+            "{}{}",
+            dir.path().join("new.pbp").display(),
+            std::path::MAIN_SEPARATOR
+        ));
+
+        assert!(!is_file_output(&out));
+        assert!(!is_file_output(&dir.path().join("new.pbp/.")));
+        to_pbp(
+            &NoProgress,
+            &cue,
+            &out,
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(dir.path().join("new.pbp/SLUS99999/EBOOT.PBP").is_file());
     }
 
     #[tokio::test]
@@ -1466,6 +1494,45 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
         assert!(!out.exists(), "output folder left behind");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_removes_every_folder_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        // An empty existing folder, which a wrong claim would remove.
+        let keep = dir.path().join("keep");
+        std::fs::create_dir(&keep).unwrap();
+        let file = keep.join("a/b/c/game.pbp");
+        let err = to_pbp(
+            &NoProgress,
+            &cue,
+            &file,
+            &PbpOptions::default(),
+            cancel.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert!(!keep.join("a").exists(), "folder left behind");
+        assert!(keep.is_dir(), "existing folder removed");
+
+        let folder = dir.path().join("x/y");
+        let err = to_pbp(&NoProgress, &cue, &folder, &PbpOptions::default(), cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert!(!dir.path().join("x").exists(), "folder left behind");
+    }
+
+    #[test]
+    fn claim_dirs_never_creates_the_empty_parent_of_a_bare_name() {
+        let mut claimed = Vec::new();
+        claim_dirs(Path::new(""), &mut claimed).unwrap();
+        assert!(claimed.is_empty());
     }
 
     #[test]

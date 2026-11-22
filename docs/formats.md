@@ -21,7 +21,7 @@ and `info` extensions in the installed build.
 | PlayStation 3 (`ps3`) | Encrypted disc `.iso` | Plain `.iso` | decrypt |
 | Nintendo DS (`ntr`) | `.nds`, `.dsi` | Same extension | encrypt or decrypt the secure area |
 | PSP (`psp`) | `EBOOT.PBP` or PSN `.pkg` | extracted files or `.iso` | extract, to-iso |
-| PS1 to PSP (`psx`) | `.cue` with raw 2352-byte sectors, CD-mode `.chd`, or an `.m3u` of either | `EBOOT.PBP` game folders | to-pbp |
+| PS1 to PSP (`psx`) | `.cue` with raw 2352-byte sectors, CD-mode `.chd`, or an `.m3u` of either | `EBOOT.PBP` game folders, or one `.pbp` | to-pbp |
 | PS Vita (`vita`) | `.pkg` | extracted files | extract |
 | ROM patches (`patch`) | A plain ROM file plus a `.aps`, `.bps`, `.ebp`, `.ips`, `.ips32`, `.ppf`, `.rup`, `.ups`, `.vcdiff`, or `.xdelta` patch | Patched copy of the ROM | apply; also `organize --patch` |
 

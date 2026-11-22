@@ -40,12 +40,12 @@ impl BlockEncodingArg {
 Builds the EBOOT.PBP the PSP's built-in PS1 emulator runs on custom firmware, from a .cue \
 sheet with raw 2352-byte sectors, a CD .chd, or an .m3u playlist of either. Writes one game \
 folder per EBOOT into the folder OUTPUT (default <INPUT>_psp next to the input); copy those \
-folders into PSP/GAME on the Memory Stick. An OUTPUT ending in .pbp is written as that one \
-file instead. The disc ID comes from the disc's SYSTEM.CNF.\n\n\
+folders into PSP/GAME on the Memory Stick. An OUTPUT ending in .pbp that is not a folder is \
+written as that one file instead. The disc ID comes from the disc's SYSTEM.CNF.\n\n\
 A playlist of 2 to 5 discs becomes one EBOOT with disc switching in the HOME menu when the \
-discs fit in 4 GiB. Otherwise each disc becomes its own EBOOT with \
+build has embedded keys and the discs fit in 4 GiB. Otherwise each disc becomes its own EBOOT with \
 disc 1's ID, so all discs share one memory card: save before a disc change, quit, and start \
-the next disc's EBOOT.",
+the next disc's EBOOT. A playlist split this way needs a folder OUTPUT.",
     after_long_help = "EXAMPLES:\n  rom-converto psx to-pbp game.cue\n  \
 rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME\n  \
 rom-converto psx to-pbp game.m3u --title \"My Game\"\n  \

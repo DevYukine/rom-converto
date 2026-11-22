@@ -782,8 +782,8 @@ const psx: OpDef = {
 	],
 	renameDisabled: true,
 	actionNote: "Jobs start automatically. Parameters lock once queued.",
-	// A picked folder takes the game folders directly, as the CLI's
-	// OUTPUT_DIR does, so PSP/GAME works without nesting.
+	// A picked folder takes the game folders directly, as a folder OUTPUT
+	// does in the CLI, so PSP/GAME works without nesting.
 	deriveOutput: (input, store) => store.outputDir || derivePbpDir(input),
 	buildArgs: (store, item, taskId) =>
 		runArgs(
