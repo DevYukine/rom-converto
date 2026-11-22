@@ -159,6 +159,13 @@ pub enum PsxPbpError {
     #[error("{0} already exists")]
     EbootExists(PathBuf),
 
+    /// An output file was asked of discs that need an EBOOT each.
+    #[error(
+        "{discs} discs need one EBOOT each, which one output file cannot hold; \
+         give an output folder"
+    )]
+    NeedsOutputFolder { discs: usize },
+
     /// The EBOOT would not fit a FAT32 Memory Stick.
     #[error("the EBOOT would be {size} bytes, over the 4 GiB a FAT32 file can hold")]
     ExceedsFat32 { size: u64 },

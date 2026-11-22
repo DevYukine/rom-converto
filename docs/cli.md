@@ -974,7 +974,7 @@ a PSN `.pkg` directly, reading the EBOOT out of the decrypted package. `OUTPUT` 
 ## psx (PS1 to PSP EBOOT)
 
 ```
-rom-converto psx to-pbp <INPUT> [OUTPUT_DIR] [--compression deflate|stored] [--title TITLE]
+rom-converto psx to-pbp <INPUT> [OUTPUT] [--compression deflate|stored] [--title TITLE]
                         [--disc-id ID] [--splash IMAGE] [--icon0 IMAGE] [--pic1 IMAGE]
 ```
 
@@ -983,8 +983,11 @@ firmware. `INPUT` is a `.cue` with raw 2352-byte sectors, a CD-mode `.chd`, or a
 playlist of either. A playlist entry is relative to the playlist's folder (`..` included) or
 an absolute path. A cue or CHD may sit inside an archive; a playlist may not, since only
 one member and a cue sheet's tracks are extracted from an archive. It writes one game folder per EBOOT, named after the disc ID, into
-`OUTPUT_DIR` (default `<INPUT>_psp` next to the input). Copy those folders into `PSP/GAME`
-on the Memory Stick, or pass `PSP/GAME` as `OUTPUT_DIR` to write there directly.
+the folder `OUTPUT` (default `<INPUT>_psp` next to the input). Copy those folders into `PSP/GAME`
+on the Memory Stick, or pass `PSP/GAME` as `OUTPUT` to write there directly.
+An `OUTPUT` ending in `.pbp` that is not a folder is written as that one file instead, for
+a tool that places the EBOOT itself; the PSP only runs it as `EBOOT.PBP` in a folder of
+its own. A set that needs one EBOOT per disc is refused for an output file.
 `--on-conflict` applies to this game's EBOOTs, not to the folder, so other games in it are
 never a conflict: `skip` keeps the game's existing EBOOT, `error` refuses it, and `overwrite`
 replaces it. `overwrite-invalid` acts as `skip`, since an EBOOT is not verified. The folder is never emptied.
@@ -997,7 +1000,7 @@ replaces it. `overwrite-invalid` acts as `skip`, since an EBOOT is not verified.
 | `--splash <IMAGE>` | Image shown while the game starts (480x272), in place of the built-in one |
 | `--icon0 <IMAGE>` | XMB icon (144x80), such as the game's cover |
 | `--pic1 <IMAGE>` | XMB background (480x272) |
-| `--on-conflict`, `-f`, `--report` | As for the other commands. `rename` is rejected because the output is a folder |
+| `--on-conflict`, `-f`, `--report` | As for the other commands, except that `rename` is rejected |
 
 The images may be PNG or JPEG files up to 8192 pixels on a side. A PNG already at the listed
 size and under 1 MiB is kept as it is; any other image is scaled to fit, keeping its aspect ratio, and centred: on a
@@ -1022,6 +1025,7 @@ PAL discs need, is not read, so a game that checks for LibCrypt may fail after i
 rom-converto psx to-pbp game.cue
 rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME
 rom-converto psx to-pbp game.m3u --title "Game title"
+rom-converto psx to-pbp game.chd game.pbp
 ```
 
 ## vita (PS Vita)

@@ -43,8 +43,8 @@ const STARTDAT_PNG: &[u8] = include_bytes!(concat!(
     "/../../resources/psx/startdat.png"
 ));
 
-/// What to do when a game's EBOOT already exists in the output folder,
-/// which may hold other games, such as `PSP/GAME`.
+/// What to do when a game's EBOOT already exists: in the output folder,
+/// which may hold other games, such as `PSP/GAME`, or as the output file.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExistingEboot {
     /// Replace it.
@@ -61,7 +61,8 @@ pub enum ExistingEboot {
 #[derive(Debug, Clone, Default)]
 pub struct PbpOptions {
     pub encoding: BlockEncoding,
-    /// What to do about this game's EBOOTs already in the output folder.
+    /// What to do about this game's EBOOTs already in the output folder, or
+    /// about the output file.
     pub existing: ExistingEboot,
     /// Title on the XMB; the input's file name when unset.
     pub title: Option<String>,
@@ -76,27 +77,29 @@ pub struct PbpOptions {
     pub pic1: Option<PathBuf>,
 }
 
-/// Builds PS1 EBOOTs from `input` (`.cue`, `.chd` or `.m3u`) into
-/// `output_dir`, one game folder each, ready to copy into `PSP/GAME`.
+/// Builds PS1 EBOOTs from `input` (`.cue`, `.chd` or `.m3u`) into the
+/// folder `output`, one game folder each, ready to copy into `PSP/GAME`,
+/// or as the one file `output` when [`is_file_output`] says it names one.
 /// Returns the EBOOTs written, none when [`ExistingEboot::Keep`] kept the
 /// game's existing ones. Without the `embedded-keys` feature there is no
 /// multi-disc table, so each disc of a playlist gets its own EBOOT.
 ///
 /// # Errors
 /// Returns [`PsxPbpError`] when an input cannot become an EBOOT (see its
-/// variants), when an image is not a PNG or JPEG, on I/O failure, or when
+/// variants), when an output file is asked of discs that need an EBOOT
+/// each, when an image is not a PNG or JPEG, on I/O failure, or when
 /// `cancel` fires. Nothing is published unless every EBOOT was written.
 pub async fn to_pbp(
     progress: &dyn ProgressReporter,
     input: &Path,
-    output_dir: &Path,
+    output: &Path,
     options: &PbpOptions,
     cancel: CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
     build_eboots(
         progress,
         input,
-        output_dir,
+        output,
         options,
         POPS_MULTIDISC_TABLE.as_ref().ok(),
         cancel,
@@ -131,7 +134,7 @@ struct Images {
 async fn build_eboots(
     progress: &dyn ProgressReporter,
     input: &Path,
-    output_dir: &Path,
+    output: &Path,
     options: &PbpOptions,
     table: Option<&'static [u8; MULTIDISC_TABLE_LEN]>,
     cancel: CancelToken,
@@ -145,7 +148,11 @@ async fn build_eboots(
         let options = options.clone();
         spawn_blocking_with_progress(progress, move |_| check_inputs(sources, &options)).await?
     };
-    if let Some(existing) = existing_eboot(output_dir, &checked.ids[0], checked.inputs.len()) {
+    let discs = checked.inputs.len();
+    if is_file_output(output) && !shares_one_eboot(discs, table.is_some()) {
+        return Err(PsxPbpError::NeedsOutputFolder { discs });
+    }
+    if let Some(existing) = existing_eboot(output, &checked.ids[0], discs) {
         match options.existing {
             ExistingEboot::Replace => {}
             ExistingEboot::Keep => {
@@ -169,7 +176,7 @@ async fn build_eboots(
     let scratch = if chds.is_empty() {
         None
     } else {
-        Some(scratch_for(&chds, output_dir, required_bytes(input))?)
+        Some(scratch_for(&chds, output, required_bytes(input))?)
     };
     let mut discs = Vec::with_capacity(checked.inputs.len());
     for (i, input) in checked.inputs.into_iter().enumerate() {
@@ -185,21 +192,12 @@ async fn build_eboots(
     }
 
     let title = options.title.clone().unwrap_or_else(|| default_stem(input));
-    let output_dir = output_dir.to_path_buf();
+    let output = output.to_path_buf();
     let (encoding, existing) = (options.encoding, options.existing);
     let (ids, images) = (checked.ids, checked.images);
     let written = spawn_blocking_with_progress(progress, move |progress| {
         build(
-            progress,
-            &discs,
-            &ids,
-            &images,
-            &title,
-            &output_dir,
-            encoding,
-            existing,
-            table,
-            &cancel,
+            progress, &discs, &ids, &images, &title, &output, encoding, existing, table, &cancel,
         )
     })
     .await;
@@ -268,19 +266,15 @@ fn check_inputs(sources: Vec<PathBuf>, options: &PbpOptions) -> PsxPbpResult<Che
 }
 
 /// A private folder in the system temp folder with room for `chds`
-/// extracted, and for the `eboot_bytes` written to `output_dir` too when
+/// extracted, and for the `eboot_bytes` written to `output` too when
 /// both share a disk, since the tracks stay until every EBOOT is written.
-fn scratch_for(
-    chds: &[&Path],
-    output_dir: &Path,
-    eboot_bytes: u64,
-) -> PsxPbpResult<tempfile::TempDir> {
+fn scratch_for(chds: &[&Path], output: &Path, eboot_bytes: u64) -> PsxPbpResult<tempfile::TempDir> {
     let dir = tempfile::Builder::new().prefix("rom-converto-").tempdir()?;
     let tracks: u64 = chds
         .iter()
         .map(|chd| crate::disc::chd::info::read_info(chd).map_or(0, |info| info.logical_bytes))
         .sum();
-    let needed = if shares_disk(dir.path(), output_dir) {
+    let needed = if shares_disk(dir.path(), output) {
         tracks + eboot_bytes
     } else {
         tracks
@@ -326,15 +320,34 @@ fn shares_disk(scratch: &Path, output: &Path) -> bool {
     }
 }
 
-/// The EBOOT a build of `input` into `output_dir` would meet, if any: the
-/// game's one-file folder or any of its per-disc ones, found from disc 1's
-/// ID (or `disc_id`) without building anything.
+/// Whether `output` names the one EBOOT to write, rather than a folder of
+/// game folders: a `.pbp` path that is not a folder already and does not
+/// end in a separator or `/.`, which `extension()` ignores.
+pub fn is_file_output(output: &Path) -> bool {
+    let ends_in_name = output.file_name().is_some_and(|name| {
+        output
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(name.as_encoded_bytes())
+    });
+    ends_in_name && has_ext(output, "pbp") && !output.is_dir()
+}
+
+/// Whether `discs` discs go in one EBOOT, which more than one do only with
+/// the multi-disc table. One that would pass 4 GiB is still split later.
+fn shares_one_eboot(discs: usize, has_table: bool) -> bool {
+    discs == 1 || (has_table && (2..=MAX_DISCS).contains(&discs))
+}
+
+/// The EBOOT a build of `input` into `output` would meet, if any: the
+/// output file, or the game's one-file folder or any of its per-disc ones,
+/// found from disc 1's ID (or `disc_id`) without building anything.
 ///
 /// # Errors
 /// Returns [`PsxPbpError`] when disc 1 cannot be read or names no ID.
 pub fn find_existing_eboot(
     input: &Path,
-    output_dir: &Path,
+    output: &Path,
     disc_id: Option<&str>,
 ) -> PsxPbpResult<Option<PathBuf>> {
     let sources = if has_ext(input, "m3u") {
@@ -356,15 +369,23 @@ pub fn find_existing_eboot(
             read.ok_or_else(|| PsxPbpError::NoDiscId(first.clone()))?
         }
     };
-    Ok(existing_eboot(output_dir, &id, sources.len()))
+    Ok(existing_eboot(output, &id, sources.len()))
 }
 
-/// The first EBOOT of the game `id` names, with `discs` discs, already in
-/// `output_dir`: its one-file folder or any of its per-disc ones.
-fn existing_eboot(output_dir: &Path, id: &DiscId, discs: usize) -> Option<PathBuf> {
-    std::iter::once(id.sfo())
-        .chain((1..=discs).map(|n| format!("{}-DISC{n}", id.sfo())))
-        .map(|folder| output_dir.join(folder).join("EBOOT.PBP"))
+/// The first EBOOT of the game `id` names, with `discs` discs, already at
+/// `output`: the output file, or in the output folder the game's one-file
+/// folder or any of its per-disc ones.
+fn existing_eboot(output: &Path, id: &DiscId, discs: usize) -> Option<PathBuf> {
+    let candidates: Vec<PathBuf> = if is_file_output(output) {
+        vec![output.to_path_buf()]
+    } else {
+        std::iter::once(id.sfo())
+            .chain((1..=discs).map(|n| format!("{}-DISC{n}", id.sfo())))
+            .map(|folder| output.join(folder).join("EBOOT.PBP"))
+            .collect()
+    };
+    candidates
+        .into_iter()
         .find(|path| path.exists() && !is_empty_file(path))
 }
 
@@ -419,13 +440,14 @@ fn build(
     ids: &[DiscId],
     images: &Images,
     title: &str,
-    output_dir: &Path,
+    output: &Path,
     encoding: BlockEncoding,
     existing: ExistingEboot,
     table: Option<&[u8; MULTIDISC_TABLE_LEN]>,
     cancel: &CancelToken,
 ) -> PsxPbpResult<Vec<PathBuf>> {
     let first_id = &ids[0];
+    let file_output = is_file_output(output);
     let assets = Assets {
         data_psp: DATA_PSP,
         startdat_png: &images.startdat_png,
@@ -437,12 +459,12 @@ fn build(
         title,
         id: first_id,
         discs: discs.iter().zip(ids).collect(),
-        table: table.filter(|_| (2..=MAX_DISCS).contains(&discs.len())),
+        table: table.filter(|_| discs.len() > 1),
         encoding,
         assets: &assets,
     };
-    let fits_one =
-        discs.len() == 1 || (together.table.is_some() && together.max_size()? <= FAT32_MAX_FILE);
+    let fits_one = shares_one_eboot(discs.len(), table.is_some())
+        && (discs.len() == 1 || together.max_size()? <= FAT32_MAX_FILE);
     if fits_one {
         if discs.len() > 1 {
             log::info!(
@@ -450,8 +472,15 @@ fn build(
                 discs.len()
             );
         }
-        let path = output_dir.join(first_id.sfo()).join("EBOOT.PBP");
+        let path = if file_output {
+            output.to_path_buf()
+        } else {
+            output.join(first_id.sfo()).join("EBOOT.PBP")
+        };
         return publish(vec![(together, path)], existing, progress, cancel);
+    }
+    if file_output {
+        return Err(PsxPbpError::NeedsOutputFolder { discs: discs.len() });
     }
 
     progress.warn(&format!(
@@ -483,7 +512,7 @@ fn build(
                 encoding,
                 assets: &assets,
             };
-            let path = output_dir
+            let path = output
                 .join(format!("{}-DISC{}", first_id.sfo(), n + 1))
                 .join("EBOOT.PBP");
             (eboot, path)
@@ -532,19 +561,10 @@ fn write_and_publish(
         }
     }
     for (_, path) in &eboots {
-        let folder = path.parent().expect("an EBOOT path names its game folder");
-        // The exists() check keeps a drive root, which create_dir refuses,
-        // out of the claim.
-        if let Some(output_dir) = folder.parent()
-            && !output_dir.as_os_str().is_empty()
-            && !output_dir.exists()
-        {
-            if let Some(parent) = output_dir.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            claim_dir(output_dir, claimed)?;
-        }
-        claim_dir(folder, claimed)?;
+        claim_dirs(
+            path.parent().expect("an EBOOT path names its folder"),
+            claimed,
+        )?;
     }
     let mut written = Vec::with_capacity(eboots.len());
     for (eboot, path) in &eboots {
@@ -586,13 +606,22 @@ fn write_and_publish(
     }
 }
 
-/// Creates `dir` and records it in `claimed`; a folder that already exists,
-/// perhaps made by another run just now, is used but not claimed.
-fn claim_dir(dir: &Path, claimed: &mut Vec<PathBuf>) -> std::io::Result<()> {
-    match std::fs::create_dir(dir) {
-        Ok(()) => claimed.push(dir.to_path_buf()),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(err) => return Err(err),
+/// Creates `dir` and every missing folder above it, recording each one it
+/// creates in `claimed`, outermost first. A folder that already exists,
+/// perhaps made by another run just now, is used but not claimed. A root,
+/// which create_dir refuses, and the empty parent of a bare name are never
+/// created.
+fn claim_dirs(dir: &Path, claimed: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let missing: Vec<&Path> = dir
+        .ancestors()
+        .take_while(|dir| dir.parent().is_some() && !dir.exists())
+        .collect();
+    for dir in missing.into_iter().rev() {
+        match std::fs::create_dir(dir) {
+            Ok(()) => claimed.push(dir.to_path_buf()),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(err),
+        }
     }
     Ok(())
 }
@@ -799,6 +828,164 @@ mod tests {
         let psar = Pbp::read(&mut Cursor::new(&eboot)).unwrap().segments[DATA_PSAR].offset as usize;
         assert_eq!(&eboot[psar + 0x400..psar + 0x40C], b"_SCES_99996\0");
         assert!(read_back(&eboot, psar, image.len()) == image);
+    }
+
+    #[tokio::test]
+    async fn an_output_file_is_the_one_eboot_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "My Game", &ps1_data_track("SCES_999.96", 40));
+        let in_folder = build_one(&cue, &dir.path().join("out"), &PbpOptions::default()).await;
+
+        let file = dir.path().join("served/My Game.PBP");
+        let written = to_pbp(
+            &NoProgress,
+            &cue,
+            &file,
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(written, vec![file.clone()]);
+        assert!(std::fs::read(&file).unwrap() == in_folder);
+        let beside: Vec<_> = std::fs::read_dir(file.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(beside, ["My Game.PBP"]);
+    }
+
+    #[tokio::test]
+    async fn a_playlist_with_the_table_fits_an_output_file() {
+        static STAND_IN: [u8; MULTIDISC_TABLE_LEN] = [0x5A; MULTIDISC_TABLE_LEN];
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let file = dir.path().join("game.pbp");
+
+        let written = build_eboots(
+            &NoProgress,
+            &m3u,
+            &file,
+            &PbpOptions::default(),
+            Some(&STAND_IN),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(written, vec![file.clone()]);
+        let eboot = std::fs::read(&file).unwrap();
+        let psar = word(&eboot, 0x24) as usize;
+        assert_eq!(&eboot[psar..psar + 16], b"PSTITLEIMG000000");
+    }
+
+    #[tokio::test]
+    async fn an_output_file_is_refused_for_discs_that_need_an_eboot_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m3u, _, _) = two_disc_playlist(dir.path());
+        let file = dir.path().join("served/game.pbp");
+
+        let err = build_eboots(
+            &NoProgress,
+            &m3u,
+            &file,
+            &PbpOptions::default(),
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(err, PsxPbpError::NeedsOutputFolder { discs: 2 }),
+            "{err}"
+        );
+        assert!(!file.parent().unwrap().exists());
+    }
+
+    #[tokio::test]
+    async fn an_existing_output_file_is_kept_refused_or_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let file = dir.path().join("game.pbp");
+        std::fs::write(&file, b"an earlier build").unwrap();
+        assert_eq!(
+            find_existing_eboot(&cue, &file, None).unwrap(),
+            Some(file.clone())
+        );
+        let build = |existing| {
+            let options = PbpOptions {
+                existing,
+                ..PbpOptions::default()
+            };
+            let (cue, file) = (cue.clone(), file.clone());
+            async move { to_pbp(&NoProgress, &cue, &file, &options, CancelToken::new()).await }
+        };
+
+        assert_eq!(
+            build(ExistingEboot::Keep).await.unwrap(),
+            Vec::<PathBuf>::new()
+        );
+        let err = build(ExistingEboot::Refuse).await.unwrap_err();
+        assert!(
+            matches!(&err, PsxPbpError::EbootExists(path) if *path == file),
+            "{err}"
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"an earlier build");
+
+        assert_eq!(
+            build(ExistingEboot::Replace).await.unwrap(),
+            vec![file.clone()]
+        );
+        assert_eq!(
+            sfo_of(&std::fs::read(&file).unwrap()).get_str("DISC_ID"),
+            Some("SLUS99999")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_folder_named_like_an_eboot_still_takes_game_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let folder = dir.path().join("games.pbp");
+        std::fs::create_dir(&folder).unwrap();
+
+        assert!(!is_file_output(&folder));
+        let written = to_pbp(
+            &NoProgress,
+            &cue,
+            &folder,
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(written, vec![folder.join("SLUS99999/EBOOT.PBP")]);
+    }
+
+    #[tokio::test]
+    async fn a_trailing_separator_names_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let out = PathBuf::from(format!(
+            "{}{}",
+            dir.path().join("new.pbp").display(),
+            std::path::MAIN_SEPARATOR
+        ));
+
+        assert!(!is_file_output(&out));
+        assert!(!is_file_output(&dir.path().join("new.pbp/.")));
+        to_pbp(
+            &NoProgress,
+            &cue,
+            &out,
+            &PbpOptions::default(),
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(dir.path().join("new.pbp/SLUS99999/EBOOT.PBP").is_file());
     }
 
     #[tokio::test]
@@ -1307,6 +1494,45 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
         assert!(!out.exists(), "output folder left behind");
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_run_removes_every_folder_it_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let cue = write_disc(dir.path(), "game", &ps1_data_track("SLUS_999.99", 40));
+        let cancel = CancelToken::new();
+        cancel.cancel();
+
+        // An empty existing folder, which a wrong claim would remove.
+        let keep = dir.path().join("keep");
+        std::fs::create_dir(&keep).unwrap();
+        let file = keep.join("a/b/c/game.pbp");
+        let err = to_pbp(
+            &NoProgress,
+            &cue,
+            &file,
+            &PbpOptions::default(),
+            cancel.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert!(!keep.join("a").exists(), "folder left behind");
+        assert!(keep.is_dir(), "existing folder removed");
+
+        let folder = dir.path().join("x/y");
+        let err = to_pbp(&NoProgress, &cue, &folder, &PbpOptions::default(), cancel)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PsxPbpError::Cancelled(_)), "{err}");
+        assert!(!dir.path().join("x").exists(), "folder left behind");
+    }
+
+    #[test]
+    fn claim_dirs_never_creates_the_empty_parent_of_a_bare_name() {
+        let mut claimed = Vec::new();
+        claim_dirs(Path::new(""), &mut claimed).unwrap();
+        assert!(claimed.is_empty());
     }
 
     #[test]

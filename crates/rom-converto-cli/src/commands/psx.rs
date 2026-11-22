@@ -39,23 +39,25 @@ impl BlockEncodingArg {
     long_about = "Convert a PS1 disc image to a PSP EBOOT.PBP\n\n\
 Builds the EBOOT.PBP the PSP's built-in PS1 emulator runs on custom firmware, from a .cue \
 sheet with raw 2352-byte sectors, a CD .chd, or an .m3u playlist of either. Writes one game \
-folder per EBOOT into OUTPUT_DIR (default <INPUT>_psp next to the input); copy those folders \
-into PSP/GAME on the Memory Stick. The disc ID comes from the disc's SYSTEM.CNF.\n\n\
+folder per EBOOT into the folder OUTPUT (default <INPUT>_psp next to the input); copy those \
+folders into PSP/GAME on the Memory Stick. An OUTPUT ending in .pbp that is not a folder is \
+written as that one file instead. The disc ID comes from the disc's SYSTEM.CNF.\n\n\
 A playlist of 2 to 5 discs becomes one EBOOT with disc switching in the HOME menu when the \
-discs fit in 4 GiB. Otherwise each disc becomes its own EBOOT with \
+build has embedded keys and the discs fit in 4 GiB. Otherwise each disc becomes its own EBOOT with \
 disc 1's ID, so all discs share one memory card: save before a disc change, quit, and start \
-the next disc's EBOOT.",
+the next disc's EBOOT. A playlist split this way needs a folder OUTPUT.",
     after_long_help = "EXAMPLES:\n  rom-converto psx to-pbp game.cue\n  \
 rom-converto psx to-pbp game.chd /Volumes/PSP/PSP/GAME\n  \
-rom-converto psx to-pbp game.m3u --title \"My Game\"\n"
+rom-converto psx to-pbp game.m3u --title \"My Game\"\n  \
+rom-converto psx to-pbp game.chd game.pbp\n"
 )]
 pub struct ToPbpCommand {
     /// Input disc image (.cue, .chd or .m3u)
     #[arg(value_name = "INPUT")]
     pub input: PathBuf,
-    /// Folder to write game folders into, defaults to <INPUT>_psp
-    #[arg(value_name = "OUTPUT_DIR")]
-    pub output_dir: Option<PathBuf>,
+    /// Folder to write game folders into, or a .pbp file to write the one EBOOT to. Defaults to the folder <INPUT>_psp
+    #[arg(value_name = "OUTPUT")]
+    pub output: Option<PathBuf>,
 
     /// How to write each block of disc data
     #[arg(long, value_enum, default_value_t = BlockEncodingArg::Deflate)]
@@ -81,7 +83,7 @@ pub struct ToPbpCommand {
     #[arg(long, value_name = "IMAGE")]
     pub pic1: Option<PathBuf>,
 
-    /// What to do when this game's EBOOT already exists: error, overwrite, or skip. overwrite-invalid acts as skip, and `rename` is rejected for directory outputs
+    /// What to do when this game's EBOOT already exists: error, overwrite, or skip. overwrite-invalid acts as skip, and `rename` is rejected
     #[arg(long = "on-conflict", value_enum, default_value_t = ConflictPolicyArg::Error)]
     pub on_conflict: ConflictPolicyArg,
 
@@ -139,7 +141,7 @@ pub async fn run(command: PsxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             options.splash = cmd.splash;
             options.icon0 = cmd.icon0;
             options.pic1 = cmd.pic1;
-            batch::run(&run, "psx.to_pbp", cmd.input, cmd.output_dir, options).await?;
+            batch::run(&run, "psx.to_pbp", cmd.input, cmd.output, options).await?;
         }
     }
     Ok(())
@@ -165,7 +167,7 @@ mod tests {
     fn to_pbp_defaults() {
         let c = to_pbp(&["game.cue"]);
         assert_eq!(c.input, PathBuf::from("game.cue"));
-        assert_eq!(c.output_dir, None);
+        assert_eq!(c.output, None);
         assert_eq!(c.compression, BlockEncodingArg::Deflate);
         assert_eq!(c.on_conflict, ConflictPolicyArg::Error);
         assert_eq!((c.title, c.disc_id, c.splash), (None, None, None));
@@ -191,7 +193,7 @@ mod tests {
             "--report",
             "run.json",
         ]);
-        assert_eq!(c.output_dir, Some(PathBuf::from("out")));
+        assert_eq!(c.output, Some(PathBuf::from("out")));
         assert_eq!(c.compression, BlockEncodingArg::Stored);
         assert_eq!(c.title.as_deref(), Some("My Game"));
         assert_eq!(c.disc_id.as_deref(), Some("SLUS-99999"));
