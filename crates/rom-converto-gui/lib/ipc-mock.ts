@@ -1009,7 +1009,8 @@ export const handlers: Record<string, Handler> = {
 		// An empty extension list matches nothing, as the Tauri command does,
 		// so folder-input ops (dat, organize) stage the directory itself.
 		if (Array.isArray(a.exts) && a.exts.length === 0) return [];
-		return [`${dir}/a.nsp`, `${dir}/b.nsp`, `${dir}/c.nsp`];
+		// Two files sit in subfolders so Merge Switch game folders has games to stage.
+		return [`${dir}/a.nsp`, `${dir}/Game A/b.nsp`, `${dir}/Game B/c.nsp`];
 	},
 	cmd_cancel: async (a) => {
 		if (typeof a.taskId === "string") cancelled.add(a.taskId);

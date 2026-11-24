@@ -6,13 +6,27 @@ use super::ops::{
     ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, output_or, preflight_space,
     required_input, skipped_already_done,
 };
-use super::organize::FileIdentity;
+use super::organize::{FileIdentity, location_under_root};
 use crate::nintendo::ntr::NtrError;
 use crate::nintendo::nx::{NxError, NxMergeFormat};
 use crate::util::fs::file_len;
 use crate::util::{CancelToken, Cancelled, OutputVerify, ProgressReporter};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
+
+/// Containers a merge reads, plain or as an archive member.
+const MERGE_EXTS: &[&str] = &["nsp", "xci"];
+
+/// The scan that collects one game folder's inputs, shared with the
+/// recursive run so both agree on what a game is.
+pub(crate) fn game_scan(max_depth: Option<usize>) -> crate::util::InputScan<'static> {
+    crate::util::InputScan {
+        exts: MERGE_EXTS,
+        member_exts: None,
+        max_depth,
+        skip_unpacked_twins: true,
+    }
+}
 
 pub(crate) async fn cue_to_iso(
     req: RunRequest,
@@ -223,7 +237,7 @@ fn stage_merge_inputs(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            crate::util::resolve_input(path, &["nsp", "xci"], cancel)
+            crate::util::resolve_input(path, MERGE_EXTS, cancel)
         })
         .collect()
 }
@@ -233,7 +247,50 @@ pub(crate) async fn nx_merge(
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
-    let inputs = option_inputs(&req)?;
+    // A folder without an explicit list is one game: every NSP or XCI, or
+    // archive holding one, under it. Its absolute path names the output,
+    // since `.` has no file name.
+    let (inputs, game) = match req.input.clone() {
+        Some(folder) if req.options.inputs.is_none() && folder.is_dir() => {
+            // Earlier merges in the output directory are not part of a game.
+            let output_dir = req.options.output_dir.as_deref();
+            if output_dir
+                .and_then(|dir| FileIdentity::probe(dir).ok())
+                .is_some_and(|out| FileIdentity::probe(&folder).is_ok_and(|id| id == out))
+            {
+                return Err(invalid_arg(format!(
+                    "{} is the output directory, not a game folder",
+                    folder.display()
+                )));
+            }
+            let max_depth = req.options.max_depth;
+            let scan_folder = folder.clone();
+            let scan_cancel = cancel.clone();
+            let mut inputs = tokio::task::spawn_blocking(move || {
+                crate::util::collect_inputs(&scan_folder, &game_scan(max_depth), &scan_cancel)
+            })
+            .await?
+            .with_context(|| format!("scanning {}", folder.display()))?;
+            if let Some(out) = output_dir.and_then(|dir| dir.canonicalize().ok()) {
+                inputs.retain(|input| !location_under_root(input, &out));
+            }
+            if inputs.is_empty() {
+                return Err(invalid_arg(format!(
+                    "no NSP or XCI files found in {}",
+                    folder.display()
+                )));
+            }
+            // `absolute` keeps a trailing `..`, which has no file name either.
+            let named = std::path::absolute(&folder)?;
+            let named = if named.file_name().is_some() {
+                named
+            } else {
+                folder.canonicalize()?
+            };
+            (inputs, Some(named))
+        }
+        _ => (option_inputs(&req)?, None),
+    };
     let format = match req.options.format.as_deref().unwrap_or("nsp") {
         "nsp" => NxMergeFormat::Nsp,
         "xci" => NxMergeFormat::Xci,
@@ -258,7 +315,9 @@ pub(crate) async fn nx_merge(
         ConvertTarget {
             skip_if_already: None,
             input: &first,
-            derive: &|basis, _| crate::nintendo::nx::derive_merged_path(basis, ext),
+            derive: &|basis, _| {
+                crate::nintendo::nx::derive_merged_path(game.as_deref().unwrap_or(basis), ext)
+            },
             operation: "nx.merge",
             verify: OutputVerify::None,
         },
@@ -634,6 +693,462 @@ mod tests {
             .collect::<Vec<_>>();
         // Both archives' contents were staged and merged.
         assert_eq!(names.len(), 4, "{names:?}");
+    }
+
+    /// A one-title NSP: a meta NCA plus the program NCA it references.
+    fn merge_fixture_nsp(
+        meta_id: u8,
+        content_id: u8,
+        title_id: u64,
+        title_type: u8,
+        version: u32,
+    ) -> Vec<u8> {
+        use crate::nintendo::nx::test_fixtures::{build_meta_nca, build_test_nsp};
+        build_test_nsp(&[
+            (
+                format!("{}.cnmt.nca", hex::encode([meta_id; 16])),
+                build_meta_nca(title_id, version, title_type, &[[content_id; 16]]),
+            ),
+            (
+                format!("{}.nca", hex::encode([content_id; 16])),
+                vec![0xAB; 0x800],
+            ),
+        ])
+    }
+
+    /// `base/` with `Game A` (a valid base plus update), `Game B` (an NSP of
+    /// garbage) and a valid loose `loose.nsp` that is not part of any game.
+    fn merge_batch_base(dir: &std::path::Path) -> std::path::PathBuf {
+        use crate::nintendo::nx::models::cnmt::{CNMT_TYPE_APPLICATION, CNMT_TYPE_PATCH};
+
+        let base = dir.join("base");
+        let game_a = base.join("Game A");
+        let game_b = base.join("Game B");
+        std::fs::create_dir_all(&game_a).unwrap();
+        std::fs::create_dir_all(&game_b).unwrap();
+        std::fs::write(
+            game_a.join("base.nsp"),
+            merge_fixture_nsp(1, 0x11, 0x0100_AAAA_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        )
+        .unwrap();
+        std::fs::write(
+            game_a.join("update.nsp"),
+            merge_fixture_nsp(2, 0x22, 0x0100_AAAA_0000_0800, CNMT_TYPE_PATCH, 1),
+        )
+        .unwrap();
+        std::fs::write(game_b.join("broken.nsp"), vec![0xEE; 0x400]).unwrap();
+        std::fs::write(
+            base.join("loose.nsp"),
+            merge_fixture_nsp(3, 0x33, 0x0100_CCCC_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        )
+        .unwrap();
+        base
+    }
+
+    fn all_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(all_files(&path));
+            } else {
+                out.push(path);
+            }
+        }
+        out
+    }
+
+    fn assert_is_pfs0(path: &std::path::Path) {
+        let blob = std::fs::read(path).unwrap();
+        crate::nintendo::nx::models::Pfs0::read(&mut std::io::Cursor::new(&blob)).unwrap();
+    }
+
+    fn pfs0_entry_count(path: &std::path::Path) -> usize {
+        let blob = std::fs::read(path).unwrap();
+        crate::nintendo::nx::models::Pfs0::read(&mut std::io::Cursor::new(&blob))
+            .unwrap()
+            .files
+            .len()
+    }
+
+    fn record_for<'a>(
+        res: &'a crate::runner::models::RunResponse,
+        game: &str,
+    ) -> &'a crate::util::ReportRecord {
+        let hits: Vec<_> = res
+            .records
+            .iter()
+            .filter(|r| r.input_path.contains(game) || r.output_path.contains(game))
+            .collect();
+        assert_eq!(hits.len(), 1, "{game}: {res:?}");
+        hits[0]
+    }
+
+    async fn run_merge_batch(
+        base: &std::path::Path,
+        keys: &std::path::Path,
+        extra: serde_json::Value,
+    ) -> crate::runner::models::RunResponse {
+        let mut options = json!({ "recursive": true, "keys": keys });
+        options
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let req = json!({ "operation": "nx.merge", "input": base, "options": options });
+        run_json(&req.to_string(), CancelToken::new()).await
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_merges_each_game_folder_and_isolates_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+
+        let res = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert_eq!(res.code, "partial_failure", "{res:?}");
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        let merged = base.join("Game A (Merged).nsp");
+        assert_is_pfs0(&merged);
+        let a = record_for(&res, "Game A");
+        assert_eq!(a.status, crate::util::FileStatus::Ok, "{res:?}");
+        assert_eq!(
+            record_for(&res, "Game B").status,
+            crate::util::FileStatus::Failed,
+            "{res:?}"
+        );
+        assert!(!base.join("Game B (Merged).nsp").exists());
+        assert!(!base.join("loose (Merged).nsp").exists());
+        assert!(
+            all_files(dir.path())
+                .iter()
+                .all(|p| !p.to_string_lossy().contains("loose (Merged)")),
+            "loose.nsp is not a game"
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_rerun_skips_games_already_merged() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let first = run_merge_batch(&base, &keys, json!({})).await;
+        let merged = base.join("Game A (Merged).nsp");
+        assert_eq!(
+            record_for(&first, "Game A").status,
+            crate::util::FileStatus::Ok,
+            "{first:?}"
+        );
+        let before = std::fs::read(&merged).unwrap();
+
+        let second = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert_eq!(
+            record_for(&second, "Game A").status,
+            crate::util::FileStatus::Skipped,
+            "{second:?}"
+        );
+        assert_eq!(std::fs::read(&merged).unwrap(), before);
+
+        // Without the broken game, a rerun that only skips passes.
+        std::fs::remove_dir_all(base.join("Game B")).unwrap();
+        let third = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert!(third.ok, "{third:?}");
+        assert_eq!(
+            record_for(&third, "Game A").status,
+            crate::util::FileStatus::Skipped,
+            "{third:?}"
+        );
+        assert_eq!(std::fs::read(&merged).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_writes_into_output_dir_and_does_not_treat_it_as_a_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let out = base.join("merged");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(out.join("X (Merged).nsp"), b"earlier output").unwrap();
+
+        let res = run_merge_batch(&base, &keys, json!({ "output_dir": out })).await;
+
+        // Game A and Game B only: the output directory ran as no game.
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|r| !std::path::Path::new(&r.input_path).starts_with(&out)),
+            "{res:?}"
+        );
+        assert_is_pfs0(&out.join("Game A (Merged).nsp"));
+        assert!(!base.join("Game A (Merged).nsp").exists());
+        assert!(
+            all_files(dir.path())
+                .iter()
+                .all(|p| !p.to_string_lossy().contains("merged (Merged)")),
+            "{res:?}"
+        );
+        assert_eq!(
+            std::fs::read(out.join("X (Merged).nsp")).unwrap(),
+            b"earlier output"
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_merge_game_folder_input_merges_it_as_one_game() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_ADD_ON_CONTENT;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let dlc = base.join("Game A").join("DLC");
+        std::fs::create_dir(&dlc).unwrap();
+        std::fs::write(
+            dlc.join("dlc.nsp"),
+            merge_fixture_nsp(4, 0x44, 0x0100_AAAA_0000_1001, CNMT_TYPE_ADD_ON_CONTENT, 0),
+        )
+        .unwrap();
+        let req = json!({
+            "operation": "nx.merge",
+            "input": base.join("Game A"),
+            "options": { "keys": keys }
+        });
+
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+
+        assert!(res.ok, "{res:?}");
+        // Base, update and the nested DLC: two NCAs each.
+        assert_eq!(pfs0_entry_count(&base.join("Game A (Merged).nsp")), 6);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nx_merge_recursive_does_not_follow_a_linked_subfolder() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::write(
+            elsewhere.join("game.nsp"),
+            merge_fixture_nsp(5, 0x55, 0x0100_DDDD_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&elsewhere, base.join("Linked")).unwrap();
+
+        let res = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert_eq!(res.records.len(), 2, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|record| !record.input_path.contains("Linked")),
+            "{res:?}"
+        );
+        assert!(!base.join("Linked (Merged).nsp").exists());
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_report_has_one_row_per_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let report = dir.path().join("report.csv");
+
+        run_merge_batch(&base, &keys, json!({ "report": report })).await;
+
+        let csv = std::fs::read_to_string(&report).unwrap();
+        let rows: Vec<&str> = csv
+            .lines()
+            .filter(|line| line.contains(&*base.to_string_lossy()))
+            .collect();
+        assert_eq!(rows.len(), 2, "{csv}");
+        for game in ["Game A", "Game B"] {
+            assert!(rows.iter().any(|row| row.contains(game)), "{game}: {csv}");
+        }
+    }
+
+    fn write_zip_member(path: &std::path::Path, name: &str, data: &[u8]) {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        let opts: zip::write::SimpleFileOptions =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(name, opts).unwrap();
+        zip.write_all(data).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_ignores_a_folder_of_unrelated_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        std::fs::remove_dir_all(base.join("Game B")).unwrap();
+        let extras = base.join("Extras");
+        std::fs::create_dir(&extras).unwrap();
+        write_zip_member(&extras.join("manual.zip"), "manual.txt", b"no container");
+
+        let res = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records.len(), 1, "{res:?}");
+        assert_eq!(
+            record_for(&res, "Game A").status,
+            crate::util::FileStatus::Ok,
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_merge_recursive_merges_a_game_folder_holding_only_an_archive() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        std::fs::remove_dir_all(base.join("Game B")).unwrap();
+        let zipped = base.join("Game Z");
+        std::fs::create_dir(&zipped).unwrap();
+        write_zip_member(
+            &zipped.join("game.zip"),
+            "game.nsp",
+            &merge_fixture_nsp(6, 0x66, 0x0100_FFFF_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        );
+
+        let res = run_merge_batch(&base, &keys, json!({})).await;
+
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            record_for(&res, "Game Z").status,
+            crate::util::FileStatus::Ok,
+            "{res:?}"
+        );
+        assert_eq!(pfs0_entry_count(&base.join("Game Z (Merged).nsp")), 2);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nx_merge_recursive_skips_an_unreadable_folder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        std::fs::remove_dir_all(base.join("Game B")).unwrap();
+        let locked = base.join("Locked");
+        std::fs::create_dir(&locked).unwrap();
+        let set_mode = |mode| {
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set_mode(0o000);
+        // Root reads it anyway, which leaves nothing to test.
+        if std::fs::read_dir(&locked).is_ok() {
+            set_mode(0o755);
+            return;
+        }
+
+        let res = run_merge_batch(&base, &keys, json!({})).await;
+        set_mode(0o755);
+
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            record_for(&res, "Locked").status,
+            crate::util::FileStatus::Skipped,
+            "{res:?}"
+        );
+        assert_eq!(
+            record_for(&res, "Game A").status,
+            crate::util::FileStatus::Ok,
+            "{res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_merge_game_folder_that_is_the_output_dir_fails_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let game = base.join("Game A");
+        let sorted_files = || {
+            let mut files = all_files(dir.path());
+            files.sort();
+            files
+        };
+        let before = sorted_files();
+        let req = json!({
+            "operation": "nx.merge",
+            "input": game,
+            "options": { "keys": keys, "output_dir": game }
+        });
+
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+
+        assert_eq!(res.code, "invalid_argument", "{res:?}");
+        assert_eq!(sorted_files(), before);
+    }
+
+    #[tokio::test]
+    async fn nx_merge_game_folder_does_not_read_an_output_dir_nested_in_it() {
+        use crate::nintendo::nx::models::cnmt::CNMT_TYPE_APPLICATION;
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let base = merge_batch_base(dir.path());
+        let game = base.join("Game A");
+        let out = game.join("merged");
+        std::fs::create_dir(&out).unwrap();
+        std::fs::write(
+            out.join("Earlier (Merged).nsp"),
+            merge_fixture_nsp(7, 0x77, 0x0100_EEEE_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        )
+        .unwrap();
+        let req = json!({
+            "operation": "nx.merge",
+            "input": game,
+            "options": { "keys": keys, "output_dir": out }
+        });
+
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+
+        assert!(res.ok, "{res:?}");
+        // Base and update only: the earlier merge is not an input.
+        assert_eq!(pfs0_entry_count(&out.join("Game A (Merged).nsp")), 4);
+    }
+
+    #[tokio::test]
+    async fn nx_merge_game_folder_max_depth_one_reads_only_top_level_files() {
+        use crate::nintendo::nx::models::cnmt::{CNMT_TYPE_APPLICATION, CNMT_TYPE_PATCH};
+
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let game = dir.path().join("Game");
+        std::fs::create_dir_all(game.join("Updates")).unwrap();
+        std::fs::write(
+            game.join("base.nsp"),
+            merge_fixture_nsp(1, 0x11, 0x0100_AAAA_0000_0000, CNMT_TYPE_APPLICATION, 0),
+        )
+        .unwrap();
+        std::fs::write(
+            game.join("Updates").join("update.nsp"),
+            merge_fixture_nsp(2, 0x22, 0x0100_AAAA_0000_0800, CNMT_TYPE_PATCH, 1),
+        )
+        .unwrap();
+        let req = json!({
+            "operation": "nx.merge",
+            "input": game,
+            "options": { "keys": keys, "max_depth": 1 }
+        });
+
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+
+        assert!(res.ok, "{res:?}");
+        // Only the base's meta and program NCA: the update one level down is
+        // past the limit.
+        assert_eq!(pfs0_entry_count(&dir.path().join("Game (Merged).nsp")), 2);
     }
 
     #[tokio::test]

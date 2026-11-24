@@ -92,8 +92,11 @@ pub enum NxError {
     #[error("container holds a single title, nothing to split")]
     SingleTitle,
 
-    #[error("super-XCI merge requires XCI inputs; {0} is an NSP (use --format nsp)")]
-    XciMergeRequiresXciInputs(PathBuf),
+    #[error(
+        "input {input} has no common ticket or title key for rights ID {rights_id}, which XCI output needs",
+        input = .input.display()
+    )]
+    MergeMissingTitleKey { input: PathBuf, rights_id: String },
 
     #[error("input {input} is missing NCA {nca_id} referenced by its CNMT", input = .input.display())]
     MissingReferencedNca { input: PathBuf, nca_id: String },

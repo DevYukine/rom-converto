@@ -108,9 +108,10 @@ mode = "solid"
 Run a preset with `rom-converto dol compress game.iso --preset fast`.
 
 NX merge and split use the configured `nx.output_dir`, including presets, but do not
-inherit `nx.on_conflict`. Set their conflict policy on the command line. Split also
-inherits `nx.report`, like the other `nx` commands, so every split run writes that
-report unless `--report` names another; merge writes no report.
+inherit `nx.on_conflict`. Set their conflict policy on the command line. Both also
+inherit `nx.report`, like the other `nx` commands, so every merge and split run writes
+that report unless `--report` names another. `--output-dir` overrides `nx.output_dir`
+on both.
 
 ## Key files
 

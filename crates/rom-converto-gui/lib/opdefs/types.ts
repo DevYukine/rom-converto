@@ -159,6 +159,11 @@ export interface OpDef {
 	browseAlsoDirectory?: boolean;
 	// false: a dropped folder is ignored instead of scanned for inputs.
 	scanFolders?: boolean;
+	// True while the input is a base folder (Merge Switch game folders): a
+	// dropped or browsed folder stages each immediate subfolder holding a
+	// matching file as one folder item, DropZone picks folders, and every item
+	// runs as its own job even when the def sets `buildArgsAll`.
+	subfolderItems?: (store: OpStore) => boolean;
 
 	// Fixed progress/cancel key for commands that hardcode one (cue, hash,
 	// dat, cdn). When absent each job gets a unique `job-<uuid>` key.
@@ -186,7 +191,8 @@ export interface OpDef {
 	deriveOutput?: (input: string, store: OpStore) => string;
 	buildArgs: (store: OpStore, item: StagedItem, taskId: string) => RunPayload;
 	// When set, all staged items build a single spec instead of one per item
-	// (e.g. merge, which combines every dropped file into one output).
+	// (e.g. merge, which combines every dropped file into one output). Read it
+	// through `combinedArgs`, which honours `subfolderItems`.
 	buildArgsAll?: (store: OpStore, items: StagedItem[], taskId: string) => RunPayload;
 	chips: (store: OpStore) => string;
 }
@@ -284,6 +290,13 @@ export function dryRunArgs(args: RunPayload): RunPayload {
 	return { ...args, request: { ...args.request, dry_run: true } };
 }
 
+// The single spec every staged item folds into, or null when each item runs
+// as its own job.
+export function combinedArgs(def: OpDef, store: OpStore, items: StagedItem[], taskId: string): RunPayload | null {
+	if (!def.buildArgsAll || def.subfolderItems?.(store)) return null;
+	return def.buildArgsAll(store, items, taskId);
+}
+
 // The page's CLI echo has to match what queuing sends: a def with
 // `buildArgsAll` folds every staged item into one spec, so the echo is built
 // from the same list. `sample` is the first staged item, or a placeholder
@@ -295,8 +308,7 @@ export function pageEchoArgs(
 	sample: StagedItem,
 	taskId: string,
 ): RunPayload {
-	if (def.buildArgsAll) return def.buildArgsAll(store, items.length ? items : [sample], taskId);
-	return def.buildArgs(store, sample, taskId);
+	return combinedArgs(def, store, items.length ? items : [sample], taskId) ?? def.buildArgs(store, sample, taskId);
 }
 
 export function templateIsActive(store: OpStore): boolean {

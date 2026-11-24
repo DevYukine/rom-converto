@@ -9,8 +9,8 @@ use super::models::{
     VerifyReport, VerifyVerdict, WupTitleInputOption,
 };
 use super::ops_misc::{
-    ctr_bundle, ctr_unbundle, cue_to_cso, cue_to_iso, ntr_decrypt, ntr_encrypt, nx_merge, nx_split,
-    patch_apply,
+    ctr_bundle, ctr_unbundle, cue_to_cso, cue_to_iso, game_scan, ntr_decrypt, ntr_encrypt,
+    nx_merge, nx_split, patch_apply,
 };
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
@@ -697,7 +697,13 @@ pub(crate) static OPS: &[OpSpec] = &[
         input_exts: None,
         batch_output_dir: None,
         writes_output: true,
-        derive_output: None,
+        derive_output: Some(|o, p| {
+            let ext = match o.format.as_deref() {
+                Some("xci") => "xci",
+                _ => "nsp",
+            };
+            crate::nintendo::nx::derive_merged_path(p, ext)
+        }),
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(nx_merge(req, progress, cancel)),
     },
@@ -1038,11 +1044,67 @@ pub(crate) async fn run_batch_request(
     // A CDN dump is a tree of title directories, not of files, so its batch
     // form enumerates the subdirectories instead of scanning for extensions.
     let (files, wanted) = if op.name == "ctr.cdn_to_cia" {
-        let files = cdn_content_dirs(&root)?
+        let files = immediate_subdirs(&root)?
             .into_iter()
             .map(crate::util::CollectedInput::plain)
             .collect::<Vec<_>>();
         (files, "title directories".to_string())
+    } else if op.name == "nx.merge" {
+        // Each game is a folder of its base, updates and DLC, so the batch
+        // enumerates game folders; max_depth applies inside each game.
+        if req.options.inputs.is_some() {
+            return Err(invalid_arg("inputs cannot be combined with recursive"));
+        }
+        let scan_root = root.clone();
+        let output_dir = req.options.output_dir.clone();
+        let max_depth = req.options.max_depth;
+        let scan_cancel = cancel.clone();
+        let files = tokio::task::spawn_blocking(move || -> Result<Vec<_>> {
+            // An output directory inside the base holds merged outputs, not
+            // a game. One that does not exist yet cannot be a subfolder.
+            let output_dir = output_dir.and_then(|dir| FileIdentity::probe(&dir).ok());
+            let scan = game_scan(max_depth);
+            let mut games = Vec::new();
+            for dir in immediate_subdirs(&scan_root)? {
+                // A link could point anywhere, the base's own parent included.
+                if dir.is_symlink()
+                    || (output_dir.is_some() && FileIdentity::probe(&dir).ok() == output_dir)
+                {
+                    continue;
+                }
+                // An NSP or XCI by name makes a game without opening any
+                // archive; otherwise only an archive that holds one does.
+                let found = crate::util::fs::collect_files_with_exts(
+                    &dir,
+                    scan.exts,
+                    scan.max_depth,
+                    &scan_cancel,
+                )
+                .and_then(|plain| {
+                    if !plain.is_empty() {
+                        return Ok(true);
+                    }
+                    crate::util::collect_input_entries(&dir, &scan, &scan_cancel)
+                        .map(|entries| entries.iter().any(|entry| entry.unreadable.is_none()))
+                });
+                match found {
+                    Ok(true) => games.push(crate::util::CollectedInput::plain(dir)),
+                    Ok(false) => {}
+                    Err(_) if scan_cancel.is_cancelled() => return Err(Cancelled.into()),
+                    // A folder the run cannot read is skipped, not a game
+                    // that fails.
+                    Err(err) => games.push(crate::util::CollectedInput {
+                        output_basis: dir.clone(),
+                        path: dir,
+                        selection: None,
+                        unreadable: Some(err.to_string()),
+                    }),
+                }
+            }
+            Ok(games)
+        })
+        .await??;
+        (files, "game folders with NSP or XCI files".to_string())
     } else if op.name == "hash" {
         // Hashing is the CLI's plain digest walk: every file hashes as
         // itself, and an archive through the member the hash operation
@@ -1490,9 +1552,10 @@ pub(crate) async fn run_batch_request(
     })
 }
 
-/// The CDN title directories of a recursive `ctr.cdn_to_cia` run: every
-/// immediate subdirectory of `root` that is not OS junk.
-fn cdn_content_dirs(root: &Path) -> Result<Vec<PathBuf>> {
+/// Every immediate subdirectory of `root` that is not OS junk, sorted: the
+/// CDN title directories of a recursive `ctr.cdn_to_cia` run and the game
+/// folder candidates of a recursive `nx.merge` run.
+fn immediate_subdirs(root: &Path) -> Result<Vec<PathBuf>> {
     let mut dirs = std::fs::read_dir(root)
         .with_context(|| format!("scanning {}", root.display()))?
         .flatten()
@@ -6006,12 +6069,13 @@ mod tests {
 
     /// A writing operation that recurses must say which output a child
     /// claims, or duplicate detection silently skips it. `cue.merge` writes
-    /// to an explicit output only; `ctr.cdn_to_cia` recurses through its own
-    /// directory walk.
+    /// to an explicit output only; `ctr.cdn_to_cia` and `nx.merge` recurse
+    /// through their own directory walks.
     #[test]
     fn recursive_writing_rows_declare_their_output() {
         for op in OPS {
-            let recurses = op.batch_exts.is_some() || op.name == "ctr.cdn_to_cia";
+            let recurses =
+                op.batch_exts.is_some() || matches!(op.name, "ctr.cdn_to_cia" | "nx.merge");
             if op.writes_output && recurses && op.name != "cue.merge" {
                 assert!(
                     op.derive_output.is_some() || op.batch_output_dir.is_some(),

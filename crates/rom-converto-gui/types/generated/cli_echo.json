@@ -1244,7 +1244,11 @@
     "nx.merge": [
       "format",
       "keys",
-      "on_conflict"
+      "max_depth",
+      "on_conflict",
+      "output_dir",
+      "recursive",
+      "report"
     ],
     "nx.split": [
       "keys",

@@ -193,28 +193,44 @@ pub struct NxVerifyCommand {
 /// Merge a base container with its update and DLC into a single super NSP or XCI
 #[derive(Parser, Debug, Clone, Eq, PartialEq)]
 #[command(
-    long_about = "Merge a base container with its update and DLC into a single super NSP or XCI\n\nThe highest-version content metadata wins per title; NCAs shared between inputs are deduplicated. `--format nsp` (default) accepts a mix of NSP and XCI inputs; `--format xci` requires every input to already be an XCI.",
-    after_long_help = "EXAMPLES:\n  Super NSP: rom-converto nx merge base.nsp update.nsp dlc.nsp -o super.nsp\n  Super XCI: rom-converto nx merge base.xci update.xci --format xci -o super.xci\n"
+    long_about = "Merge a base container with its update and DLC into a single super NSP or XCI\n\nThe highest-version content metadata wins per title; NCAs shared between inputs are deduplicated. `--format nsp` (default) accepts a mix of NSP and XCI inputs; `--format xci` also accepts NSP inputs. Content that uses a title key is converted using the common tickets in those NSPs.\n\nPass a game folder to merge every NSP and XCI inside it into `<folder> (Merged)` next to the folder. With --recursive, INPUT is a folder of game folders: each subfolder is one game (base + updates + DLC) and is merged on its own. Games whose output already exists are skipped, and one failing game does not stop the others. Keep earlier merged outputs out of the game folders.",
+    after_long_help = "EXAMPLES:\n  Super NSP: rom-converto nx merge base.nsp update.nsp dlc.nsp -o super.nsp\n  Super XCI: rom-converto nx merge base.xci update.nsp dlc.nsp --format xci -o super.xci\n  One game folder: rom-converto nx merge ./games/Game\n  Every game folder: rom-converto nx merge ./games -R --output-dir ./merged\n"
 )]
 pub struct NxMergeCommand {
     /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
     #[arg(long = "keys", value_name = "PRODKEYS")]
     pub keys: Option<PathBuf>,
 
-    /// Base container plus its update and DLC containers, in any order. NSZ/XCZ inputs must be decompressed first
+    /// Base container plus its update and DLC containers, in any order, or one game folder holding them. With --recursive, one folder of game folders. NSZ/XCZ inputs must be decompressed first
     #[arg(required = true, num_args = 1.., value_name = "INPUT")]
     pub inputs: Vec<PathBuf>,
 
     /// Output path. Defaults to `<first input's name> (Merged).<nsp|xci>` next to the first input
-    #[arg(short = 'o', long = "output", value_name = "OUTPUT")]
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "OUTPUT",
+        conflicts_with_all = ["output_dir", "recursive"]
+    )]
     pub output: Option<PathBuf>,
 
-    /// Output container format. `nsp` (default) accepts a mix of NSP and XCI inputs; `xci` requires every input to already be an XCI
+    /// Directory to write the merged files into. Created if missing. Defaults to next to each game folder (or next to the first input)
+    #[arg(long = "output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+
+    /// Output container format. `nsp` (default) accepts a mix of NSP and XCI inputs; `xci` also accepts NSP inputs, converting title-key content with the common tickets in those NSPs
     #[arg(long = "format", value_parser = ["nsp", "xci"])]
     pub format: Option<String>,
 
+    /// Merge every game folder under INPUT, one output per subfolder. Each subfolder holding a .nsp or .xci (or an archive holding one) is one game (base + updates + DLC); loose files in INPUT are ignored. --max-depth counts from each game folder
+    #[arg(long, short = 'R', default_value_t = false)]
+    pub recursive: bool,
+
     #[command(flatten)]
     pub conflict: ConflictArgs,
+
+    #[command(flatten)]
+    pub batch: BatchArgs,
 }
 
 /// Split a super NSP or XCI into one NSP per title
@@ -430,15 +446,23 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         NxCommands::Merge(cmd) => {
             let eff = &effective.nx;
-            for input in &cmd.inputs {
-                ensure_input_exists(input)?;
+            if cmd.recursive {
+                anyhow::ensure!(
+                    cmd.inputs.len() == 1,
+                    "--recursive takes exactly one INPUT directory"
+                );
+                require_dir(&cmd.inputs[0])?;
+            } else {
+                for input in &cmd.inputs {
+                    ensure_input_exists(input)?;
+                }
             }
             let mut options = RunOptions::from(batch::Common {
-                recursive: false,
-                output_dir: eff.output_dir.clone(),
+                recursive: cmd.recursive,
+                output_dir: cmd.output_dir.or_else(|| eff.output_dir.clone()),
                 output_template: None,
-                max_depth: None,
-                report: None,
+                max_depth: cmd.batch.max_depth,
+                report: cmd.batch.report.or_else(|| eff.report.clone()),
                 policy: resolve_policy(
                     cmd.conflict.on_conflict,
                     cmd.conflict.force,
@@ -448,16 +472,23 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.keys = cmd.keys;
             options.format = Some(cmd.format.unwrap_or_else(|| "nsp".to_string()));
-            options.inputs = Some(
-                cmd.inputs
-                    .iter()
-                    .cloned()
-                    .map(WupTitleInputOption::Path)
-                    .collect(),
-            );
+            // One directory is a game folder (or, with -R, a folder of them); the
+            // runner lists its files itself.
+            if !(cmd.recursive || cmd.inputs.len() == 1 && cmd.inputs[0].is_dir()) {
+                options.inputs = Some(
+                    cmd.inputs
+                        .iter()
+                        .cloned()
+                        .map(WupTitleInputOption::Path)
+                        .collect(),
+                );
+            }
             let first = cmd.inputs[0].clone();
             let response = batch::run(&run, "nx.merge", first, cmd.output, options).await?;
-            if let Some(record) = response.records.first()
+            // A batch prints its own summary, and a dry run wrote nothing.
+            if !dry_run
+                && !cmd.recursive
+                && let Some(record) = response.records.first()
                 && record.status == FileStatus::Ok
             {
                 log::info!("wrote {}", record.output_path);

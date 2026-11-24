@@ -405,8 +405,6 @@ mod tests {
                     "{op}: positional output does not parse"
                 );
                 OutputKind::Positional
-            } else if cmd.get_opts().any(|a| a.get_long() == Some("output-dir")) {
-                OutputKind::OutputDir
             } else if cmd.get_opts().any(|a| a.get_long() == Some("output")) {
                 let output_flag = "--output".to_string();
                 assert!(
@@ -415,6 +413,8 @@ mod tests {
                     "{op}: --output does not parse"
                 );
                 OutputKind::OutputFlag
+            } else if cmd.get_opts().any(|a| a.get_long() == Some("output-dir")) {
+                OutputKind::OutputDir
             } else {
                 OutputKind::None
             };

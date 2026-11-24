@@ -39,8 +39,12 @@ const presetTag = computed(() =>
 	props.def.op === "compress" && props.def.console in PRESET_BINDINGS && config.activePreset ? `from ${config.activePreset}` : "",
 );
 
+const subfolderItems = computed(() => !!props.def.subfolderItems?.(store));
+// Items staged under one input mode mean something else under the other.
+watch(subfolderItems, clear);
+
 const cli = computed(() => {
-	const name = props.def.browseDirectory || !props.def.acceptedExts.length ? "input" : `input.${props.def.acceptedExts[0]}`;
+	const name = props.def.browseDirectory || subfolderItems.value || !props.def.acceptedExts.length ? "input" : `input.${props.def.acceptedExts[0]}`;
 	const sample: StagedItem = staged.value[0] ?? { id: "", path: name, name, size: 0, outExt: "" };
 	const taskId = opProgressKey(props.def, store) ?? "job";
 	return buildCliCommand(pageEchoArgs(props.def, store, staged.value, sample, taskId));
@@ -156,7 +160,7 @@ function copied() {
 			:drop-text="def.dropText"
 			:filters="def.browseFilters"
 			:multiple="!def.singleInput"
-			:directory="def.browseDirectory"
+			:directory="def.browseDirectory || subfolderItems"
 			:also-directory="def.browseAlsoDirectory"
 			@add="add"
 		/>

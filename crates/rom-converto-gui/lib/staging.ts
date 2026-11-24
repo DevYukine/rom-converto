@@ -10,6 +10,18 @@ function extOf(path: string): string {
 	return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
+// The immediate subfolders of `base` that hold at least one of the scanned
+// `files`; files directly in `base` belong to none.
+function subfoldersOf(base: string, files: string[]): string[] {
+	const root = base.replace(/[\\/]+$/, "").length + 1;
+	const dirs = new Set<string>();
+	for (const f of files) {
+		const cut = f.slice(root).search(/[\\/]/);
+		if (cut !== -1) dirs.add(f.slice(0, root + cut));
+	}
+	return [...dirs];
+}
+
 async function fileSize(path: string): Promise<number> {
 	try {
 		return await invoke<number>("cmd_file_size", { path });
@@ -32,13 +44,20 @@ export function useStaging(def: OpDef) {
 		// eligible files (NUS/CDN trees, hash). File-input ops must never stage
 		// a directory: their commands open the path as a regular file.
 		const folderInput = !!(def.browseDirectory || def.browseAlsoDirectory);
+		const subfolders = !!def.subfolderItems?.(store);
 		const files: string[] = [];
 		const dirs = new Set<string>();
 		for (const p of paths) {
 			const scanned = await scan.expand(p, recursive ? maxDepth : 1);
 			if (scanned !== null && def.scanFolders === false) continue;
 			let expanded: string[];
-			if (scanned === null) expanded = [p];
+			if (subfolders) {
+				// A plain file is no base folder, and an output directory inside
+				// it is no game: a rerun would merge every earlier output into one.
+				const outDir = String(store.outputDir ?? "").replace(/[\\/]+$/, "");
+				expanded = subfoldersOf(p, scanned ?? []).filter((d) => d !== outDir);
+				for (const d of expanded) dirs.add(d);
+			} else if (scanned === null) expanded = [p];
 			else if (scanned.length > 0) expanded = scanned;
 			else if (folderInput) {
 				expanded = [p];

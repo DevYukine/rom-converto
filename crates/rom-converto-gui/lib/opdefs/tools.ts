@@ -535,6 +535,10 @@ function nxMergedPath(input: string, store: OpStore): string {
 	return deriveNxMergedPath(input, String(store.format));
 }
 
+function nxGameFolders(store: OpStore): boolean {
+	return store.inputMode === "folders";
+}
+
 const nxMerge: OpDef = {
 	op: "tools",
 	console: "nx-merge",
@@ -546,12 +550,28 @@ const nxMerge: OpDef = {
 
 	title: "Merge Switch NSP/XCI",
 	subtitle: "Combines multiple NSP/XCI parts into one super container.",
-	dropText: "Drop NSP or XCI files to merge",
+	dropText: "Drop NSP or XCI files or folders",
 	acceptedExts: ["nsp", "xci", ...ARCHIVE_EXTS],
 	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci", ...ARCHIVE_EXTS] }],
+	subfolderItems: nxGameFolders,
 	progressKey: "nx-merge",
 
 	fields: [
+		{
+			kind: "segmented",
+			key: "inputMode",
+			label: "Input",
+			options: [
+				{ label: "Files", value: "files" },
+				{ label: "Game folders", value: "folders" },
+			],
+			// A rerun over the same base folder leaves games merged earlier alone.
+			onSet: (store) => {
+				if (nxGameFolders(store)) store.onConflict = "skip";
+			},
+			tooltip:
+				"Files merges every staged file into one container. Game folders takes a folder where each subfolder is one game (base, updates, and DLC), merges every game into its own container, and ignores files directly in the folder. Picking Game folders sets On conflict to Skip, so games merged earlier are left alone.",
+		},
 		{
 			kind: "segmented",
 			key: "format",
@@ -561,7 +581,7 @@ const nxMerge: OpDef = {
 				{ label: "XCI", value: "xci" },
 			],
 			tooltip:
-				"NSP accepts a mix of NSP and XCI inputs. XCI requires every input to already be an XCI, and produces a bootable cartridge image.",
+				"Both formats accept any mix of NSP and XCI inputs. XCI produces a bootable cartridge image.",
 		},
 		{
 			kind: "file",
@@ -591,19 +611,22 @@ const nxMerge: OpDef = {
 		{
 			kind: "save",
 			label: "File",
-			display: (store) => store.output,
+			display: (store) => (nxGameFolders(store) ? "" : store.output),
 			placeholder: "Automatic",
 			set: setSavedFile,
 			filters: [{ name: "Switch container", extensions: ["nsp", "xci"] }],
-			tooltip: "Filename for the merged container.",
+			tooltip: "Filename for the merged container. With Game folders, every game is named after its folder.",
 		},
 	],
 
 	showConflict: true,
 	showDryRun: true,
-	actionNote: "All staged files merge into one queue job producing a single output.",
+	actionNote: "Staged files merge into one queue job. Each game folder runs as its own job.",
 
-	deriveOutput: (input, store) => withOutputDir(store.output || nxMergedPath(input, store), store.outputDir || dirName(input)),
+	deriveOutput: (input, store) =>
+		nxGameFolders(store)
+			? withOutputDir(`${input} (Merged).${store.format}`, store.outputDir)
+			: withOutputDir(store.output || nxMergedPath(input, store), store.outputDir || dirName(input)),
 	buildArgs: (store, item, taskId) => mergeArgs(store, [item.path], taskId),
 	buildArgsAll: (store, items, taskId) =>
 		mergeArgs(store, items.map((i) => i.path), taskId),
@@ -611,14 +634,18 @@ const nxMerge: OpDef = {
 };
 
 // Every staged part merges into one container, so the first input names the
-// job and the rest travel in `options.inputs`.
+// job and the rest travel in `options.inputs`. A game folder is a single input
+// the runner expands and names the output after, so only the directory travels.
 function mergeArgs(store: OpStore, inputs: string[], taskId: string): RunPayload {
+	const folder = nxGameFolders(store);
 	return runArgs(
 		"nx.merge",
 		inputs[0] ?? null,
-		withOutputDir(store.output || (inputs[0] ? nxMergedPath(inputs[0], store) : ""), store.outputDir || (inputs[0] ? dirName(inputs[0]) : "")),
+		folder
+			? null
+			: withOutputDir(store.output || (inputs[0] ? nxMergedPath(inputs[0], store) : ""), store.outputDir || (inputs[0] ? dirName(inputs[0]) : "")),
 		{
-			inputs,
+			...(folder ? { output_dir: store.outputDir || null } : { inputs }),
 			format: store.format,
 			keys: store.keys || null,
 			on_conflict: store.onConflict,

@@ -7,7 +7,7 @@ import { basename } from "~/composables/useDerivedPath";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import { outcomeConflicts, outcomeNote, type DryRunLine } from "~/lib/dry-run";
-import { dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
+import { combinedArgs, dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
 import type { OrganizeData, RunOutcome } from "~/types";
@@ -49,9 +49,9 @@ function blockedByExplicitKey(): boolean {
 function enqueue() {
 	if (!count.value) return;
 	if (blockedByExplicitKey()) return;
-	if (props.def.buildArgsAll) {
-		const taskId = taskIdFor();
-		const args = props.def.buildArgsAll(props.store, props.items, taskId);
+	const taskId = taskIdFor();
+	const args = combinedArgs(props.def, props.store, props.items, taskId);
+	if (args) {
 		queue.enqueue([
 			{
 				name: basename(requestPath(args, "output")) || `${count.value} files`,
@@ -106,8 +106,8 @@ async function dryRun() {
 	if (blockedByExplicitKey()) return;
 	const lines: DryRunLine[] = [];
 	let cmd = "";
-	if (props.def.buildArgsAll) {
-		const args = props.def.buildArgsAll(props.store, props.items, taskIdFor());
+	const args = combinedArgs(props.def, props.store, props.items, taskIdFor());
+	if (args) {
 		const command = opCommand(props.def, props.store);
 		cmd = buildCliCommand(args);
 		let note = "ok";

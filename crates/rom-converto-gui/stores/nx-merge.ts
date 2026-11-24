@@ -6,6 +6,7 @@ export const useNxMergeStore = makeOpStore("nx-merge", () => ({
   outputDir: "",
   keys: "",
   format: "nsp",
+  inputMode: "files",
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,
 }));

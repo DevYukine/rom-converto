@@ -167,8 +167,14 @@ uses `block_size_exp` to set the block size.
 `nx merge` combines uncompressed NSP/XCI containers; `nx split` writes per-title NSPs
 and skips an NSP that holds a single title, while a single-title XCI converts to one
 NSP. Both read their inputs from archives as well. Merge selects the highest content versions and drops unselected files, so
-splitting is not a lossless reversal. Selected NCA bytes are preserved, but generated
-XCI headers are unsigned. The tool warns that merged output is intended for emulator use.
+splitting is not a lossless reversal. A game folder is one merge input, and `nx merge -R`
+merges each subfolder of a base folder as its own game. NSP output preserves the selected
+NCA bytes. XCI output accepts NSP and XCI inputs: NCAs with a rights ID are converted to
+standard crypto using the common ticket in their NSP, so their headers are rewritten and
+no longer match the original signatures or metadata hashes, while NCA bodies are
+unchanged. Already decrypted NCAs are copied as they are, and an NCA with a missing or
+personalized ticket fails the merge. Generated XCI headers are unsigned. The tool warns
+that merged output is intended for emulator use.
 
 `nx decrypt` writes the plaintext container that [NxEmu](https://www.nxemu.com/) loads:
 `<name>.dnsp` from an NSP and `<name>.dxci` from an XCI. The layout is unchanged; every

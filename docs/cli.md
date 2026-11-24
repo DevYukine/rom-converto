@@ -565,7 +565,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `compress <INPUT> [-o OUTPUT]` | Compress NSP to NSZ or XCI to XCZ |
 | `decompress <INPUT> [-o OUTPUT]` | Restore NSZ/XCZ to NSP/XCI |
 | `decrypt <INPUT> [-o OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
-| `merge <INPUT>... [-o OUTPUT]` | Combine base, update, or DLC containers into one NSP or XCI |
+| `merge <INPUT>... [-o OUTPUT] [-R] [--output-dir DIR]` | Combine base, update, or DLC containers into one NSP or XCI. A game folder is one game; with `-R` each subfolder of a base folder is one game |
 | `split <INPUT> [--output-dir DIR] [-R]` | Write one NSP per title from an NSP or XCI, or from every one under a directory |
 | `verify <INPUT>` | Check that the header and the start of every section of each NCA decrypt and read back, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
@@ -576,12 +576,12 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `-l, --level <LEVEL>` | `compress` | Zstd level 1..=22; default 18 |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
 | `--block-size-exp <EXP>` | `compress` | Block size is `1 << exp` bytes; range 14..=32, default 20 (1 MiB) |
-| `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `split` | Choose the output directory |
-| `--format <nsp\|xci>` | `merge` | Default NSP. XCI output requires every input to be an XCI |
+| `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Choose the output directory. On `merge` it conflicts with `-o` |
+| `--format <nsp\|xci>` | `merge` | Default NSP. XCI output accepts NSP and XCI inputs. See [Merge and split](#merge-and-split) |
 | `--on-conflict <POLICY>`, `-f, --force` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Default `error` (`compress`, `decompress`, and `decrypt` take the config's `on_conflict` first); `-f` means overwrite. The flags conflict |
-| `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Process every container found in `INPUT` and its subdirectories |
-| `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `split` | Maximum directory depth under `--recursive`. 1 = top level only |
-| `--report <FILE>` | `compress`, `decompress`, `decrypt`, `split` | Write a run report. See [Run reports](#run-reports) |
+| `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Process every container found in `INPUT` and its subdirectories. On `merge`, each subfolder of `INPUT` is one game |
+| `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Maximum directory depth under `--recursive`. 1 = top level only. On `merge`, depth counts from each game folder |
+| `--report <FILE>` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Write a run report. See [Run reports](#run-reports) |
 
 A valid `prod.keys` is required and is never modified. Merge and split accept only
 uncompressed NSP/XCI inputs; decompress NSZ/XCZ first.
@@ -614,15 +614,43 @@ NCAs only. Other sidecars are dropped. Split always writes NSPs, named from the 
 stem, title ID, version, and an update/DLC marker where applicable. It cannot restore
 versions or files discarded by a merge.
 
-Merge targets emulator use and always displays a signature warning. Selected NCA
-bytes are copied unchanged; XCI output has newly generated, unsigned gamecard headers.
+Merge targets emulator use and always displays a signature warning. NSP output copies
+the selected NCAs unchanged. XCI output has newly generated, unsigned gamecard headers.
+
+`--format xci` accepts NSP inputs. An NCA that uses title-key crypto (it has a rights ID)
+is converted to standard crypto: the title key comes from the common ticket inside that
+NSP, goes into the NCA key area, the rights ID is cleared, and the NCA header is
+re-encrypted. NCA bodies are unchanged. Tickets and certificates are not carried into the
+XCI. Already decrypted NCAs are copied as they are. An NCA whose ticket is missing or
+personalized fails the merge with an error naming the rights ID. Converted headers no
+longer match their original signatures or the content hashes in the metadata. Emulators
+load them, but the output is for emulator use only.
+
+Merge takes three kinds of input:
+
+| Input | Result |
+|---|---|
+| Files | `nx merge <INPUT>...` merges the listed files into one output |
+| One game folder | `nx merge <GAME_FOLDER>` treats every NSP/XCI (or archive holding one) anywhere under the folder as an input. A folder with none is an error |
+| Base folder with `-R` | `nx merge -R <BASE_DIR>` writes one output per immediate subfolder that holds at least one NSP/XCI (or archive holding one) |
+
+With `-R`, loose files directly in `BASE_DIR` are ignored (earlier merged outputs land
+there), as are subfolders with no container, linked subfolders, and the output directory
+itself. A subfolder that cannot be read is reported as skipped. `-R` takes
+exactly one `INPUT`, a directory. `--max-depth` needs `-R` and counts from each game
+folder: 1 reads only the files directly in each game folder. The base folder itself is
+always scanned one level. Keep earlier merged outputs out of a game folder; they are read
+as another input, so the result stays correct but the merge reads more data.
 
 Default outputs:
 
 - Merge: `<first stem> (Merged).nsp` or `.xci`, beside the first input.
+- Merge of a game folder: `<folder> (Merged).nsp` or `.xci`, beside the folder.
+- Merge with `-R`: `<folder> (Merged).nsp` or `.xci` for each game, in `BASE_DIR` beside
+  the game folders, or in `--output-dir`.
 - Split: a `<stem>_split` directory beside the input.
 - The configured `[nx].output_dir`, including presets, overrides those directories.
-  An explicit `-o` (merge) or `--output-dir` (split) takes precedence.
+  An explicit `-o` (merge) or `--output-dir` (merge, split) takes precedence.
 
 Split skips an NSP that holds a single title: there is nothing to split, and the
 skip keeps a rerun of `nx split -R` from splitting its own outputs again. A
@@ -631,11 +659,18 @@ is staged or written, so a dry run reports the skip too; without usable `prod.ke
 the dry run plans the container instead. This early check covers plain NSP files only: an
 archive is staged first, and its dry run plans a write.
 
-Merge supports neither recursion, reports, output templates, nor a positional output.
-Merge has no `--output-dir` flag; use `-o`. Split takes `-R`, `--max-depth`, and
-`--report`; with `-R`, `--output-dir` is the directory under which each input gets its own
+Merge and split take `-R`, `--max-depth`, and `--report`. Neither supports output
+templates or a positional output; merge takes `-o` or `--output-dir`, not both, and rejects
+`-o` with `-R`. With `-R`,
+split's `--output-dir` is the directory under which each input gets its own
 `<stem>_split` directory, mirroring the scanned tree. Configured conflict policies are not
 used: set `--on-conflict` or `-f` on the command.
+
+A `merge -R` rerun finds an existing output and records it as skipped, and the batch keeps
+going under the default `error` policy, as in every recursive command. `--on-conflict skip`
+skips without the warning; `-f` merges again. One failing game does not stop the others; the
+command exits non-zero at the end when any game failed. `--dry-run` lists one planned output
+per game. Merge writes the configured `[nx].report`, like split.
 
 `overwrite-invalid` acts as `skip` because these commands do not verify existing
 outputs. Split rejects `rename` when its output directory already holds files. Its overwrite mode reuses the directory,
@@ -644,6 +679,9 @@ replacing planned NSP files while leaving unrelated files in place.
 ```sh
 rom-converto nx merge base.nsp update.nsp dlc.nsp --keys prod.keys -o merged.nsp
 rom-converto nx merge base.xci update.xci --format xci -o merged.xci
+rom-converto nx merge base.xci update.nsp dlc.nsp --format xci -o merged.xci
+rom-converto nx merge "./games/Super Game"
+rom-converto nx merge -R ./games --format xci --output-dir ./merged --report merge.json
 rom-converto nx split merged.nsp --output-dir ./titles
 rom-converto nx split ./merged -R --output-dir ./titles
 rom-converto nx decrypt game.nsp --keys prod.keys

@@ -69,6 +69,37 @@ describe("useStaging", () => {
 		expect(staged.value).toHaveLength(1);
 	});
 
+	it("stages one folder per game subfolder of a base folder and ignores loose files", async () => {
+		const games = { ...def, browseDirectory: false, subfolderItems: () => true };
+		invoke.mockImplementation(async (cmd: string) =>
+			cmd === "cmd_scan_dir"
+				? ["/base/Game A (Merged).nsp", "/base/Game A/base.xci", "/base/Game A/dlc/dlc.nsp", "/base/Game B/update.nsp"]
+				: 4096,
+		);
+		const { staged, add } = useStaging(games);
+		await add(["/base/"]);
+		expect(staged.value.map((s) => [s.path, s.name, s.dir])).toEqual([
+			["/base/Game A", "Game A", true],
+			["/base/Game B", "Game B", true],
+		]);
+		expect(invoke.mock.calls.filter(([cmd]) => cmd === "cmd_file_size")).toHaveLength(0);
+	});
+
+	it("does not stage the output directory as a game", async () => {
+		const games = {
+			...def,
+			browseDirectory: false,
+			subfolderItems: () => true,
+			useStore: () => ({ output: "", outputDir: "/base/merged/", keys: "", format: "nsp" }),
+		};
+		invoke.mockImplementation(async (cmd: string) =>
+			cmd === "cmd_scan_dir" ? ["/base/merged/Game A (Merged).nsp", "/base/Game A/base.nsp"] : 4096,
+		);
+		const { staged, add } = useStaging(games);
+		await add(["/base"]);
+		expect(staged.value.map((s) => s.path)).toEqual(["/base/Game A"]);
+	});
+
 	it("stages nothing for a dropped folder when the def turns folder scanning off", async () => {
 		const folderless = { ...def, scanFolders: false };
 		invoke.mockImplementation(async (cmd: string) =>

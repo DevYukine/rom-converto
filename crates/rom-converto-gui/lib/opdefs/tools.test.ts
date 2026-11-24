@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { buildCliCommand, setWindowsQuoting } from "~/composables/useCliEcho";
 import { toolOps } from "./tools";
-import type { OpDef, OpStore, StagedItem } from "./types";
+import { combinedArgs, type OpDef, type OpStore, type StagedItem } from "./types";
 
 // The POSIX-quote expectations below must not depend on the host OS.
 beforeEach(() => {
@@ -261,3 +261,52 @@ describe("ctr bundle pages", () => {
 	});
 });
 
+
+describe("nx merge input modes", () => {
+	const def = defByStoreId["nx-merge"]!;
+
+	function gameFolders(store: OpStore) {
+		const field = def.fields.find((f) => f.key === "inputMode")!;
+		if (field.kind !== "segmented") throw new Error("Expected a segmented field");
+		store.inputMode = "folders";
+		field.onSet?.(store);
+	}
+
+	it("merges every staged file into one job in Files mode", () => {
+		const store = def.useStore();
+		const items = [item("/lib/base.nsp"), { ...item("/lib/update.nsp"), id: "t2" }];
+		const payload = combinedArgs(def, store, items, "t1")!;
+		expect(payload.request.input).toBe("/lib/base.nsp");
+		expect(payload.request.output).toBe("/lib/base (Merged).nsp");
+		expect(payload.request.options.inputs).toEqual(["/lib/base.nsp", "/lib/update.nsp"]);
+	});
+
+	it("runs each game folder as its own job named after the folder", () => {
+		const store = def.useStore();
+		store.output = "picked.nsp";
+		store.onConflict = "overwrite";
+		gameFolders(store);
+		expect(store.onConflict).toBe("skip");
+		expect(combinedArgs(def, store, [item("/base/Game A"), { ...item("/base/Game B"), id: "t2" }], "t1")).toBeNull();
+
+		const beside = def.buildArgs(store, item("/base/Game A"), "t1").request;
+		expect(beside.operation).toBe("nx.merge");
+		expect(beside.input).toBe("/base/Game A");
+		expect(beside.output).toBeNull();
+		expect(beside.options).not.toHaveProperty("inputs");
+		expect(beside.options.output_dir).toBeNull();
+		expect(beside.options.on_conflict).toBe("skip");
+		expect(def.deriveOutput!("/base/Game A", store)).toBe("/base/Game A (Merged).nsp");
+
+		store.outputDir = "/out";
+		const placed = def.buildArgs(store, item("/base/Game A"), "t1");
+		expect(placed.request.options.output_dir).toBe("/out");
+		expect(def.deriveOutput!("/base/Game A", store)).toBe("/out/Game A (Merged).nsp");
+		expect(def.outputRows.find((r) => r.kind === "save")!.display(store)).toBe("");
+
+		const echo = buildCliCommand(placed);
+		expect(echo).toContain("nx merge '/base/Game A'");
+		expect(echo).toContain("--on-conflict skip");
+		expect(echo).not.toContain("--output ");
+	});
+});

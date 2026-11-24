@@ -58,6 +58,17 @@ pub const TEST_BODY_KEY: [u8; 16] = [
     0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
 ];
 
+/// Titlekek for master key index 0, wrapping the title keys of
+/// [`build_common_ticket`].
+pub const TEST_TITLEKEK_00: [u8; 16] = [
+    0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77,
+];
+
+/// Plain title key of the NCAs built by [`build_title_key_nca`].
+pub const TEST_TITLE_KEY: [u8; 16] = [
+    0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0,
+];
+
 pub fn synthetic_keyset() -> KeySet {
     let mut kak = HashMap::new();
     kak.insert((KeyAreaKind::Application, 0), TEST_KAK_APPLICATION_00);
@@ -66,6 +77,31 @@ pub fn synthetic_keyset() -> KeySet {
         key_area_keys: kak,
         ..KeySet::default()
     }
+}
+
+/// [`synthetic_keyset`] plus [`TEST_TITLEKEK_00`], enough to unwrap the
+/// title key of a common ticket from [`build_common_ticket`].
+pub fn synthetic_keyset_with_titlekek() -> KeySet {
+    let mut keys = synthetic_keyset();
+    keys.titlekeks.insert(0, TEST_TITLEKEK_00);
+    keys
+}
+
+/// Builds a common (non-personalized) ticket for `rights_id` whose title
+/// key `title_key` is wrapped with [`TEST_TITLEKEK_00`]. Layout per
+/// `Ticket::parse`: RSA-2048 signature type, data block at 0x140.
+pub fn build_common_ticket(rights_id: [u8; 16], title_key: [u8; 16]) -> Vec<u8> {
+    let mut buf = vec![0u8; 0x2C0];
+    buf[0..4].copy_from_slice(&0x10004u32.to_le_bytes());
+    let data_off = 0x140;
+    let cipher = Aes128::new_from_slice(&TEST_TITLEKEK_00).unwrap();
+    let mut block = Array::from(title_key);
+    cipher.encrypt_block(&mut block);
+    buf[data_off + 0x40..data_off + 0x50].copy_from_slice(block.as_slice());
+    buf[data_off + 0x141] = 0; // common, not personalized
+    buf[data_off + 0x145] = 0; // master key revision 0
+    buf[data_off + 0x160..data_off + 0x170].copy_from_slice(&rights_id);
+    buf
 }
 
 pub fn encrypt_key_area_block(plain_keys: [[u8; 16]; KEY_AREA_KEY_COUNT]) -> [u8; KEY_AREA_TOTAL] {
@@ -92,6 +128,23 @@ pub fn build_synthetic_nca_with_rights_id(
     plaintext_section: &[u8],
     rights_id: [u8; 16],
 ) -> Vec<u8> {
+    build_nca_with_body_key(plaintext_section, rights_id, TEST_BODY_KEY, TEST_BODY_KEY)
+}
+
+/// Rights-protected NCA whose section 0 is AES-CTR encrypted with
+/// [`TEST_TITLE_KEY`], the way a title-key NCA is on a console. The key
+/// area holds unrelated keys, so only a ticket's title key reads it.
+/// `plaintext_section` must be a multiple of 0x200 bytes.
+pub fn build_title_key_nca(plaintext_section: &[u8], rights_id: [u8; 16]) -> Vec<u8> {
+    build_nca_with_body_key(plaintext_section, rights_id, [0x99; 16], TEST_TITLE_KEY)
+}
+
+fn build_nca_with_body_key(
+    plaintext_section: &[u8],
+    rights_id: [u8; 16],
+    key_area_body_key: [u8; 16],
+    body_key: [u8; 16],
+) -> Vec<u8> {
     let mut header = [0u8; NCA_HEADER_SIZE];
     header[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
     header[0x207] = 0;
@@ -116,7 +169,7 @@ pub fn build_synthetic_nca_with_rights_id(
     header[fs0_off + 0x140..fs0_off + 0x144].copy_from_slice(&ctr_low.to_le_bytes());
     header[fs0_off + 0x144..fs0_off + 0x148].copy_from_slice(&ctr_high.to_le_bytes());
 
-    let key_area = encrypt_key_area_block([[0x11; 16], [0x22; 16], TEST_BODY_KEY, [0x44; 16]]);
+    let key_area = encrypt_key_area_block([[0x11; 16], [0x22; 16], key_area_body_key, [0x44; 16]]);
     header[0x300..0x340].copy_from_slice(&key_area);
 
     let keys = synthetic_keyset();
@@ -134,7 +187,7 @@ pub fn build_synthetic_nca_with_rights_id(
         },
         section_start_byte,
     );
-    apply_ctr(&TEST_BODY_KEY, &counter, &mut encrypted).unwrap();
+    apply_ctr(&body_key, &counter, &mut encrypted).unwrap();
     nca.extend_from_slice(&encrypted);
     nca
 }
@@ -354,4 +407,47 @@ pub fn build_test_xci_partitions(files_by_partition: &[PartitionFiles<'_>]) -> V
     let prefix = build_xci_prefix(secure_offset, total_size, &root_header.bytes);
     out[..XCI_PREFIX_SIZE].copy_from_slice(&prefix);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::nintendo::nx::models::ticket::Ticket;
+    use crate::nintendo::nx::walker::NcaWalker;
+    use std::sync::Arc;
+
+    struct Mem(Vec<u8>);
+
+    impl crate::nintendo::nx::walker::NcaInput for Mem {
+        fn read_exact_at(
+            &self,
+            buf: &mut [u8],
+            offset: u64,
+        ) -> crate::nintendo::nx::error::NxResult<()> {
+            let start = offset as usize;
+            buf.copy_from_slice(&self.0[start..start + buf.len()]);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn title_key_nca_reads_back_through_its_common_ticket() {
+        let rights_id = [0xA5; 16];
+        let plain: Vec<u8> = (0..0x400u32).map(|i| (i % 253) as u8).collect();
+        let nca = build_title_key_nca(&plain, rights_id);
+        let nca_len = nca.len() as u64;
+
+        let ticket = Ticket::parse(&build_common_ticket(rights_id, TEST_TITLE_KEY)).unwrap();
+        assert_eq!(ticket.rights_id, rights_id);
+        assert!(!ticket.personalized);
+        let mut keys = synthetic_keyset_with_titlekek();
+        keys.title_keys
+            .insert(ticket.rights_id, ticket.encrypted_title_key);
+
+        let walker = NcaWalker::open(Arc::new(Mem(nca)), 0, nca_len, &keys).unwrap();
+        let section = walker.sections.first().unwrap();
+        let mut got = vec![0u8; plain.len()];
+        walker.read_section_plain(section, 0, &mut got).unwrap();
+        assert_eq!(got, plain);
+    }
 }

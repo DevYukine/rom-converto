@@ -1,8 +1,12 @@
 //! Super NSP / super XCI merge: fold a base plus its update and DLC
 //! containers into a single PFS0 (or gamecard secure partition). NCAs
 //! are copied byte-verbatim; only the meta NCA is decrypted, to read the
-//! CNMT and pick which content to keep. The merged container's outer
-//! signatures no longer validate, so CFW installers reject it.
+//! CNMT and pick which content to keep. An XCI carries no tickets, so XCI
+//! output rewrites the header of each rights-protected NCA (typically
+//! from NSP inputs) to standard crypto with the title key from its
+//! input's common ticket; the rest of the NCA is still copied verbatim.
+//! The merged container's outer signatures no longer validate, so CFW
+//! installers reject it.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
@@ -10,8 +14,17 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use aes::Aes128;
+use aes::cipher::array::Array;
+use aes::cipher::{BlockCipherDecrypt, KeyInit};
+
+use crate::nintendo::nx::constants::NCA_HEADER_SIZE;
 use crate::nintendo::nx::container::{
     ContainerKind, ContainerListing, detect_container, list_container,
+};
+use crate::nintendo::nx::crypto::aes_xts::{decrypt_nca_header, encrypt_nca_header};
+use crate::nintendo::nx::crypto::derive::{
+    KEY_AREA_KEY_COUNT, KEY_AREA_OFFSET, KEY_AREA_TOTAL, encrypt_key_area,
 };
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
@@ -20,8 +33,10 @@ use crate::nintendo::nx::models::cnmt::Cnmt;
 use crate::nintendo::nx::models::hfs0::{
     self as hfs0_mod, DEFAULT_HASHED_REGION, Hfs0FileSpec, Hfs0LayoutHints, hash_first_chunk,
 };
+use crate::nintendo::nx::models::nca::NcaHeader;
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
 use crate::nintendo::nx::util::{Pfs0Source, copy_range, write_pfs0_from_sources};
+use crate::nintendo::nx::walker::is_plaintext_header;
 use crate::util::path::is_same_file;
 use crate::util::pread::file_read_exact_at;
 use crate::util::{AtomicProgress, CancelToken, Cancelled, ProgressReporter, run_scratch_write};
@@ -38,14 +53,18 @@ pub enum NxMergeFormat {
 }
 
 /// Merges `inputs` (a base container plus its updates and DLC) into one
-/// super NSP or XCI at `output`, copying NCAs byte-verbatim.
+/// super NSP or XCI at `output`, copying NCAs byte-verbatim except for
+/// the rights-protected NCA headers XCI output converts to standard
+/// crypto.
 ///
 /// # Errors
 /// Returns [`NxError::NoInputs`] for an empty `inputs`,
 /// [`NxError::OutputIsInput`] when `output` is one of them, and an error
-/// if an input is a compressed container, yields no CNMT content,
-/// references an NCA it does not contain, or (for [`NxMergeFormat::Xci`])
-/// is an NSP rather than an XCI.
+/// if an input is a compressed container, yields no CNMT content, or
+/// references an NCA it does not contain. For [`NxMergeFormat::Xci`] it
+/// also fails, before writing, on an NCA header that is truncated or
+/// invalid, on a missing key, and with [`NxError::MergeMissingTitleKey`]
+/// when a rights-protected NCA's input has no common ticket for it.
 pub fn merge_containers(
     inputs: &[PathBuf],
     output: &Path,
@@ -146,25 +165,19 @@ fn write_super_xci(
     progress: &dyn ProgressReporter,
     cancel: &CancelToken,
 ) -> NxResult<()> {
-    for st in &sel.states {
-        if !st.kind.is_xci() {
-            return Err(NxError::XciMergeRequiresXciInputs(st.path.clone()));
-        }
-    }
-
-    let secure_sources: Vec<Pfs0Source> = sel.nca_order.iter().map(|r| sel.source(r)).collect();
-
-    let mut secure_specs = Vec::with_capacity(secure_sources.len());
-    for s in &secure_sources {
-        let take = (DEFAULT_HASHED_REGION as u64).min(s.size) as usize;
-        let mut head = vec![0u8; take];
-        file_read_exact_at(&s.file, &mut head, s.abs_offset)?;
+    // Every header is converted before the first output byte, so a
+    // missing title key fails the merge without a partial write.
+    let mut headers = Vec::with_capacity(sel.nca_order.len());
+    let mut secure_specs = Vec::with_capacity(sel.nca_order.len());
+    for r in &sel.nca_order {
+        let header = standard_crypto_header(&sel.states[r.src_index], r)?;
         secure_specs.push(Hfs0FileSpec {
-            name: s.name.clone(),
-            size: s.size,
-            sha256: hash_first_chunk(&head, DEFAULT_HASHED_REGION),
+            name: r.name.clone(),
+            size: r.size,
+            sha256: hash_first_chunk(&header, DEFAULT_HASHED_REGION),
             hashed_region_size: DEFAULT_HASHED_REGION,
         });
+        headers.push(header);
     }
     // The root entry hashes the partition's first 0x200 bytes, so the
     // secure header must fill at least a whole media unit and leave the
@@ -221,8 +234,19 @@ fn write_super_xci(
     out.write_all(&stub.bytes)?; // update
     out.write_all(&stub.bytes)?; // normal
     out.write_all(&secure_header.bytes)?;
-    for s in &secure_sources {
-        copy_range(&s.file, s.abs_offset, s.size, &mut out, progress, cancel)?;
+    let header_len = NCA_HEADER_SIZE as u64;
+    for (r, header) in sel.nca_order.iter().zip(&headers) {
+        out.write_all(header)?;
+        progress.inc(header_len);
+        let file = &sel.states[r.src_index].file;
+        copy_range(
+            file,
+            r.abs_offset + header_len,
+            r.size - header_len,
+            &mut out,
+            progress,
+            cancel,
+        )?;
     }
     let pad = (secure_total - secure_unpadded) as usize;
     if pad > 0 {
@@ -235,6 +259,53 @@ fn write_super_xci(
     out.write_all(&prefix)?;
     out.flush()?;
     Ok(())
+}
+
+/// Returns the header to write for NCA `r` of input `st`. An XCI carries
+/// no tickets, so a rights-protected NCA is converted to standard crypto:
+/// its title key goes into every key-area slot and its rights ID is
+/// cleared. Plaintext and rights-free headers come back unchanged.
+fn standard_crypto_header(st: &InputState, r: &SourceRef) -> NxResult<[u8; NCA_HEADER_SIZE]> {
+    if r.size < NCA_HEADER_SIZE as u64 {
+        return Err(NxError::NcaTruncated(r.name.clone()));
+    }
+    let mut raw = [0u8; NCA_HEADER_SIZE];
+    file_read_exact_at(&st.file, &mut raw, r.abs_offset)?;
+    if is_plaintext_header(&raw) {
+        return Ok(raw);
+    }
+    let header_key = st.keys.header_key()?;
+    let mut plain = raw;
+    decrypt_nca_header(&mut plain, header_key)?;
+    let header = NcaHeader::parse(&plain)?;
+    if header.rights_id == [0u8; 16] {
+        return Ok(raw);
+    }
+
+    let encrypted_title_key =
+        st.keys
+            .title_keys
+            .get(&header.rights_id)
+            .ok_or_else(|| NxError::MergeMissingTitleKey {
+                input: st.path.clone(),
+                rights_id: hex::encode(header.rights_id),
+            })?;
+    let master_idx = header.master_key_index();
+    let titlekek = Aes128::new_from_slice(st.keys.titlekek(master_idx)?)
+        .map_err(|e| NxError::AesError(format!("titlekek init: {e}")))?;
+    let mut title_key = Array::from(*encrypted_title_key);
+    titlekek.decrypt_block(&mut title_key);
+    let key_area = encrypt_key_area(
+        &[title_key.0; KEY_AREA_KEY_COUNT],
+        header.key_area_kind()?,
+        master_idx,
+        &st.keys,
+    )?;
+
+    plain[KEY_AREA_OFFSET..KEY_AREA_OFFSET + KEY_AREA_TOTAL].copy_from_slice(&key_area);
+    plain[0x230..0x240].fill(0);
+    encrypt_nca_header(&mut plain, header_key)?;
+    Ok(plain)
 }
 
 /// Rounds an HFS0 header length up to a whole media unit, never below one.
@@ -619,37 +690,20 @@ mod tests {
         assert!(matches!(err, NxError::MissingReferencedNca { .. }));
     }
 
-    #[test]
-    fn xci_format_rejects_nsp_input() {
-        let base = write_nsp(&[
-            meta_file(
-                nca_id(0x01),
-                0x0100_DDDD_0000_0000,
-                0,
-                CNMT_TYPE_APPLICATION,
-                &[nca_id(0x11)],
-            ),
-            prog(nca_id(0x11), 0x800),
-        ]);
-        let out = NamedTempFile::new().unwrap();
-        let err = merge_containers(
-            &[base.path().to_path_buf()],
-            out.path(),
-            NxMergeFormat::Xci,
-            &synthetic_keyset(),
-            &NoProgress,
-            &CancelToken::new(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, NxError::XciMergeRequiresXciInputs(_)));
-    }
-
     fn write_xci(files: &[(String, Vec<u8>)]) -> NamedTempFile {
         let blob = crate::nintendo::nx::test_fixtures::build_test_xci(files);
         let mut f = Builder::new().suffix(".xci").tempfile().unwrap();
         std::io::Write::write_all(&mut f, &blob).unwrap();
         f.flush().unwrap();
         f
+    }
+
+    /// XCI output parses every NCA header, so XCI tests need real NCAs.
+    fn standard_nca(id: [u8; 16]) -> (String, Vec<u8>) {
+        (
+            format!("{}.nca", hex::encode(id)),
+            build_synthetic_nca(&[0x5A; 0x800]),
+        )
     }
 
     #[test]
@@ -665,7 +719,7 @@ mod tests {
                 CNMT_TYPE_APPLICATION,
                 &[nca_id(0x11)],
             ),
-            prog(nca_id(0x11), 0x800),
+            standard_nca(nca_id(0x11)),
         ]);
         let dlc = write_xci(&[
             meta_file(
@@ -675,7 +729,7 @@ mod tests {
                 CNMT_TYPE_ADD_ON_CONTENT,
                 &[nca_id(0x22)],
             ),
-            prog(nca_id(0x22), 0x800),
+            standard_nca(nca_id(0x22)),
         ]);
 
         let out = Builder::new().suffix(".xci").tempfile().unwrap();
@@ -760,7 +814,7 @@ mod tests {
                 CNMT_TYPE_APPLICATION,
                 &[nca_id(0x11)],
             ),
-            prog(nca_id(0x11), 0x800),
+            standard_nca(nca_id(0x11)),
         ]);
         let dlc = write_xci(&[
             meta_file(
@@ -770,7 +824,7 @@ mod tests {
                 CNMT_TYPE_ADD_ON_CONTENT,
                 &[nca_id(0x22)],
             ),
-            prog(nca_id(0x22), 0x800),
+            standard_nca(nca_id(0x22)),
         ]);
 
         let out = Builder::new().suffix(".xci").tempfile().unwrap();
@@ -801,5 +855,230 @@ mod tests {
         ];
         want.sort();
         assert_eq!(secure, want);
+    }
+
+    use crate::nintendo::nx::constants::NCA_HEADER_SIZE;
+    use crate::nintendo::nx::crypto::aes_xts::decrypt_nca_header;
+    use crate::nintendo::nx::test_fixtures::{
+        TEST_HEADER_KEY, TEST_TITLE_KEY, build_common_ticket, build_synthetic_nca,
+        build_title_key_nca, synthetic_keyset_with_titlekek,
+    };
+    use crate::nintendo::nx::walker::NcaWalker;
+
+    const TITLE_KEY_RIGHTS_ID: [u8; 16] = [0xA5; 16];
+
+    /// A base XCI (meta NCA plus a standard NCA) and an update NSP whose
+    /// meta NCA references one title-key NCA, with or without that NCA's
+    /// common ticket. Also returns the title-key NCA's plaintext section.
+    fn title_key_merge_inputs(with_ticket: bool) -> (NamedTempFile, NamedTempFile, Vec<u8>) {
+        let plain: Vec<u8> = (0..0x800u32).map(|i| (i % 251) as u8).collect();
+        let base = write_xci(&[
+            meta_file(
+                nca_id(0x01),
+                0x0100_AAAA_0000_0000,
+                0,
+                CNMT_TYPE_APPLICATION,
+                &[nca_id(0x11)],
+            ),
+            (
+                format!("{}.nca", hex::encode(nca_id(0x11))),
+                build_synthetic_nca(&[0x5A; 0x800]),
+            ),
+        ]);
+        let mut files = vec![
+            meta_file(
+                nca_id(0x02),
+                0x0100_AAAA_0000_0800,
+                1,
+                CNMT_TYPE_PATCH,
+                &[nca_id(0x22)],
+            ),
+            (
+                format!("{}.nca", hex::encode(nca_id(0x22))),
+                build_title_key_nca(&plain, TITLE_KEY_RIGHTS_ID),
+            ),
+        ];
+        if with_ticket {
+            files.push((
+                format!("{}.tik", hex::encode(TITLE_KEY_RIGHTS_ID)),
+                build_common_ticket(TITLE_KEY_RIGHTS_ID, TEST_TITLE_KEY),
+            ));
+        }
+        (base, write_nsp(&files), plain)
+    }
+
+    #[test]
+    fn xci_merge_converts_title_key_ncas_from_nsp_to_standard_crypto() {
+        let (base, update, plain) = title_key_merge_inputs(true);
+        let out = Builder::new().suffix(".xci").tempfile().unwrap();
+        merge_containers(
+            &[base.path().to_path_buf(), update.path().to_path_buf()],
+            out.path(),
+            NxMergeFormat::Xci,
+            &synthetic_keyset_with_titlekek(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+
+        let listing = list_container(out.path()).unwrap();
+        assert_eq!(listing.kind, ContainerKind::Xci);
+        let secure: Vec<_> = listing
+            .entries
+            .iter()
+            .filter(|e| e.partition == Some("secure"))
+            .collect();
+        assert_eq!(secure.len(), 4, "{secure:?}");
+
+        let file = Arc::new(File::open(out.path()).unwrap());
+        let converted_name = format!("{}.nca", hex::encode(nca_id(0x22)));
+        for entry in &secure {
+            let mut header = [0u8; NCA_HEADER_SIZE];
+            file_read_exact_at(&file, &mut header, entry.abs_offset).unwrap();
+            decrypt_nca_header(&mut header, &TEST_HEADER_KEY).unwrap();
+            assert_eq!(&header[0x200..0x204], b"NCA3", "{}", entry.name);
+            assert_eq!(header[0x230..0x240], [0u8; 16], "{}", entry.name);
+        }
+
+        // A key set with no titlekeks and no title keys must now read it.
+        let entry = secure
+            .iter()
+            .find(|e| e.name == converted_name)
+            .expect("converted NCA is in the secure partition");
+        let walker = NcaWalker::open(
+            file.clone(),
+            entry.abs_offset,
+            entry.size,
+            &synthetic_keyset(),
+        )
+        .unwrap();
+        let section = walker.sections.first().expect("one section");
+        let mut got = vec![0u8; plain.len()];
+        walker.read_section_plain(section, 0, &mut got).unwrap();
+        assert_eq!(got, plain);
+    }
+
+    #[test]
+    fn xci_merge_without_the_ticket_fails_naming_the_rights_id() {
+        let (base, update, _) = title_key_merge_inputs(false);
+        let out = Builder::new().suffix(".xci").tempfile().unwrap();
+        let err = merge_containers(
+            &[base.path().to_path_buf(), update.path().to_path_buf()],
+            out.path(),
+            NxMergeFormat::Xci,
+            &synthetic_keyset_with_titlekek(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(&hex::encode(TITLE_KEY_RIGHTS_ID)),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn converted_xci_reads_back_through_info_and_verify_without_title_keys() {
+        use crate::nintendo::nx::info::{CnmtTitleKind, NxContainerKind, read_info};
+        use crate::nintendo::nx::test_fixtures::TEST_KAK_APPLICATION_00;
+        use crate::nintendo::nx::verify::verify_container;
+
+        let (base, update, _) = title_key_merge_inputs(true);
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("merged.xci");
+        merge_containers(
+            &[base.path().to_path_buf(), update.path().to_path_buf()],
+            &out,
+            NxMergeFormat::Xci,
+            &synthetic_keyset_with_titlekek(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+
+        // Header key and key-area key only: no titlekek, no title key.
+        let verify = |path: &Path| {
+            verify_container(path, &synthetic_keyset(), &NoProgress, &CancelToken::new()).unwrap()
+        };
+        assert!(
+            !verify(update.path()).ok,
+            "the unconverted update must need a titlekek"
+        );
+        let verdict = verify(&out);
+        assert_eq!(verdict.ncas.len(), 4, "{verdict:?}");
+        assert!(verdict.ncas.iter().all(|n| n.ok), "{verdict:?}");
+
+        let keys_file = dir.path().join("prod.keys");
+        std::fs::write(
+            &keys_file,
+            format!(
+                "header_key = {}\nkey_area_key_application_00 = {}\n",
+                hex::encode(TEST_HEADER_KEY),
+                hex::encode(TEST_KAK_APPLICATION_00)
+            ),
+        )
+        .unwrap();
+        let info = read_info(&out, Some(&keys_file)).unwrap();
+        assert_eq!(info.container_kind, NxContainerKind::Xci);
+        assert_eq!(info.nca_names.len(), 4, "{:?}", info.nca_names);
+        let full = info.full.expect("CNMTs decrypt with the header key");
+        assert_eq!(full.application_title_id, 0x0100_AAAA_0000_0000);
+        assert_eq!(full.title_kind, CnmtTitleKind::Application);
+        let related: Vec<_> = full
+            .related_titles
+            .iter()
+            .map(|t| (t.title_id, t.kind, t.version))
+            .collect();
+        assert_eq!(
+            related,
+            [(0x0100_AAAA_0000_0800, CnmtTitleKind::Patch, 1)],
+            "{related:?}"
+        );
+    }
+
+    #[test]
+    fn xci_merge_copies_plaintext_ncas_verbatim() {
+        use crate::nintendo::nx::decrypt::decrypt_container;
+
+        let (_, update, _) = title_key_merge_inputs(true);
+        let base = write_xci(&[meta_file(
+            nca_id(0x03),
+            0x0100_AAAA_0000_0000,
+            0,
+            CNMT_TYPE_APPLICATION,
+            &[],
+        )]);
+        let dir = tempfile::tempdir().unwrap();
+        let dxci = dir.path().join("base.dxci");
+        decrypt_container(base.path(), &dxci, &synthetic_keyset(), &NoProgress, None).unwrap();
+
+        let out = dir.path().join("merged.xci");
+        merge_containers(
+            &[dxci.clone(), update.path().to_path_buf()],
+            &out,
+            NxMergeFormat::Xci,
+            &synthetic_keyset_with_titlekek(),
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+
+        let src = std::fs::read(&dxci).unwrap();
+        let merged = std::fs::read(&out).unwrap();
+        let merged_entries = list_container(&out).unwrap().entries;
+        assert_eq!(merged_entries.len(), 3, "{merged_entries:?}");
+        let plain_entries = list_container(&dxci).unwrap().entries;
+        assert_eq!(plain_entries.len(), 1, "{plain_entries:?}");
+        for e in &plain_entries {
+            let at = e.abs_offset as usize;
+            let want = &src[at..at + e.size as usize];
+            assert_eq!(&want[0x200..0x204], b"DNCA", "{}", e.name);
+            let m = merged_entries
+                .iter()
+                .find(|m| m.name == e.name)
+                .expect("plaintext NCA is in the merged XCI");
+            let at = m.abs_offset as usize;
+            assert_eq!(&merged[at..at + m.size as usize], want, "{}", e.name);
+        }
     }
 }

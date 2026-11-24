@@ -109,19 +109,35 @@ their version and stored hashes.
 
 ### Switch merge and split
 
-Under Tools, **Merge Switch NSP/XCI** stages all selected files into one job.
-Choose NSP output (default), or XCI when every input is an XCI. The page supports
+Under Tools, **Merge Switch NSP/XCI** has an **Input** choice.
+
+| Input | Use it to |
+|---|---|
+| Files (default) | Stage files; all of them make one job |
+| Game folders | Drop or browse a base folder; each game subfolder is its own job |
+
+Choose NSP output (default) or XCI. XCI accepts NSP inputs: title-key NCAs are converted
+to standard crypto from the common tickets in the NSPs, and an NCA with a missing or
+personalized ticket fails the job. See [Formats](formats.md). The page supports
 `prod.keys`, output directory and filename, conflicts, and a dry run. It displays a
 persistent signature warning and is intended for emulator use.
 
-The warning appears for both output formats. Selected NCA bytes stay unchanged;
-generated XCI gamecard headers are unsigned.
+The warning appears for both output formats. NSP output keeps the selected NCAs
+unchanged; XCI output has unsigned gamecard headers and rewritten NCA headers.
+
+In Game folders mode, each subfolder that holds an NSP/XCI (or an archive holding one) is
+staged as its own item and runs as its own queue job with its own result. The output is
+`<folder> (Merged).nsp` or `.xci` beside the game folders, or in the chosen Output
+directory. The File row does not apply. Choosing Game folders sets On conflict to Skip,
+so a rerun passes over games already merged. Switching modes clears the staged items. The
+page shows the per-game command (`rom-converto nx merge <game folder> ...`). The CLI
+differs: `nx merge -R <base folder>` runs the whole base folder as one command.
 
 **Split Switch NSP/XCI** takes one container and writes one NSP per title, defaulting
 to `<stem>_split`. A single-title NSP is skipped; a single-title XCI converts to one
 NSP. Both pages take plain NSP/XCI files or archives holding one, and need `prod.keys`;
 decompress NSZ/XCZ first.
-Merge defaults to `<first stem> (Merged).nsp` or `.xci`. Split does not offer Rename
+Files mode defaults to `<first stem> (Merged).nsp` or `.xci`. Split does not offer Rename
 because its output is a directory.
 
 Under Decrypt, **Decrypt for NxEmu** converts an encrypted NSP or XCI into the DNSP or DXCI

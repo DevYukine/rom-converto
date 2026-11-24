@@ -8,7 +8,7 @@
 
 use aes::Aes128;
 use aes::cipher::array::Array;
-use aes::cipher::{BlockCipherDecrypt, KeyInit};
+use aes::cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::{KeyAreaKind, KeySet};
@@ -42,6 +42,36 @@ pub fn decrypt_key_area(
     Ok(out)
 }
 
+/// Encrypts four plain AES keys into the key-area layout that
+/// [`decrypt_key_area`] reads back.
+///
+/// # Errors
+/// Returns [`NxError::MissingKey`] when `keys` has no
+/// `key_area_key_<kind>_<master_index>`.
+pub fn encrypt_key_area(
+    plain_keys: &[[u8; KEY_AREA_KEY_SIZE]; KEY_AREA_KEY_COUNT],
+    kind: KeyAreaKind,
+    master_index: u8,
+    keys: &KeySet,
+) -> NxResult<[u8; KEY_AREA_TOTAL]> {
+    let kak = keys.key_area_key(kind, master_index)?;
+    let cipher = Aes128::new_from_slice(kak)
+        .map_err(|e| NxError::AesError(format!("key_area_key Aes128 init: {e}")))?;
+
+    let mut out = [0u8; KEY_AREA_TOTAL];
+    for (slot, plain) in out
+        .as_chunks_mut::<KEY_AREA_KEY_SIZE>()
+        .0
+        .iter_mut()
+        .zip(plain_keys)
+    {
+        let mut block = Array::from(*plain);
+        cipher.encrypt_block(&mut block);
+        slot.copy_from_slice(block.as_slice());
+    }
+    Ok(out)
+}
+
 /// NCA section bodies all use slot 2 of the decrypted key area.
 pub fn body_key(area: &[[u8; KEY_AREA_KEY_SIZE]; KEY_AREA_KEY_COUNT]) -> [u8; KEY_AREA_KEY_SIZE] {
     area[2]
@@ -50,7 +80,6 @@ pub fn body_key(area: &[[u8; KEY_AREA_KEY_SIZE]; KEY_AREA_KEY_COUNT]) -> [u8; KE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aes::cipher::BlockCipherEncrypt;
 
     #[test]
     fn round_trip_single_block() {
