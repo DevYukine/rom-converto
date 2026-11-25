@@ -14,6 +14,8 @@ export interface StagedItem {
 	outExt: string;
 	// Staged as a folder (an op with a folder picker whose directory held no eligible files).
 	dir?: boolean;
+	// The dropped or picked folder this file was scanned from; unset for files added one by one.
+	sourceRoot?: string;
 }
 
 export type FieldKind =
@@ -269,10 +271,37 @@ export function requestPath(args: RunPayload, field: "input" | "output"): string
 	return args.request[field] ?? "";
 }
 
+// Why the delete toggle is off, or "" when it is usable. `noOutputCheck` marks
+// pages whose verify toggle only hashes the output: the runner keeps every
+// original when verify_after runs on a format it cannot check.
+function deleteSourceBlock(store: OpStore, noOutputCheck: boolean): string {
+	if (noOutputCheck && store.verifyAfter) {
+		return "This format has no output check, so with Compute output hash on every original is kept. Turn it off to delete originals.";
+	}
+	return "";
+}
+
+export const deleteSourceField = (noOutputCheck = false): ToggleField => ({
+	kind: "toggle",
+	key: "deleteSource",
+	label: "Delete originals after success",
+	tooltip:
+		"Deletes each input, its track files, and a folder it leaves empty, after the output was written. Failed and skipped items keep their sources.",
+	disabled: (store) => !!deleteSourceBlock(store, noOutputCheck),
+	note: (store) => deleteSourceBlock(store, noOutputCheck),
+});
+
+// The scan root of a staged item travels with delete_source so the runner
+// prunes emptied folders only up to the folder the user dropped.
+export function withSourceRoot(args: RunPayload, item: StagedItem): RunPayload {
+	if (!args.request.options.delete_source || !item.sourceRoot) return args;
+	return { ...args, request: { ...args.request, options: { ...args.request.options, source_root: item.sourceRoot } } };
+}
+
 // The output/safety tail every write op puts in its RunOptions. `verify_after`
 // travels only for the ops that show the toggle, which are exactly the stores
-// carrying the field.
-export function commonOptions(store: OpStore): Partial<RunOptions> {
+// carrying the field. `delete_source` follows the same rule.
+export function commonOptions(store: OpStore, noOutputCheck = false): Partial<RunOptions> {
 	return {
 		on_conflict: store.onConflict,
 		skip_space_check: store.skipSpaceCheck,
@@ -282,6 +311,7 @@ export function commonOptions(store: OpStore): Partial<RunOptions> {
 		// ignored and the echo would lack --output-dir.
 		...(templateIsActive(store) ? { output_dir: store.outputDir || null } : {}),
 		...("verifyAfter" in store ? { verify_after: store.verifyAfter } : {}),
+		...("deleteSource" in store ? { delete_source: store.deleteSource && !deleteSourceBlock(store, noOutputCheck) } : {}),
 	};
 }
 

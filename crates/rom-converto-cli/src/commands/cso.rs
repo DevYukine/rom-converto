@@ -1,6 +1,6 @@
 use crate::commands::chd::{ChdCodecList, parse_chd_codecs};
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -79,6 +79,9 @@ pub struct CompressCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Decompress a CSO, ZSO, or DAX container back to a plain ISO
@@ -116,6 +119,9 @@ pub struct DecompressCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Compress a CSO, ZSO, or DAX straight to a CHD, through a temporary ISO
@@ -247,6 +253,7 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.format = Some(cso_format_name(cmd.format).to_string());
             options.block_size = cmd.block_size.or(eff.block_size);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "cso.compress",
@@ -259,7 +266,7 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         CsoCommands::Decompress(cmd) => {
             let eff = &effective.cso;
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir.or_else(|| eff.output_dir.clone()),
                 output_template: cmd.out.output_template,
@@ -272,6 +279,7 @@ pub async fn run(command: CsoCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "cso.decompress",

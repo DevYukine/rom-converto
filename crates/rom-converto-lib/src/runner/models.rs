@@ -80,6 +80,8 @@ impl RunSchemaManifest {
                 report: "path",
                 dat: "bool",
                 move_source: "bool",
+                delete_source: "bool",
+                source_root: "path",
                 playlists: "bool",
                 skip_space_check: "bool",
                 verify_after: "bool",
@@ -156,6 +158,8 @@ pub struct CommonOptionsSchema {
     pub report: &'static str,
     pub dat: &'static str,
     pub move_source: &'static str,
+    pub delete_source: &'static str,
+    pub source_root: &'static str,
     pub playlists: &'static str,
     pub skip_space_check: &'static str,
     pub verify_after: &'static str,
@@ -633,6 +637,14 @@ pub struct RunContext {
     /// The archive listing and member pick a recursive walk already made for
     /// this request's input, so the child does not list the archive again.
     pub archive_selection: Option<crate::util::ArchiveSelection>,
+    /// The `delete_source` state a recursive run shares with its children:
+    /// what each may delete, what earlier children already deleted, and the
+    /// folders to prune once the last child ran.
+    pub(crate) release: Option<std::sync::Arc<super::release::ReleaseScope>>,
+    /// Where a `delete_source` run's write leaves its output claim: the
+    /// claim lives until the release decides whether the source went.
+    pub(crate) output_claim:
+        Option<std::sync::Arc<std::sync::Mutex<Option<super::release::OutputClaim>>>>,
 }
 
 impl std::fmt::Debug for RunContext {
@@ -641,6 +653,8 @@ impl std::fmt::Debug for RunContext {
             .field("hash_cache", &self.hash_cache.is_some())
             .field("default_conflict", &self.default_conflict)
             .field("archive_selection", &self.archive_selection.is_some())
+            .field("release", &self.release.is_some())
+            .field("output_claim", &self.output_claim.is_some())
             .finish()
     }
 }
@@ -708,6 +722,13 @@ pub struct RunOptions {
     pub pic1: Option<PathBuf>,
     pub dat: Option<bool>,
     pub move_source: Option<bool>,
+    /// Deletes each converted input with every file it consists of once its
+    /// output was written (and, with `verify_after`, passed its check), then
+    /// the folders that leaves empty. Only operations whose output replaces
+    /// their input accept it.
+    pub delete_source: Option<bool>,
+    /// The folder a single `delete_source` run was queued from: folder pruning stops there.
+    pub source_root: Option<PathBuf>,
     pub playlists: Option<bool>,
     pub input_exclude: Option<Vec<String>>,
     pub filter_regex: Option<Vec<String>>,

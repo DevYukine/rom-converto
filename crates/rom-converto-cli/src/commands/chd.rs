@@ -1,6 +1,6 @@
 use crate::commands::cso::CsoFormatArg;
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use rom_converto_lib::disc::chd::ChdCodec;
 use std::path::PathBuf;
@@ -111,6 +111,9 @@ pub struct CompressCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Rewrite a legacy CHD as a version 5 CHD
@@ -141,7 +144,7 @@ pub struct MigrateCommand {
     pub out: OutputArgs,
 
     /// Replace the source file with the migrated v5 CHD instead of writing a .v5.chd sibling
-    #[arg(long = "in-place", conflicts_with_all = ["output", "output_flag", "output_dir", "output_template"])]
+    #[arg(long = "in-place", conflicts_with_all = ["output", "output_flag", "output_dir", "output_template", "delete_source"])]
     pub in_place: bool,
 
     /// Hunk size in bytes, a multiple of the source's unit size. Defaults to the source's hunk size
@@ -170,6 +173,9 @@ pub struct MigrateCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Extract a CHD back to .cue plus one .bin per track (CD) or .iso (DVD)
@@ -351,6 +357,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             options.codecs = codecs.map(|c| c.iter().map(ToString::to_string).collect());
             options.level = cmd.level.or(eff.level);
             options.mode = mode.map(|m| disc_mode_name(m).to_string());
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "chd.compress",
@@ -447,6 +454,7 @@ pub async fn run(command: ChdCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .codecs
                 .map(|c| c.iter().map(ToString::to_string).collect());
             options.level = opts.level;
+            cmd.source.apply(&mut options);
             batch::run(&run, "chd.migrate", cmd.input, explicit, options).await?;
         }
         ChdCommands::Extract(cmd) => {

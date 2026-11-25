@@ -741,6 +741,21 @@ mod chd_migrate_target_tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn in_place_conflicts_with_delete_source() {
+        let err =
+            MigrateCommand::try_parse_from(["migrate", "--in-place", "--delete-source", "in.chd"])
+                .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn verify_after_requires_delete_source() {
+        let err =
+            MigrateCommand::try_parse_from(["migrate", "--verify-after", "in.chd"]).unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
 }
 
 #[cfg(test)]

@@ -13,4 +13,5 @@ export const useCtrCompressStore = makeOpStore("ctr-compress", () => ({
   outputTemplate: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

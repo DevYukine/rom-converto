@@ -238,6 +238,20 @@ Verify after organize, under Safety, checks zips, copies, and conversions after
 they are written. A conversion whose format has no output check (3DS, Wii U,
 Xbox, Xbox 360, and PS3) fails as unverified and keeps its source.
 
+The conversion pages of the same operations have a **Delete originals after
+success** toggle. It maps to `--delete-source` and follows the same rules (see
+[Delete sources after conversion](cli.md#delete-sources-after-conversion)),
+including the cleanup of emptied folders. Files queued from a dropped folder
+treat that folder like `-R` does: emptied folders inside it go, the folder
+itself stays. Verify after conversion is `--verify-after`: with both on, a
+source goes only after its output passed the check. A page that offers Compute
+output hash instead has no output check for its format, so the toggle is off
+while that option is on. The Wii U bundle page has the toggle in its Safety
+card. For the rest of the session, a conversion that would overwrite an output
+whose original a delete run removed fails instead, with or without the toggle.
+Two queued jobs that write the same output at the same time also refuse each
+other instead of the last one winning.
+
 ## Output and safety controls
 
 Switch split and GoD conversion overwrite multiple files directly. Use a separate

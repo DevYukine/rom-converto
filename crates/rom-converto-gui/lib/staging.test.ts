@@ -48,6 +48,19 @@ describe("useStaging", () => {
 		await vi.waitFor(() => expect(staged.value[0]!.size).toBe(4096));
 	});
 
+	it("remembers the scanned folder on its files, and nothing on files added one by one", async () => {
+		invoke.mockImplementation(async (cmd: string, args: { dir?: string }) => {
+			if (cmd === "cmd_scan_dir") {
+				if (args.dir === "/lib/roms") return ["/lib/roms/a.nsp", "/lib/roms/sub/b.nsp"];
+				throw new Error("not a directory");
+			}
+			return 0;
+		});
+		const { staged, add } = useStaging(def);
+		await add(["/lib/roms", "/lib/single.nsp"]);
+		expect(staged.value.map((s) => s.sourceRoot)).toEqual(["/lib/roms", "/lib/roms", undefined]);
+	});
+
 	it("stages an empty folder for folder-input ops without asking its size", async () => {
 		invoke.mockImplementation(async (cmd: string) => (cmd === "cmd_scan_dir" ? [] : 4096));
 		const { staged, add } = useStaging(def);

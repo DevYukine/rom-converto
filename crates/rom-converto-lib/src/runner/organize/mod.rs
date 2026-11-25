@@ -1707,7 +1707,7 @@ fn single_link_identity(path: &Path) -> Option<FileIdentity> {
 
 /// Syncs outputs before sources are removed. Unsupported sync operations
 /// keep the previous behavior; file writeback errors must keep the sources.
-fn sync_outputs(outputs: &[PathBuf]) -> std::io::Result<()> {
+pub(super) fn sync_outputs(outputs: &[PathBuf]) -> std::io::Result<()> {
     for output in outputs {
         if !std::fs::metadata(output).is_ok_and(|meta| meta.is_file()) {
             continue;
@@ -1792,7 +1792,7 @@ fn sync_file_data(file: &std::fs::File) -> std::io::Result<()> {
 /// and symlinked directories) with the file name re-joined. The entry's own
 /// final symlink is never followed, so a link is judged by where it sits.
 /// A bare relative name has the empty parent, which is the current directory.
-fn entry_location(path: &Path) -> PathBuf {
+pub(super) fn entry_location(path: &Path) -> PathBuf {
     let parent = path.parent().map(|parent| {
         if parent.as_os_str().is_empty() {
             Path::new(".")
@@ -1858,7 +1858,7 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
 /// prefix really lives. A folded tail can land on an existing symlink
 /// (`missing/../link/out`), so the step repeats on its own result until
 /// the path stops changing (bounded, so a link cycle cannot spin).
-fn real_layout(path: &Path) -> PathBuf {
+pub(super) fn real_layout(path: &Path) -> PathBuf {
     let mut current = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     for _ in 0..40 {
         let next = resolve_deepest_prefix(&current);
@@ -1916,7 +1916,7 @@ pub(super) fn location_under_root(path: &Path, root: &Path) -> bool {
     )
 }
 
-fn restore_source(source: &Path, temporary: &Path) -> std::io::Result<()> {
+pub(super) fn restore_source(source: &Path, temporary: &Path) -> std::io::Result<()> {
     let outcome = match std::fs::symlink_metadata(source) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             std::fs::rename(temporary, source)
@@ -2008,7 +2008,7 @@ async fn remove_source(
 /// the emptied-dir pruning), and the notes. An already-missing file counts
 /// as removed. Bins go before the cue; the first failed bin stops the
 /// remaining removals and keeps the cue for recovery.
-async fn remove_sources(
+pub(super) async fn remove_sources(
     unit: &DatUnit,
     own_sources: &[PathBuf],
     outputs: &[PathBuf],
@@ -2348,7 +2348,7 @@ fn split_continuations(units: &[DatUnit]) -> HashSet<PathBuf> {
 /// Every file a unit occupies: the file itself (a split WUD's first part
 /// owns every continuation part of its set, in their on-disk spelling), or
 /// the cue and all bins of a set.
-fn unit_source_files(unit: &DatUnit) -> Vec<PathBuf> {
+pub(super) fn unit_source_files(unit: &DatUnit) -> Vec<PathBuf> {
     match unit {
         DatUnit::File(path) => {
             // Only a `.wud` first part owns the continuations, for release
@@ -3210,6 +3210,42 @@ mod tests {
                     .is_some_and(|n| n.to_string_lossy() == name)
             })
             .unwrap_or_else(|| panic!("no row for {name}"))
+    }
+
+    /// A placement claims its output the way a conversion does, so it never
+    /// replaces the only copy of a source a `delete_source` run deleted,
+    /// and its dry run reports the same refusal.
+    #[tokio::test]
+    async fn a_placement_never_replaces_the_only_copy_of_a_deleted_source() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("Test Game.gba"), gba_bytes()).unwrap();
+        let placed = out.path().join("Game Boy Advance/Test Game.zip");
+        std::fs::create_dir_all(placed.parent().unwrap()).unwrap();
+        std::fs::write(&placed, b"only copy").unwrap();
+        crate::runner::release::claim_output(&out.path().join("Deleted.gba"), &placed, true)
+            .unwrap()
+            .commit();
+
+        for dry_run in [true, false] {
+            let mut req = organize_request(lib.path(), Some(out.path()), dry_run);
+            req.options.on_conflict = Some("overwrite".to_string());
+            let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+                .await
+                .unwrap();
+            let Some(RunData::Organize(data)) = response.data else {
+                panic!("expected organize data");
+            };
+            let row = row_for(&data, "Test Game.gba");
+            assert_eq!(row.status, FileStatus::Failed, "{row:?}");
+            assert!(
+                row.detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("is the only copy of")),
+                "{row:?}"
+            );
+            assert_eq!(std::fs::read(&placed).unwrap(), b"only copy");
+        }
     }
 
     #[tokio::test]

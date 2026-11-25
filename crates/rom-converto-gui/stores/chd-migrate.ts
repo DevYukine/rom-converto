@@ -12,6 +12,7 @@ export const useChdMigrateStore = makeOpStore("chd-migrate", () => ({
   level: null as number | null,
   hunkSize: null as number | null,
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

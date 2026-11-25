@@ -13,6 +13,7 @@ export const useChdCompressStore = makeOpStore("chd-compress", () => ({
   mode: "auto" as "auto" | "cd" | "dvd" | "ld",
   hunkSize: null as number | null,
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

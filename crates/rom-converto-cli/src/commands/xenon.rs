@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictPolicyArg};
+use crate::commands::{BatchArgs, ConflictPolicyArg, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -53,6 +53,9 @@ pub struct CompressCommand {
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Convert an Xbox 360 ISO into a Games on Demand (GoD) container
@@ -156,7 +159,7 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
     match command {
         XenonCommands::Compress(cmd) => {
             ensure_input_exists(&cmd.input)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: false,
                 output_dir: None,
                 output_template: None,
@@ -165,6 +168,7 @@ pub async fn run(command: XenonCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 policy: resolve_policy(None, cmd.force, ConflictPolicy::Error),
                 skip_space_check,
             });
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "xenon.compress",

@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -82,6 +82,9 @@ pub struct NxCompressCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Decompress an NSZ back to NSP or an XCZ back to XCI
@@ -123,6 +126,9 @@ pub struct NxDecompressCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Decrypt an NSP or XCI into NxEmu's DNSP or DXCI
@@ -286,6 +292,7 @@ async fn run_nx_transform(
     out: &OutputArgs,
     batch_args: &BatchArgs,
     conflict: &ConflictArgs,
+    source: &SourceArgs,
     skip_space_check: bool,
 ) -> Result<()> {
     require_input(&input, recursive)?;
@@ -303,6 +310,7 @@ async fn run_nx_transform(
         skip_space_check,
     });
     options.keys = keys;
+    source.apply(&mut options);
     batch::run(ctx, operation, input, output, options).await?;
     Ok(())
 }
@@ -357,6 +365,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .or_else(|| eff.mode.clone())
                 .or_else(|| block_size_exp.map(|_| "block".to_string()));
             options.block_size_exp = block_size_exp.map(u32::from);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "nx.compress",
@@ -378,6 +387,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 &cmd.out,
                 &cmd.batch,
                 &cmd.conflict,
+                &cmd.source,
                 skip_space_check,
             )
             .await?;
@@ -394,6 +404,7 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 &cmd.out,
                 &cmd.batch,
                 &cmd.conflict,
+                &SourceArgs::default(),
                 skip_space_check,
             )
             .await?;

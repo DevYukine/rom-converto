@@ -143,6 +143,13 @@ describe("buildCliCommand", () => {
     expect(buildCliCommand(payload)).toBe("rom-converto wup compress a.wud b.app --output out.wua --level 6");
   });
 
+  it("echoes --verify-after on a conversion only together with --delete-source", () => {
+    const alone = runArgs("chd.compress", "game.iso", "game.chd", { verify_after: true }, false, "t12");
+    expect(buildCliCommand(alone)).toBe("rom-converto chd compress game.iso game.chd");
+    const gated = runArgs("chd.compress", "game.iso", "game.chd", { verify_after: true, delete_source: true }, false, "t13");
+    expect(buildCliCommand(gated)).toBe("rom-converto chd compress game.iso game.chd --delete-source --verify-after");
+  });
+
   it("returns an empty string for a payload without a request", () => {
     expect(buildCliCommand({ taskId: "t11" })).toBe("");
   });

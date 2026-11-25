@@ -1,3 +1,4 @@
+use crate::commands::SourceArgs;
 use crate::commands::info_command::InfoCommand;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -55,6 +56,9 @@ pub struct ConvertCommand {
     /// Overwrite the output file if it already exists
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Extract every file from an XISO
@@ -108,6 +112,7 @@ pub async fn run(command: XboxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 skip_space_check,
             });
             options.media_patch = Some(!cmd.no_media_patch);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "xbox.convert",

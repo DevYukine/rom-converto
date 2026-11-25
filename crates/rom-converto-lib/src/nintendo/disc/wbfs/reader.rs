@@ -21,7 +21,7 @@ use super::format::{
 const WBFS_HEAD_SIZE: usize = 12;
 const MIN_HD_SECTOR_SHIFT: u8 = 9;
 const MAX_HD_SECTOR_SHIFT: u8 = 13;
-const MAX_SPLIT_PARTS: u8 = 10;
+pub(crate) const MAX_SPLIT_PARTS: u8 = 10;
 
 /// One file in a (possibly split) WBFS container, placed at `base` in
 /// the concatenated physical address space.
@@ -175,7 +175,7 @@ fn open_parts(path: &Path) -> WbfsResult<Vec<Part>> {
 /// The split-file naming rule replaces the path's last character with
 /// `'0' + idx` (the upstream `WbfsBlob` reader), so
 /// `game.wbfs` becomes `game.wbf1`.
-fn sibling_path(path: &Path, idx: u8) -> Option<PathBuf> {
+pub(crate) fn sibling_path(path: &Path, idx: u8) -> Option<PathBuf> {
     let s = path.to_str()?;
     let last = *s.as_bytes().last()?;
     if !last.is_ascii() {

@@ -130,6 +130,74 @@ a member that is not a GCZ, WIA, or NKit image. A RAR member cannot be read part
 its check runs after staging and a dry run plans it. `chd verify --fix --dry-run` verifies
 without rewriting the header.
 
+### Delete sources after conversion
+
+`--delete-source` removes each input once its output is written, so converting a library
+leaves only the new files. It does not take a value. There is no config or preset key for
+it: each run asks for it on the command line. `organize` keeps its own `--move` flag.
+
+| Option | Use it to |
+|---|---|
+| `--delete-source` | Delete the input after its output was written |
+| `--verify-after` | Delete a source only after its output passed its check. Needs `--delete-source` |
+
+These commands accept both flags: `chd compress`, `chd migrate` (not with `--in-place`),
+`cso compress` and `decompress`, `dol` and `rvl` `compress` and `decompress`, `ctr compress`
+and `decompress`, `nx compress` and `decompress`, `wup compress`, `to-wux`, and `to-wud`,
+`xenon compress`, `xbox convert`, and `ps3 decrypt`. Other commands reject the flags.
+
+What counts as the source:
+
+| Input | Deleted with it |
+|---|---|
+| Plain file | The file |
+| `.cue` or `.gdi` | Every track it lists. A track another sheet still uses stays until the last of those sheets is converted. The whole set stays when it lists a file that is not read as whole tracks |
+| Split `game_partN.wud` set | All parts, or none |
+| `.wbfs` | The `.wbf1` to `.wbf9` parts beside it |
+| `ps3 decrypt` `.iso` | The `.iso` and its `<name>.dkey`, unless you passed `--key` |
+| `wup compress` | Every input of the bundle and the key file a disc was read with: its `<name>.key`, or `game.key` beside `game.wud` or `game_part1.wud` once no other disc in that folder uses it. With `--key`, every key file stays |
+| `wup to-wux`, `wup to-wud` | The image only. Key files stay, because the output is still encrypted |
+| Folder (Wii U title folder, extracted Xbox or Xbox 360 tree) | The whole folder, unless the output was written inside it |
+| Archive | The archive, when the conversion used every entry in it (a zip with a cue and its bins). OS junk entries do not count. Otherwise it stays. A split `name.part1.rar` goes with all its volumes. A set using the old `.rNN` volume names stays |
+
+A source stays when:
+
+- the file failed or was skipped;
+- the output already existed, also under `--on-conflict skip` or `overwrite-invalid` when it kept a valid output;
+- the file is already in the target format;
+- the source is outside the input folder;
+- the folder is a symlink;
+- a track is reached through a linked folder, or a folder that could hold another sheet
+  naming it cannot be listed;
+- the folder input is the current folder or one of its parents, your home folder or a folder
+  holding it, or a drive root;
+- another input in the same run already wrote that output and had its source deleted (the item
+  fails, so `--on-conflict overwrite` never replaces the only copy of a game).
+
+With `--verify-after`, the source goes only after the output passed its check. Formats
+without an output check (3DS, Wii U, Xbox, Xbox 360, PS3, and decompressed or extracted
+outputs: `cso`, `dol`/`rvl`, and `nx decompress`) fail as unverified and keep their source.
+A source that cannot be removed fails its row. The output stays.
+
+A track is kept while any other sheet still names it. rom-converto looks for those sheets in
+the track's folder and every folder above it, and in a `-R` run also in every sheet the run
+collected. A sheet elsewhere that reaches the track only through a symbolic link is not seen.
+
+After the deletion, each folder left empty, or holding only OS junk (`.DS_Store`,
+`Thumbs.db`, `desktop.ini`, `._` files), is removed with its junk, walking up. The folder
+you passed to `-R`, the folder of an output, and any folder that still holds another file
+stay, and a warning names that file. For a single file run, only the file's own folder can go. Your home folder and the folders
+directly in it (such as Downloads or Desktop) always stay.
+
+Each deletion prints `Deleted source: <path>`. A dry run prints `Would delete <path>` for
+each file and deletes nothing. A kept source prints a warning with the reason.
+
+```sh
+# Preview, then convert a PS1 folder and remove the cue/bin sets
+rom-converto --dry-run chd compress -R ./ps1 --output-dir ./chd --delete-source
+rom-converto chd compress -R ./ps1 --output-dir ./chd --delete-source --verify-after
+```
+
 ### Verbosity
 
 `-v` shows debug messages, `-vv` shows rom-converto trace messages, and `-vvv` includes
@@ -352,6 +420,8 @@ in [Shared behaviors](#shared-behaviors)):
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = library default, 22 = maximum ratio) |
 | `--allow-encrypted` | `compress` | Compress even if the input ROM appears encrypted. By default an encrypted ROM is refused; decrypt first with `ctr decrypt` |
 | `--trim` | `convert` | End the `.3ds`/`.cci` output after the last partition instead of padding it with `0xFF` to the next cartridge size. The header keeps the full card size, so emulators and loaders still accept the file. Ignored for CIA output |
+| `--delete-source` | `compress`, `decompress` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `decompress` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 | `--full` | `verify` | Also verify content hashes against the TMD (CIA only, slower). `--verify-content` is an alias |
 
 Generated tickets from `generate-cdn-ticket` use placeholder values and only work on modded
@@ -442,6 +512,8 @@ rom-converto dol <SUBCOMMAND> <INPUT> [OUTPUT]
 | `-R, --recursive` | `convert`, `compress`, `decompress`, `migrate`, `verify` | Scan a folder for supported input files |
 | `--max-depth <N>` | `convert`, `compress`, `decompress`, `verify` | Limit recursive scan depth |
 | `--report <FILE>` | `convert`, `compress`, `decompress` | Write a CSV, HTML, or JSON run report |
+| `--delete-source` | `compress`, `decompress` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `decompress` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 | `--full` | `verify` | Decode the whole disc and compute a whole-disc SHA-1 |
 
 `convert` skips a plain input already in the target format when no explicit output
@@ -499,6 +571,8 @@ Flags match the `dol` commands, with these Wii additions:
 | `-l, --level <LEVEL>` | `convert` | RVZ Zstandard level, or WIA level 0 through 9 for LZMA/LZMA2 and 1 through 9 for bzip2 (WIA defaults to 6; `none` ignores level) |
 | `--skip-verify` | `convert`, `decompress`, `migrate` | Skip the integrity pass on GCZ, WIA, and NKit inputs |
 | `--deep` | `migrate` | Decode every WIA group during verification instead of only the SHA-1 header chain |
+| `--delete-source` | `compress`, `decompress` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `decompress` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 `rvl convert -R` scans `.iso`, `.wbfs`, `.rvz`, `.gcz`, and `.wia`.
 `rvl decompress -R` scans `.rvz`, `.gcz`, `.wia`, and `.wbfs`. Use `rvl convert`
@@ -534,6 +608,8 @@ rom-converto wup <SUBCOMMAND> ...
 | `-o, --output <FILE>` | `to-wux`, `to-wud` | Output path, defaults to the input name with the extension replaced |
 | `-l, --level <LEVEL>` | `compress` | Zstd compression level 0..=22 (0 = Cemu default of 6) |
 | `--key <KEYFILE>` | `compress`, `verify` | Disc master key file for `.wud`/`.wux` inputs (optional). Pass once per disc input in positional order on `compress`. See key resolution below |
+| `--delete-source` | `compress`, `to-wux`, `to-wud` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `to-wux`, `to-wud` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 `to-wux` and `to-wud` also take the common output and batch flags (`--output-dir`,
 `--output-template`, `-R`, `--max-depth`, `--on-conflict`/`-f`, `--report`). They read
@@ -582,6 +658,8 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Process every container found in `INPUT` and its subdirectories. On `merge`, each subfolder of `INPUT` is one game |
 | `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Maximum directory depth under `--recursive`. 1 = top level only. On `merge`, depth counts from each game folder |
 | `--report <FILE>` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Write a run report. See [Run reports](#run-reports) |
+| `--delete-source` | `compress`, `decompress` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `decompress` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 A valid `prod.keys` is required and is never modified. Merge and split accept only
 uncompressed NSP/XCI inputs; decompress NSZ/XCZ first.
@@ -737,6 +815,8 @@ rom-converto chd <SUBCOMMAND> <INPUT> [OUTPUT]
 | `-c, --codecs <LIST>` | `compress`, `migrate` | Up to four comma-separated codecs: `zlib`, `zstd`, `lzma`, `huff`, `flac`, `cdzl`, `cdzs`, `cdlz`, `cdfl` |
 | `-l, --level <LEVEL>` | `compress`, `migrate` | Compression level 1..=22. Zlib and LZMA cap at 9 |
 | `--in-place` | `migrate` | Replace the source with its v5 conversion. Conflicts with explicit output paths, `--output-dir`, and `--output-template` |
+| `--delete-source` | `compress`, `migrate` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `migrate` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 | `--format <cso\|zso>` | `to-cso` | Output container: CSO for PSP/PPSSPP, ZSO for PS2 via Open PS2 Loader |
 | `--block-size <BYTES>` | `to-cso` | Block size, a power of two; defaults to 2048 (16384 for 2 GiB+ inputs) |
 | `--output-dir <DIR>` | `compress`, `migrate`, `extract`, `to-cso` | Write outputs under this directory instead of beside each input |
@@ -841,6 +921,8 @@ rom-converto cso <SUBCOMMAND> <INPUT> [OUTPUT]
 | `-l, --level <LEVEL>` | `to-chd` | Compression level 1..=22. Zlib and LZMA cap at 9 |
 | `--output-dir <DIR>` | `compress`, `decompress`, `to-chd` | Write outputs under this directory instead of beside each input |
 | `--full` | `verify` | Decode every block instead of only checking the index |
+| `--delete-source` | `compress`, `decompress` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `compress`, `decompress` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 Defaults are maxcso-compatible: 2 KiB blocks (16 KiB for 2 GiB+ inputs), automatic index
 shift for large images, and a per-block store-raw fallback.
@@ -903,6 +985,8 @@ rom-converto ps3 <SUBCOMMAND> <INPUT> [OUTPUT]
 | `-R, --recursive` | `decrypt` | Decrypt every `.iso` found in `INPUT` and its subdirectories |
 | `--max-depth <N>` | `decrypt` | Maximum directory depth under `--recursive`. 1 = top level only |
 | `--report <FILE>` | `decrypt` | Write a run report. See [Run reports](#run-reports) |
+| `--delete-source` | `decrypt` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `decrypt` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 The disc alternates plain and encrypted sector regions; encrypted regions are AES-128-CBC
 decrypted with the per-disc data key. Output covers the region table's sector span, so
@@ -931,6 +1015,8 @@ rom-converto xbox <SUBCOMMAND> <INPUT> [OUTPUT]
 |---|---|---|
 | `-o, --output <FILE>` | `convert` | Output file path |
 | `--no-media-patch` | `convert` | Skip XBE media patching, which runs by default |
+| `--delete-source` | `convert` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | `convert` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 `convert` accepts a full disc image (`.iso`) or an extracted game directory, and rebuilds the
 disc layout so video-partition padding is removed. Takes `-f`/`--force` and the shared conflict
@@ -959,6 +1045,11 @@ rom-converto xenon <SUBCOMMAND> <INPUT>
 
 `compress` writes ZAR directly from the disc without extracting it first, using zstd
 across CPU cores. The archive puts `default.xex` at its root for Xenia Canary.
+
+| Flag | Description |
+|---|---|
+| `--delete-source` | Delete the input after its output was written. See [Delete sources after conversion](#delete-sources-after-conversion) |
+| `--verify-after` | Delete a source only after its output passed its check. Needs `--delete-source`. See [Delete sources after conversion](#delete-sources-after-conversion) |
 
 `info` reads title ID, name, version, disc number, region, allowed media, and the icon
 from `default.xex` when present. `--save-icon <DIR>` saves the icon as `<title_id_hex>.png`.

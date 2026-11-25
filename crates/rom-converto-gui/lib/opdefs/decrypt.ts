@@ -1,4 +1,4 @@
-import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, recursiveFields, runArgs, runnerDerivedOutput, templateIsActive, type OpDef } from "./types";
+import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, deleteSourceField, directoryConflict, recursiveFields, runArgs, runnerDerivedOutput, templateIsActive, type OpDef } from "./types";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { useCtrDecryptStore } from "~/stores/ctr-decrypt";
 import { useWupDecryptStore } from "~/stores/wup-decrypt";
@@ -162,6 +162,7 @@ const ps3: OpDef = {
 				"Skips the encryption and disc-key check before converting. Use if a correct key is rejected because the disc's sampled sectors are all compressed data.",
 		},
 		...recursiveFields(),
+		deleteSourceField(),
 	],
 	note: "The data key is resolved from the key field above, else the built-in database by title ID, else a sibling <input>.dkey.",
 	outputRows: [

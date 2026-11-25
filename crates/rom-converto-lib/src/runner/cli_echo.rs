@@ -168,6 +168,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("dat_name", FlagKind::Value),
     ("subset", FlagKind::Value),
     ("verify_after", FlagKind::Bool),
+    ("delete_source", FlagKind::Bool),
     ("quick", FlagKind::Bool),
     ("skip_probe", FlagKind::Bool),
     ("media_patch", FlagKind::Bool),
@@ -224,6 +225,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "chd compress",
         &[
             "codecs",
+            "delete_source",
             "hunk_size",
             "level",
             "max_depth",
@@ -232,6 +234,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -250,6 +253,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "chd migrate",
         &[
             "codecs",
+            "delete_source",
             "hunk_size",
             "level",
             "max_depth",
@@ -258,6 +262,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -278,6 +283,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "cso compress",
         &[
             "block_size",
+            "delete_source",
             "format",
             "max_depth",
             "on_conflict",
@@ -285,17 +291,20 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
         "cso decompress",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -333,12 +342,14 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "ctr compress",
         &[
             "allow_encrypted",
+            "delete_source",
             "level",
             "max_depth",
             "on_conflict",
             "output_dir",
             "output_template",
             "recursive",
+            "verify_after",
         ],
     ),
     (
@@ -355,11 +366,13 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     (
         "ctr decompress",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
             "output_template",
             "recursive",
+            "verify_after",
         ],
     ),
     (
@@ -454,6 +467,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "dol compress",
         &[
             "chunk_size",
+            "delete_source",
             "level",
             "max_depth",
             "on_conflict",
@@ -461,6 +475,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -482,6 +497,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     (
         "dol decompress",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
@@ -489,6 +505,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "recursive",
             "report",
             "skip_verify",
+            "verify_after",
         ],
     ),
     (
@@ -527,6 +544,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "nx compress",
         &[
             "block_size_exp",
+            "delete_source",
             "keys",
             "level",
             "max_depth",
@@ -536,11 +554,13 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
         "nx decompress",
         &[
+            "delete_source",
             "keys",
             "max_depth",
             "on_conflict",
@@ -548,6 +568,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -655,6 +676,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     (
         "ps3 decrypt",
         &[
+            "delete_source",
             "key",
             "max_depth",
             "on_conflict",
@@ -663,6 +685,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "recursive",
             "report",
             "skip_probe",
+            "verify_after",
         ],
     ),
     ("psp extract", &[]),
@@ -684,6 +707,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         "rvl compress",
         &[
             "chunk_size",
+            "delete_source",
             "level",
             "max_depth",
             "on_conflict",
@@ -691,6 +715,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
@@ -713,6 +738,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
     (
         "rvl decompress",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
@@ -720,6 +746,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
             "recursive",
             "report",
             "skip_verify",
+            "verify_after",
         ],
     ),
     (
@@ -738,34 +765,47 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         &["content_hashes", "full", "max_depth", "recursive"],
     ),
     ("vita extract", &[]),
-    ("wup compress", &["key", "level", "on_conflict"]),
+    (
+        "wup compress",
+        &[
+            "delete_source",
+            "key",
+            "level",
+            "on_conflict",
+            "verify_after",
+        ],
+    ),
     ("wup decrypt", &["on_conflict"]),
     (
         "wup to-wud",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     (
         "wup to-wux",
         &[
+            "delete_source",
             "max_depth",
             "on_conflict",
             "output_dir",
             "output_template",
             "recursive",
             "report",
+            "verify_after",
         ],
     ),
     ("wup verify", &["key", "max_depth", "recursive"]),
-    ("xbox convert", &[]),
+    ("xbox convert", &["delete_source", "verify_after"]),
     ("xbox extract", &[]),
-    ("xenon compress", &[]),
+    ("xenon compress", &["delete_source", "verify_after"]),
     (
         "xenon convert",
         &[

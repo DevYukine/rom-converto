@@ -20,6 +20,7 @@ mod ops_misc;
 mod ops_ms;
 mod ops_sony;
 mod organize;
+mod release;
 
 /// Request, response, and progress-event types for [`run_json`] and friends.
 pub mod models;
@@ -196,6 +197,15 @@ pub async fn run_request(
     }
 
     let req = apply_config_defaults(req)?;
+    if req.options.delete_source == Some(true)
+        && ops::find_op(&req.operation)
+            .is_some_and(|op| !release::DELETE_SOURCE_OPS.contains(&op.name))
+    {
+        return Err(invalid_arg(format!(
+            "delete_source is not supported for {}",
+            req.operation
+        )));
+    }
     let report = req.options.report.clone();
     let response = if req.options.recursive.unwrap_or(false) {
         run_batch_request(req.clone(), progress, cancel.clone()).await?

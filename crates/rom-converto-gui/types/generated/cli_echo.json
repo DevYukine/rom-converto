@@ -454,6 +454,12 @@
       "kind": "bool",
       "explicit_off": false
     },
+    "delete_source": {
+      "flag": "--delete-source",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": false
+    },
     "dir_letter": {
       "flag": "--dir-letter",
       "global": false,
@@ -884,6 +890,7 @@
   "op_flags": {
     "chd.compress": [
       "codecs",
+      "delete_source",
       "hunk_size",
       "level",
       "max_depth",
@@ -891,7 +898,8 @@
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "chd.extract": [
       "max_depth",
@@ -904,6 +912,7 @@
     ],
     "chd.migrate": [
       "codecs",
+      "delete_source",
       "hunk_size",
       "level",
       "max_depth",
@@ -911,7 +920,8 @@
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "chd.to-cso": [
       "block_size",
@@ -941,21 +951,25 @@
     ],
     "cso.compress": [
       "block_size",
+      "delete_source",
       "format",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "cso.decompress": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "cso.to-chd": [
       "codecs",
@@ -1008,12 +1022,14 @@
     ],
     "ctr.compress": [
       "allow_encrypted",
+      "delete_source",
       "level",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
-      "recursive"
+      "recursive",
+      "verify_after"
     ],
     "ctr.convert": [
       "max_depth",
@@ -1024,11 +1040,13 @@
       "trim"
     ],
     "ctr.decompress": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
-      "recursive"
+      "recursive",
+      "verify_after"
     ],
     "ctr.decrypt": [
       "max_depth",
@@ -1125,13 +1143,15 @@
     ],
     "dol.compress": [
       "chunk_size",
+      "delete_source",
       "level",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "dol.convert": [
       "block_size",
@@ -1147,13 +1167,15 @@
       "skip_verify"
     ],
     "dol.decompress": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
       "report",
-      "skip_verify"
+      "skip_verify",
+      "verify_after"
     ],
     "dol.migrate": [
       "chunk_size",
@@ -1213,6 +1235,7 @@
     ],
     "nx.compress": [
       "block_size_exp",
+      "delete_source",
       "keys",
       "level",
       "max_depth",
@@ -1221,16 +1244,19 @@
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "nx.decompress": [
+      "delete_source",
       "keys",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "nx.decrypt": [
       "keys",
@@ -1332,6 +1358,7 @@
       "playlist_mode"
     ],
     "ps3.decrypt": [
+      "delete_source",
       "key",
       "max_depth",
       "on_conflict",
@@ -1339,7 +1366,8 @@
       "output_template",
       "recursive",
       "report",
-      "skip_probe"
+      "skip_probe",
+      "verify_after"
     ],
     "psp.extract": [],
     "psp.to-iso": [
@@ -1374,13 +1402,15 @@
     ],
     "rvl.compress": [
       "chunk_size",
+      "delete_source",
       "level",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "rvl.convert": [
       "block_size",
@@ -1397,13 +1427,15 @@
       "skip_verify"
     ],
     "rvl.decompress": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
       "report",
-      "skip_verify"
+      "skip_verify",
+      "verify_after"
     ],
     "rvl.migrate": [
       "chunk_size",
@@ -1421,22 +1453,26 @@
     ],
     "rvz.compress": [
       "chunk_size",
+      "delete_source",
       "level",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "rvz.decompress": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
       "report",
-      "skip_verify"
+      "skip_verify",
+      "verify_after"
     ],
     "rvz.migrate": [
       "chunk_size",
@@ -1448,53 +1484,69 @@
     ],
     "vita.extract": [],
     "wup.compress": [
+      "delete_source",
       "key",
       "level",
-      "on_conflict"
+      "on_conflict",
+      "verify_after"
     ],
     "wup.decrypt": [
       "on_conflict"
     ],
     "wup.to-wud": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "wup.to-wux": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "wup.to_wud": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "wup.to_wux": [
+      "delete_source",
       "max_depth",
       "on_conflict",
       "output_dir",
       "output_template",
       "recursive",
-      "report"
+      "report",
+      "verify_after"
     ],
     "wup.verify": [
       "key",
       "max_depth",
       "recursive"
     ],
-    "xbox.convert": [],
+    "xbox.convert": [
+      "delete_source",
+      "verify_after"
+    ],
     "xbox.extract": [],
-    "xenon.compress": [],
+    "xenon.compress": [
+      "delete_source",
+      "verify_after"
+    ],
     "xenon.convert": [
       "max_depth",
       "on_conflict",

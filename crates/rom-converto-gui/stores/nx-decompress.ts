@@ -10,4 +10,5 @@ export const useNxDecompressStore = makeOpStore("nx-decompress", () => ({
   skipSpaceCheck: false,
   outputTemplate: "",
   reportFile: "",
+  deleteSource: false,
 }));

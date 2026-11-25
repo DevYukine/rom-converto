@@ -17,6 +17,7 @@ use super::ops_ms::{
 };
 use super::ops_sony::{ps3_decrypt, psp_extract, psp_to_iso, psx_to_pbp, vita_extract};
 use super::organize::{FileIdentity, location_under_root, organize};
+use super::release::ReleaseScope;
 use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb, record_verb};
 use crate::cso::{CsoCompressOptions, CsoFormat};
 use crate::disc::chd::error::ChdError;
@@ -102,7 +103,7 @@ pub(crate) type OpFuture<'a> =
 /// it, the extensions a recursive run scans (`None` when the operation has
 /// no batch mode), what it needs of its input and output, and its handler.
 pub(crate) struct OpSpec {
-    name: &'static str,
+    pub(crate) name: &'static str,
     aliases: &'static [&'static str],
     batch_exts: Option<&'static [&'static str]>,
     /// Directory-output operations: the per-input output directory a
@@ -999,7 +1000,7 @@ pub(crate) fn operation_names() -> &'static [&'static str] {
 }
 
 pub(crate) async fn run_single_request(
-    req: RunRequest,
+    mut req: RunRequest,
     progress: &dyn ProgressReporter,
     cancel: CancelToken,
 ) -> Result<RunResponse> {
@@ -1007,7 +1008,30 @@ pub(crate) async fn run_single_request(
         let other = &req.operation;
         return Err(invalid_arg(format!("unknown operation {other:?}")));
     };
-    (op.run)(req, progress, cancel).await
+    if req.options.delete_source != Some(true) {
+        return (op.run)(req, progress, cancel).await;
+    }
+    // A queue of single runs reaches each split part after the first
+    // part's run deleted the set.
+    if let Some(input) = &req.input
+        && super::release::is_released_part(input)
+    {
+        let reason = super::release::RELEASED_PART;
+        return Ok(skipped_already_done(input, op.name, reason, &reason));
+    }
+    req.ctx.output_claim = Some(Default::default());
+    let release = req.clone();
+    let mut response = (op.run)(req, progress, cancel.clone()).await?;
+    super::release::release_after(
+        &release,
+        op.name,
+        op.input_exts(),
+        &mut response,
+        progress,
+        &cancel,
+    )
+    .await?;
+    Ok(response)
 }
 
 pub(crate) async fn run_batch_request(
@@ -1180,6 +1204,17 @@ pub(crate) async fn run_batch_request(
         }
         preflight_space(req.options.output_dir.as_deref().unwrap_or(&root), required)?;
     }
+    // Children inherit the scope through `req.clone()`: a bin two sheets
+    // share goes with the last of them, and emptied folders are pruned once
+    // every child ran.
+    let release = match req.options.delete_source {
+        Some(true) => Some(std::sync::Arc::new(ReleaseScope::batch(
+            &root,
+            files.iter().map(|collected| collected.path.as_path()),
+        )?)),
+        _ => None,
+    };
+    req.ctx.release = release.clone();
 
     let started = Instant::now();
     progress.batch_start(
@@ -1329,11 +1364,14 @@ pub(crate) async fn run_batch_request(
     // once read, a later same-format child may write over them.
     let mut consumed: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut unreadable_skips = 0usize;
+    // A cancel still prunes the folders the finished children emptied.
+    let mut stopped = None;
     for collected in files {
         let input = collected.path;
         let selection = collected.selection;
         if cancel.is_cancelled() {
-            return Err(Cancelled.into());
+            stopped = Some(Cancelled.into());
+            break;
         }
         // An archive the walk could not list, and whose name claims no
         // scanned extension, is a skipped row for an operation that writes
@@ -1361,6 +1399,33 @@ pub(crate) async fn run_batch_request(
             progress.batch_advance(file_len(&input));
             continue;
         }
+        // A file an earlier child deleted with its own set (a split part,
+        // a track its sheet covered) was converted with that set.
+        if let Some(scope) = &release
+            && scope.is_released(&input).await
+        {
+            let reason = if req.dry_run {
+                super::release::PLANNED_PART
+            } else {
+                super::release::RELEASED_PART
+            };
+            let record = ReportRecord::new(ReportRecordInput {
+                input_path: input.display().to_string(),
+                output_path: String::new(),
+                operation: planned_verb(&req.operation, req.dry_run),
+                status: FileStatus::Skipped,
+                input_bytes: 0,
+                output_bytes: 0,
+                elapsed_ms: 0,
+                error: Some(reason.to_string()),
+            });
+            progress.row(&RunRow::Record(record.clone()));
+            records.push(record);
+            progress.batch_advance(0);
+            continue;
+        }
+        // Read before the child runs: a deleted source has no size after.
+        let input_len = file_len(&input);
         let mut new_records = Vec::new();
         let guard_input = guarded(&input);
         let guard_basis = guarded(&collected.output_basis);
@@ -1480,8 +1545,14 @@ pub(crate) async fn run_batch_request(
                             new_records.append(&mut response.records);
                         }
                     }
-                    Err(_) if cancel.is_cancelled() => return Err(Cancelled.into()),
-                    Err(err) if is_cancelled_error(&err) => return Err(err),
+                    Err(_) if cancel.is_cancelled() => {
+                        stopped = Some(Cancelled.into());
+                        break;
+                    }
+                    Err(err) if is_cancelled_error(&err) => {
+                        stopped = Some(err);
+                        break;
+                    }
                     // An existing output under `on_conflict error` skips that file and
                     // leaves the run passing, the way the CLI's batches always did.
                     Err(err) if OutputExists::in_chain(&err) => {
@@ -1521,7 +1592,13 @@ pub(crate) async fn run_batch_request(
             progress.row(&RunRow::Record(record.clone()));
             records.push(record);
         }
-        progress.batch_advance(file_len(&input));
+        progress.batch_advance(input_len);
+    }
+    if let Some(scope) = &release {
+        scope.finish(progress).await?;
+    }
+    if let Some(err) = stopped {
+        return Err(err);
     }
 
     let totals = totals_for_records(&records, elapsed_ms(started));
@@ -3186,7 +3263,7 @@ where
             desired.display()
         )));
     }
-    let plan = prepare_output(
+    let mut plan = prepare_output(
         progress,
         req,
         input,
@@ -3211,6 +3288,13 @@ where
             line.media = nx_media_label(input);
         }
         return Ok(planned(line));
+    }
+    // A `delete_source` run keeps its claim past the write: the release
+    // commits it once the source went.
+    if let Some(slot) = &req.ctx.output_claim {
+        *slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = plan.claim.take();
     }
     if resolved.is_none() {
         resolved = stage_input_with_selection(input, operation, selection.take(), &cancel).await?;
@@ -3553,6 +3637,9 @@ pub(crate) struct PreparedOutput {
     /// only for that verdict: a brand-new output never sets it, so callers
     /// announce a rewrite exactly when one replaces an invalid file.
     pub(crate) rewrite_invalid: bool,
+    /// The real run's claim on `output`: the caller holds it until its
+    /// write landed or failed, so no other run writes the path meanwhile.
+    pub(crate) claim: Option<super::release::OutputClaim>,
 }
 
 /// An existing-output refusal carrying the [`OutputExists`] marker, so a
@@ -3615,6 +3702,9 @@ pub(crate) fn prepare_output_dir(
             }
         }
     };
+    if write {
+        super::release::check_output_dir(desired)?;
+    }
     if write && desired.is_file() {
         // `overwrite` removes the file at the output path, which would delete
         // the input before it is read when the two are the same file.
@@ -3667,6 +3757,7 @@ pub(crate) fn prepare_output_dir(
         line,
         kept_valid: false,
         rewrite_invalid: false,
+        claim: None,
     })
 }
 
@@ -3763,6 +3854,14 @@ async fn prepare_output_inner(
         } else {
             crate::util::classify(desired, &resolution)
         };
+        // The real run claims only a path it writes, so the plan checks only
+        // that one, refused the way the claim would be.
+        if !matches!(
+            decision,
+            crate::util::PlanDecision::Skip | crate::util::PlanDecision::KeepValid
+        ) {
+            super::release::check_output(&output, req.ctx.output_claim.is_some())?;
+        }
         return Ok(PreparedOutput {
             output: Some(output.clone()),
             line: Some(PlanLine {
@@ -3775,11 +3874,14 @@ async fn prepare_output_inner(
             }),
             kept_valid: false,
             rewrite_invalid: false,
+            claim: None,
         });
     }
 
+    let delete_source = req.ctx.output_claim.is_some();
     match resolution {
         ConflictResolution::Write(path) => Ok(PreparedOutput {
+            claim: Some(super::release::claim_output(input, &path, delete_source)?),
             output: Some(path),
             line: None,
             kept_valid: false,
@@ -3796,6 +3898,7 @@ async fn prepare_output_inner(
                         line: None,
                         kept_valid: true,
                         rewrite_invalid: false,
+                        claim: None,
                     })
                 }
                 VerifyOutcome::Unverified(_) => {
@@ -3805,6 +3908,7 @@ async fn prepare_output_inner(
                         line: None,
                         kept_valid: false,
                         rewrite_invalid: false,
+                        claim: None,
                     })
                 }
                 VerifyOutcome::Invalid => {
@@ -3815,6 +3919,7 @@ async fn prepare_output_inner(
                         );
                     }
                     Ok(PreparedOutput {
+                        claim: Some(super::release::claim_output(input, desired, delete_source)?),
                         output: Some(desired.to_path_buf()),
                         line: None,
                         kept_valid: false,
@@ -3834,6 +3939,7 @@ async fn prepare_output_inner(
                 line: None,
                 kept_valid: false,
                 rewrite_invalid: false,
+                claim: None,
             })
         }
     }
@@ -5004,6 +5110,8 @@ mod tests {
         let fresh = prepare().await;
         assert!(fresh.output.is_some());
         assert!(!fresh.rewrite_invalid, "a fresh output is no rewrite");
+        // Its claim holds the path until the write it stands for is done.
+        drop(fresh);
 
         // A valid output is kept.
         std::fs::write(&desired, b"payload").unwrap();
@@ -6799,5 +6907,625 @@ mod tests {
         let res = run_json(&req.to_string(), CancelToken::new()).await;
         assert!(res.ok, "{res:?}");
         assert!(dir.path().join("disc.cso").exists(), "{res:?}");
+    }
+
+    /// A CD cue set: a 300-sector MODE2/2352 bin and the sheet naming it.
+    fn write_cue_set(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+        std::fs::create_dir_all(dir).unwrap();
+        let bin = dir.join(format!("{name} (Track 1).bin"));
+        std::fs::write(&bin, vec![0u8; 2352 * 300]).unwrap();
+        let cue = dir.join(format!("{name}.cue"));
+        std::fs::write(
+            &cue,
+            format!(
+                "FILE \"{name} (Track 1).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n"
+            ),
+        )
+        .unwrap();
+        (cue, bin)
+    }
+
+    fn warnings(res: &RunResponse) -> Vec<&str> {
+        res.events
+            .iter()
+            .filter_map(|event| match event {
+                crate::runner::models::ProgressEvent::Warn { message } => Some(message.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn delete_source_batch_removes_each_set_then_its_emptied_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        let (cue, bin) = write_cue_set(&lib.join("Game A"), "Game A");
+        std::fs::write(lib.join("Game A/.DS_Store"), b"junk").unwrap();
+        let (a, shared) = write_cue_set(&lib.join("Pair"), "A");
+        std::fs::copy(&a, lib.join("Pair/B.cue")).unwrap();
+        let out = dir.path().join("out");
+        let req = json!({
+            "operation": "chd.compress",
+            "input": lib,
+            "options": { "recursive": true, "delete_source": true, "output_dir": out }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(out.join("Game A/Game A.chd").is_file(), "{res:?}");
+        assert!(out.join("Pair/B.chd").is_file(), "{res:?}");
+        assert!(!cue.exists() && !bin.exists());
+        // A.cue went first and kept the bin B.cue still reads; B took it.
+        assert!(
+            warnings(&res)
+                .iter()
+                .any(|warning| warning.contains("A (Track 1).bin")
+                    && warning.contains("another scanned unit references it")),
+            "{:?}",
+            warnings(&res)
+        );
+        assert!(!shared.exists());
+        assert!(!lib.join("Game A").exists() && !lib.join("Pair").exists());
+        assert!(lib.is_dir());
+    }
+
+    #[tokio::test]
+    async fn delete_source_keeps_the_sources_of_failed_and_skipped_items() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |input: &Path, operation: &str, options: serde_json::Value| {
+            let mut options = options;
+            options["delete_source"] = json!(true);
+            json!({ "operation": operation, "input": input, "options": options }).to_string()
+        };
+
+        let broken = dir.path().join("Broken/Broken.cue");
+        std::fs::create_dir_all(broken.parent().unwrap()).unwrap();
+        std::fs::write(
+            &broken,
+            "FILE \"Missing.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let res = run_json(&run(&broken, "chd.compress", json!({})), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(broken.exists());
+
+        let (cue, bin) = write_cue_set(&dir.path().join("Done"), "Done");
+        std::fs::write(dir.path().join("Done/Done.chd"), b"old").unwrap();
+        let res = run_json(
+            &run(&cue, "chd.compress", json!({ "on_conflict": "skip" })),
+            CancelToken::new(),
+        )
+        .await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped, "{res:?}");
+        assert!(cue.exists() && bin.exists());
+
+        let wux = dir.path().join("Wii U/Game.wud");
+        std::fs::create_dir_all(wux.parent().unwrap()).unwrap();
+        let mut header = b"WUX0".to_vec();
+        header.extend([0x2E, 0xD0, 0x99, 0x10]);
+        header.resize(0x40, 0);
+        std::fs::write(&wux, header).unwrap();
+        let res = run_json(&run(&wux, "wup.to_wux", json!({})), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped, "{res:?}");
+        assert!(wux.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_source_dry_run_deletes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        let (cue, bin) = write_cue_set(&lib.join("Game"), "Game");
+        let req = json!({
+            "operation": "chd.compress",
+            "input": lib,
+            "dry_run": true,
+            "options": { "recursive": true, "delete_source": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(cue.exists() && bin.exists());
+
+        // The continuation goes with its first part, so the batch skips it
+        // instead of failing on a part that a real run already deleted.
+        let wiiu = dir.path().join("wiiu");
+        std::fs::create_dir_all(&wiiu).unwrap();
+        for part in ["game_part1.wud", "game_part2.wud"] {
+            std::fs::write(wiiu.join(part), vec![0u8; 0x8000]).unwrap();
+        }
+        let req = json!({
+            "operation": "wup.to_wux",
+            "input": wiiu,
+            "dry_run": true,
+            "options": { "recursive": true, "delete_source": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let second = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("game_part2.wud"))
+            .expect("a row for the continuation");
+        assert_eq!(second.status, FileStatus::Skipped, "{second:?}");
+        assert_eq!(
+            second.error.as_deref(),
+            Some("would be deleted with the source set it belongs to")
+        );
+        assert!(wiiu.join("game_part1.wud").exists() && wiiu.join("game_part2.wud").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_source_under_verify_after_needs_a_passing_output_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let (cue, bin) = write_cue_set(&dir.path().join("Game"), "Game");
+        let req = json!({
+            "operation": "chd.compress",
+            "input": cue,
+            "options": {
+                "delete_source": true,
+                "verify_after": true,
+                "output_dir": dir.path().join("out")
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(!cue.exists() && !bin.exists());
+        assert!(!dir.path().join("Game").exists());
+
+        std::fs::create_dir_all(dir.path().join("psp")).unwrap();
+        let iso = write_iso(&dir.path().join("psp"), "game.iso");
+        let compress = json!({ "operation": "cso.compress", "input": iso });
+        let res = run_json(&compress.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let cso = iso.with_extension("cso");
+        let req = json!({
+            "operation": "cso.decompress",
+            "input": cso,
+            "options": {
+                "delete_source": true,
+                "verify_after": true,
+                "output_dir": dir.path().join("isos")
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Failed);
+        assert_eq!(
+            res.records[0].error.as_deref(),
+            Some("source kept: no output check for this format")
+        );
+        assert!(cso.exists());
+        assert!(dir.path().join("isos/game.iso").exists());
+    }
+
+    #[tokio::test]
+    async fn delete_source_is_rejected_where_the_output_does_not_replace_the_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = write_iso(dir.path(), "game.iso");
+        let req = json!({
+            "operation": "chd.extract",
+            "input": iso,
+            "options": { "delete_source": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::InvalidArgument.as_i32(), "{res:?}");
+        assert!(
+            res.message.contains("delete_source is not supported"),
+            "{res:?}"
+        );
+
+        let wud = dir.path().join("game.wud");
+        std::fs::write(&wud, vec![0u8; 0x8000]).unwrap();
+        let req = json!({
+            "operation": "wup.to-wux",
+            "input": wud,
+            "dry_run": true,
+            "options": { "delete_source": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert!(wud.exists());
+    }
+
+    /// The output-name collision `delete_source` guards: a second source
+    /// written onto the output of one already deleted would leave neither.
+    #[tokio::test]
+    async fn delete_source_never_writes_a_second_source_onto_a_deleted_ones_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let first = write_iso(&lib, "A.iso");
+        let second = lib.join("B.iso");
+        std::fs::write(&second, vec![0xAB; 4 * 2048]).unwrap();
+        let out = dir.path().join("out");
+        let req = json!({
+            "operation": "cso.compress",
+            "input": lib,
+            "options": {
+                "recursive": true,
+                "delete_source": true,
+                "on_conflict": "overwrite",
+                "output_template": "Same.cso",
+                "output_dir": out
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(!first.exists() && second.exists(), "{res:?}");
+        let row = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("B.iso"))
+            .expect("a row for the second source");
+        assert_eq!(row.status, FileStatus::Failed, "{row:?}");
+        assert!(
+            row.error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("source kept: ")
+                    && error.contains("is the only copy of")),
+            "{row:?}"
+        );
+        let restore = json!({
+            "operation": "cso.decompress",
+            "input": out.join("Same.cso"),
+            "output": dir.path().join("restored.iso")
+        });
+        let res = run_json(&restore.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(
+            std::fs::read(dir.path().join("restored.iso")).unwrap(),
+            (0..4 * 2048).map(|i| i as u8).collect::<Vec<_>>()
+        );
+
+        // Two single runs, the way the GUI queues files, collide the same way.
+        let first = write_iso(dir.path(), "C.iso");
+        let second = dir.path().join("D.iso");
+        std::fs::write(&second, vec![0xCD; 4 * 2048]).unwrap();
+        let output = dir.path().join("single/Same.cso");
+        let single = |input: &Path| {
+            json!({
+                "operation": "cso.compress",
+                "input": input,
+                "output": output,
+                "options": { "delete_source": true, "on_conflict": "overwrite" }
+            })
+            .to_string()
+        };
+        let res = run_json(&single(&first), CancelToken::new()).await;
+        assert!(res.ok && !first.exists(), "{res:?}");
+        let written = std::fs::read(&output).unwrap();
+        let res = run_json(&single(&second), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert!(res.message.starts_with("source kept: "), "{res:?}");
+        assert!(second.exists());
+        assert_eq!(std::fs::read(&output).unwrap(), written);
+
+        // A run that keeps its source must not replace that only copy either.
+        let keep = json!({
+            "operation": "cso.compress",
+            "input": second,
+            "output": output,
+            "options": { "on_conflict": "overwrite" }
+        });
+        let res = run_json(&keep.to_string(), CancelToken::new()).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(
+            !res.message.starts_with("source kept: ")
+                && res.message.contains("is the only copy of"),
+            "{res:?}"
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), written);
+
+        // A dry run reports the refusal the real run gives.
+        let delete: serde_json::Value = serde_json::from_str(&single(&second)).unwrap();
+        for (mut req, kept) in [(delete, true), (keep, false)] {
+            req["dry_run"] = json!(true);
+            let res = run_json(&req.to_string(), CancelToken::new()).await;
+            assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+            assert_eq!(res.message.starts_with("source kept: "), kept, "{res:?}");
+            assert!(res.message.contains("is the only copy of"), "{res:?}");
+        }
+        assert!(second.exists());
+    }
+
+    /// The only copy of a deleted source, as an earlier `delete_source` run
+    /// leaves it.
+    fn only_copy(dir: &Path, output: &Path) {
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(output, b"only copy").unwrap();
+        crate::runner::release::claim_output(&dir.join("Deleted.iso"), output, true)
+            .unwrap()
+            .commit();
+    }
+
+    /// Writers that resolve their output outside a conversion claim it too.
+    #[tokio::test]
+    async fn cdn_to_cia_never_replaces_the_only_copy_of_a_deleted_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let cdn = dir.path().join("title");
+        std::fs::create_dir_all(&cdn).unwrap();
+        let cia = dir.path().join("out/title.cia");
+        only_copy(dir.path(), &cia);
+        let req = json!({
+            "operation": "ctr.cdn_to_cia",
+            "input": cdn,
+            "output": cia,
+            "options": { "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(
+            !res.ok && res.message.contains("is the only copy of"),
+            "{res:?}"
+        );
+        assert_eq!(std::fs::read(&cia).unwrap(), b"only copy");
+    }
+
+    /// A dry run checks only a path its real run would write: a skip onto
+    /// an only copy plans the skip the real run makes.
+    #[tokio::test]
+    async fn a_dry_run_skipping_an_only_copy_plans_the_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = write_iso(dir.path(), "game.iso");
+        let cso = dir.path().join("out/game.cso");
+        only_copy(dir.path(), &cso);
+        let req = json!({
+            "operation": "cso.compress",
+            "input": iso,
+            "output": cso,
+            "dry_run": true,
+            "options": { "on_conflict": "skip" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped, "{res:?}");
+    }
+
+    /// A new file saved where a deleted source was is not that source: it
+    /// never overwrites the output left as its only copy.
+    #[tokio::test]
+    async fn delete_source_never_lets_a_new_file_at_a_deleted_path_replace_its_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let iso = write_iso(dir.path(), "C.iso");
+        let output = dir.path().join("out/C.cso");
+        let req = json!({
+            "operation": "cso.compress",
+            "input": iso,
+            "output": output,
+            "options": { "delete_source": true, "on_conflict": "overwrite" }
+        })
+        .to_string();
+        let res = run_json(&req, CancelToken::new()).await;
+        assert!(res.ok && !iso.exists(), "{res:?}");
+        let written = std::fs::read(&output).unwrap();
+        std::fs::write(&iso, vec![0xEE; 4 * 2048]).unwrap();
+        let res = run_json(&req, CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert!(
+            res.message.starts_with("source kept: ") && res.message.contains("is the only copy of"),
+            "{res:?}"
+        );
+        assert!(iso.exists());
+        assert_eq!(std::fs::read(&output).unwrap(), written);
+    }
+
+    /// A folder output claims nothing, but never writes over a held output
+    /// inside it.
+    #[tokio::test]
+    async fn nx_split_never_writes_into_a_folder_holding_an_only_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = dir.path().join("game.nsp");
+        std::fs::write(&nsp, b"nsp").unwrap();
+        let out = dir.path().join("split");
+        let held = out.join("Game.nsp");
+        only_copy(dir.path(), &held);
+        let req = json!({
+            "operation": "nx.split",
+            "input": nsp,
+            "output": out,
+            "dry_run": true,
+            "options": { "on_conflict": "overwrite" }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(
+            !res.ok && res.message.contains("is the only copy of"),
+            "{res:?}"
+        );
+        assert_eq!(std::fs::read(&held).unwrap(), b"only copy");
+    }
+
+    /// A delete run that failed, or kept its source, leaves the output it
+    /// claimed free for the next source.
+    #[tokio::test]
+    async fn delete_source_frees_the_output_of_a_run_that_kept_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out/Same.chd");
+        let compress = |input: &Path| {
+            json!({
+                "operation": "chd.compress",
+                "input": input,
+                "output": output,
+                "options": { "delete_source": true }
+            })
+            .to_string()
+        };
+        let broken = dir.path().join("Broken.cue");
+        std::fs::write(
+            &broken,
+            "FILE \"Missing.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let res = run_json(&compress(&broken), CancelToken::new()).await;
+        assert!(!res.ok && broken.exists(), "{res:?}");
+        let (cue, bin) = write_cue_set(&dir.path().join("Game"), "Game");
+        let res = run_json(&compress(&cue), CancelToken::new()).await;
+        assert!(res.ok && !cue.exists() && !bin.exists(), "{res:?}");
+
+        let first = write_iso(dir.path(), "a.iso");
+        let second = dir.path().join("b.iso");
+        std::fs::write(&second, vec![0xAB; 4 * 2048]).unwrap();
+        for iso in [&first, &second] {
+            let req = json!({ "operation": "cso.compress", "input": iso });
+            assert!(run_json(&req.to_string(), CancelToken::new()).await.ok);
+        }
+        let restored = dir.path().join("isos/game.iso");
+        let decompress = |input: PathBuf, options: serde_json::Value| {
+            json!({
+                "operation": "cso.decompress",
+                "input": input,
+                "output": restored,
+                "options": options
+            })
+            .to_string()
+        };
+        let kept = json!({ "delete_source": true, "verify_after": true });
+        let res = run_json(
+            &decompress(first.with_extension("cso"), kept),
+            CancelToken::new(),
+        )
+        .await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert!(first.with_extension("cso").exists());
+        let replace = json!({ "delete_source": true, "on_conflict": "overwrite" });
+        let res = run_json(
+            &decompress(second.with_extension("cso"), replace),
+            CancelToken::new(),
+        )
+        .await;
+        assert!(res.ok && !second.with_extension("cso").exists(), "{res:?}");
+        assert_eq!(std::fs::read(&restored).unwrap(), vec![0xAB; 4 * 2048]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_source_fails_the_record_when_a_source_cannot_be_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("Game");
+        let (cue, bin) = write_cue_set(&game, "Game");
+        std::fs::set_permissions(&game, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let req = json!({
+            "operation": "chd.compress",
+            "input": cue,
+            "options": { "delete_source": true, "output_dir": dir.path().join("out") }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        std::fs::set_permissions(&game, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Failed);
+        assert!(
+            res.records[0]
+                .error
+                .as_deref()
+                .is_some_and(|error| error.starts_with("source not removed: ")),
+            "{res:?}"
+        );
+        assert!(cue.exists() && bin.exists());
+        assert!(dir.path().join("out/Game.chd").is_file());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_source_batch_runs_past_an_unreadable_folder_below_its_depth() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        let (cue, bin) = write_cue_set(&lib, "Game");
+        let locked = lib.join("Locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let req = json!({
+            "operation": "chd.compress",
+            "input": lib,
+            "options": {
+                "recursive": true,
+                "max_depth": 1,
+                "delete_source": true,
+                "output_dir": dir.path().join("out")
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(res.ok, "{res:?}");
+        assert!(!cue.exists() && !bin.exists(), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn delete_source_skips_a_split_part_its_first_part_already_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({
+            "operation": "wup.to_wux",
+            "input": dir.path().join("game_part2.wud"),
+            "options": { "delete_source": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Skipped);
+        assert_eq!(
+            res.records[0].error.as_deref(),
+            Some("deleted with the source set it belongs to")
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_source_batch_skips_a_track_its_sheet_took() {
+        let dir = tempfile::tempdir().unwrap();
+        let lib = dir.path().join("lib");
+        let game = lib.join("Game");
+        std::fs::create_dir_all(&game).unwrap();
+        let cue = game.join("Game.cue");
+        let iso = game.join("Game.iso");
+        std::fs::write(&iso, vec![0u8; 4 * 2352]).unwrap();
+        std::fs::write(
+            &cue,
+            "FILE \"Game.iso\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let req = json!({
+            "operation": "chd.compress",
+            "input": lib,
+            "options": {
+                "recursive": true,
+                "delete_source": true,
+                "output_dir": dir.path().join("out")
+            }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert!(res.ok, "{res:?}");
+        let row = res
+            .records
+            .iter()
+            .find(|record| record.input_path.ends_with("Game.iso"))
+            .expect("a row for the track");
+        assert_eq!(row.status, FileStatus::Skipped, "{row:?}");
+        assert_eq!(
+            row.error.as_deref(),
+            Some("deleted with the source set it belongs to")
+        );
+        assert!(!cue.exists() && !iso.exists() && !game.exists());
+    }
+
+    #[tokio::test]
+    async fn delete_source_dry_run_keeps_what_verify_after_would_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let cso = dir.path().join("game.cso");
+        std::fs::write(&cso, b"x").unwrap();
+        let req = json!({
+            "operation": "cso.decompress",
+            "input": cso,
+            "dry_run": true,
+            "options": { "delete_source": true, "verify_after": true }
+        });
+        let res = run_json(&req.to_string(), CancelToken::new()).await;
+        assert_eq!(res.status, RunStatus::Failed.as_i32(), "{res:?}");
+        assert_eq!(res.records[0].status, FileStatus::Failed);
+        assert_eq!(
+            res.records[0].error.as_deref(),
+            Some("source kept: no output check for this format")
+        );
+        assert!(
+            warnings(&res)
+                .iter()
+                .any(|warning| warning.ends_with("no output check for this format")),
+            "{res:?}"
+        );
     }
 }

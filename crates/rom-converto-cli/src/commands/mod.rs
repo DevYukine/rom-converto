@@ -22,6 +22,7 @@ use crate::commands::wup::WupCommands;
 use crate::commands::xbox::XboxCommands;
 use crate::commands::xenon::XenonCommands;
 use clap::{Args, Parser, Subcommand};
+use rom_converto_lib::runner::models::RunOptions;
 use rom_converto_lib::util::ConflictPolicy;
 use std::path::PathBuf;
 
@@ -212,6 +213,30 @@ pub struct ConflictArgs {
         conflicts_with = "on_conflict"
     )]
     pub force: bool,
+}
+
+/// The `--delete-source` / `--verify-after` pair shared by the conversion
+/// commands whose runner operation can remove its inputs.
+#[derive(Args, Debug, Clone, Default, Eq, PartialEq)]
+pub struct SourceArgs {
+    /// Delete each input after its output was written, with every file it consists of: a .cue or .gdi with its tracks, split parts, a per-game key file the output no longer needs, a folder input, or an archive whose every entry was used. A folder left empty (or holding only OS junk such as .DS_Store) is removed too; the input folder itself and folders holding other files stay. Failed and skipped files, inputs whose output already existed, and archives holding unused entries keep their sources. With --dry-run, lists what would be deleted
+    #[arg(long = "delete-source", default_value_t = false)]
+    pub delete_source: bool,
+
+    /// Delete a source only after its output passed its format's own verify. Formats without an output check fail as unverified and keep their source
+    #[arg(
+        long = "verify-after",
+        default_value_t = false,
+        requires = "delete_source"
+    )]
+    pub verify_after: bool,
+}
+
+impl SourceArgs {
+    pub fn apply(&self, options: &mut RunOptions) {
+        options.delete_source = self.delete_source.then_some(true);
+        options.verify_after = self.verify_after.then_some(true);
+    }
 }
 
 /// The `--max-depth` / `--report` pair shared by the recursive commands.
@@ -485,6 +510,12 @@ mod tests {
                 // --max-depth is only accepted alongside --recursive.
                 if field == "max_depth" && recursive {
                     tokens.insert(0, "--recursive".to_string());
+                }
+                // On conversion commands --verify-after gates --delete-source.
+                if field == "verify_after"
+                    && cmd.get_arguments().any(|a| a.get_id() == "delete_source")
+                {
+                    tokens.insert(0, "--delete-source".to_string());
                 }
                 // Two option fields can spell the same flag (--full); only
                 // the one the table lists, and so the runner reads for this

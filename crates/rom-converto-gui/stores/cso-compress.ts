@@ -11,6 +11,7 @@ export const useCsoCompressStore = makeOpStore("cso-compress", () => ({
   reportFile: "",
   blockSize: null as number | null,
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

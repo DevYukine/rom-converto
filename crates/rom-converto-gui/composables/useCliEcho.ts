@@ -134,6 +134,9 @@ export function buildCliCommand(payload: Record<string, unknown>): string {
 	for (const field of opFlags) {
 		const def = manifest.flags[field];
 		if (!def) continue;
+		// On conversion commands the CLI's --verify-after only gates
+		// --delete-source, so a verify-only page run has no CLI spelling.
+		if (field === "verify_after" && opFlags.includes("delete_source") && options.delete_source !== true) continue;
 		const token = flagToken(def, options[field]);
 		if (token) tokens.push(token);
 	}

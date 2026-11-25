@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -65,6 +65,9 @@ pub struct DecryptPs3Command {
     /// Skip the encryption and key verification probe (use if a correct key is rejected)
     #[arg(long = "skip-probe", default_value_t = false)]
     pub skip_probe: bool,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Runs one `ps3` subcommand.
@@ -107,6 +110,7 @@ pub async fn run(command: Ps3Commands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.key = cmd.key;
             options.skip_probe = Some(cmd.skip_probe);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "ps3.decrypt",

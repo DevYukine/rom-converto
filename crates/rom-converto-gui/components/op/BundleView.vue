@@ -16,11 +16,12 @@ import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import { outcomeConflicts, outcomeNote, type DryRunLine } from "~/lib/dry-run";
 import type { InfoResult, RunOutcome, WupInfo } from "~/types";
-import { dryRunArgs, opCommand, opProgressKey, runArgs } from "~/lib/opdefs/types";
+import { deleteSourceField, dryRunArgs, opCommand, opProgressKey, runArgs } from "~/lib/opdefs/types";
 import type { OpDef } from "~/lib/opdefs/types";
 
 const props = defineProps<{ def: OpDef }>();
 
+const deleteField = deleteSourceField();
 const store = props.def.useStore();
 const queue = useQueueStore();
 const { show: showToast } = useToast();
@@ -197,6 +198,7 @@ function bundleArgs(b: Bundle, taskId = newTaskId()) {
 			})),
 			on_conflict: store.onConflict,
 			skip_space_check: store.skipSpaceCheck,
+			delete_source: store.deleteSource && !deleteField.disabled!(store),
 		},
 		false,
 		taskId,
@@ -217,7 +219,9 @@ const partTag: Record<PartKind, string> = { base: "Base", update: "Update", dlc:
 const cli = computed(() => {
 	const b = readyBundles.value[0];
 	return buildCliCommand(
-		b ? bundleArgs(b) : runArgs("wup.compress", "input.wud", null, { level: store.level }, false, newTaskId()),
+		b
+			? bundleArgs(b)
+			: runArgs("wup.compress", "input.wud", null, { level: store.level, delete_source: store.deleteSource }, false, newTaskId()),
 	);
 });
 
@@ -407,6 +411,13 @@ function copied() {
 					label="Skip free-space check"
 					tooltip="Skips the free space estimate taken before writing. Use it only when the estimate is wrong for your disk."
 					@update:model-value="store.skipSpaceCheck = $event"
+				/>
+				<ToggleSwitch
+					:model-value="store.deleteSource"
+					:label="deleteField.label"
+					:tooltip="deleteField.note!(store) || deleteField.tooltip"
+					:disabled="deleteField.disabled!(store)"
+					@update:model-value="store.deleteSource = $event"
 				/>
 			</ConfigCard>
 		</div>

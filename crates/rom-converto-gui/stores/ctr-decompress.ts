@@ -9,4 +9,5 @@ export const useCtrDecompressStore = makeOpStore("ctr-decompress", () => ({
   outputTemplate: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

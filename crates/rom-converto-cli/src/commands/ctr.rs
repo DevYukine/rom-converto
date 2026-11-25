@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{ConflictArgs, ConflictPolicyArg, OutputArgs};
+use crate::commands::{ConflictArgs, ConflictPolicyArg, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -223,6 +223,9 @@ pub struct CompressRomCommand {
     /// Compress an encrypted ROM anyway, even though it barely compresses. Decrypt first with: rom-converto ctr decrypt <INPUT>
     #[arg(long = "allow-encrypted", default_value_t = false)]
     pub allow_encrypted: bool,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Decompress a Z3DS file back to the original ROM format
@@ -262,6 +265,9 @@ pub struct DecompressRomCommand {
 
     #[command(flatten)]
     pub conflict: ConflictArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Convert between CIA and CCI/3DS formats
@@ -515,6 +521,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.level = cmd.level;
             options.allow_encrypted = Some(cmd.allow_encrypted);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "ctr.compress",
@@ -526,7 +533,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         }
         CtrCommands::Decompress(cmd) => {
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir,
                 output_template: cmd.out.output_template,
@@ -539,6 +546,7 @@ pub async fn run(command: CtrCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "ctr.decompress",

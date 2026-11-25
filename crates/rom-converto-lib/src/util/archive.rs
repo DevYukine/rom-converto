@@ -843,6 +843,12 @@ pub struct TempSpaceShortfall;
 /// Errors on unsupported or corrupt archives, 7z header guard refusals,
 /// or I/O failures while reading their raw entry listings.
 pub fn entry_count(path: &Path) -> Result<usize> {
+    count_entries(path, |_| true)
+}
+
+/// [`entry_count`] over the entries whose in-archive name `counts` keeps.
+/// An entry whose name cannot be decoded is passed as an empty name.
+fn count_entries(path: &Path, counts: impl Fn(&str) -> bool) -> Result<usize> {
     let kind = kind_of(path).ok_or_else(|| {
         anyhow!(
             "gzip archives without a tar container are not supported, extract the file first: {}",
@@ -854,9 +860,9 @@ pub fn entry_count(path: &Path) -> Result<usize> {
             let mut zip = zip::ZipArchive::new(File::open(path)?)?;
             (0..zip.len())
                 .filter(|index| {
-                    !zip.by_index_raw(*index)
-                        .map(|e| e.is_dir())
-                        .unwrap_or(false)
+                    zip.by_index_raw(*index)
+                        .map(|e| !e.is_dir() && counts(&e.name().unwrap_or_default()))
+                        .unwrap_or(true)
                 })
                 .count()
         }
@@ -864,12 +870,13 @@ pub fn entry_count(path: &Path) -> Result<usize> {
             .0
             .files
             .iter()
-            .filter(|entry| !entry.is_directory())
+            .filter(|entry| !entry.is_directory() && counts(entry.name()))
             .count(),
         ArchiveKind::Rar => {
             let mut count = 0;
             for entry in unrar::Archive::new(path).open_for_listing()? {
-                if !entry?.is_directory() {
+                let entry = entry?;
+                if !entry.is_directory() && counts(&entry.filename.to_string_lossy()) {
                     count += 1;
                 }
             }
@@ -887,11 +894,18 @@ pub fn entry_count(path: &Path) -> Result<usize> {
             )?
             .entries()?
             {
-                let kind = entry?.header().entry_type();
-                if kind.is_file()
+                let entry = entry?;
+                let kind = entry.header().entry_type();
+                if (kind.is_file()
                     || kind.is_symlink()
                     || kind.is_hard_link()
-                    || kind.is_gnu_sparse()
+                    || kind.is_gnu_sparse())
+                    && counts(
+                        &entry
+                            .path()
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
                 {
                     count += 1;
                 }
@@ -899,6 +913,46 @@ pub fn entry_count(path: &Path) -> Result<usize> {
             count
         }
     })
+}
+
+/// True when converting `path` for `exts` reads every entry the archive
+/// holds apart from directories and OS junk: the member [`resolve_input`]
+/// picks plus, for a cue or gdi sheet, the tracks it references. Only the
+/// sheet member is extracted, so a dry run decides the way a real run does.
+/// A nested archive or another entry the member listing hides counts as
+/// unused.
+///
+/// # Errors
+/// Errors when the archive cannot be listed, holds no member for `exts`,
+/// or its sheet cannot be extracted or names a track ambiguously.
+pub(crate) fn uses_every_entry(
+    path: &Path,
+    exts: &[&str],
+    cancel: &crate::util::CancelToken,
+) -> Result<bool> {
+    let ArchiveSelection {
+        members,
+        member_index,
+        ..
+    } = probe_selection(path, exts, true, cancel)?;
+    let member = &members[member_index];
+    let mut used = 1;
+    if name_has_ext(&member.name, &["cue", "gdi"]) {
+        let kind = kind_of(path).expect("a listed archive has a known kind");
+        let tmp = tempfile::tempdir()?;
+        let sheet = extract_one(
+            path,
+            kind,
+            &member.name,
+            member_index,
+            tmp.path(),
+            member.size,
+            cancel,
+        )?;
+        let wanted = sheet_track_names(&sheet, &member.name)?;
+        used += cue_sidecar_members(path, &members, &member.name, &wanted)?.len();
+    }
+    Ok(count_entries(path, |name| !is_os_junk_file(basename(name)))? == used)
 }
 
 /// Extensions a cue or gdi sheet's tracks carry: when a sheet is a candidate
@@ -996,21 +1050,54 @@ fn probe_selection(
 /// True for the second and later volumes of a split rar set
 /// (`name.part2.rar`, in any letter case): opening `part1` reads the whole
 /// set, so the others are no inputs of their own.
-fn is_rar_continuation(path: &Path) -> bool {
-    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-        return false;
+pub(crate) fn is_rar_continuation(path: &Path) -> bool {
+    rar_part(path).is_some_and(|(number, _)| number > 1)
+}
+
+/// The volume number of a split rar set's `name.partN.rar`, with the width
+/// of its digits, or `None` for any other file.
+fn rar_part(path: &Path) -> Option<(u32, usize)> {
+    let stem = path.file_stem()?.to_str()?;
+    if !crate::util::fs::has_ext(path, "rar") {
+        return None;
+    }
+    let (_, tag) = stem.rsplit_once('.')?;
+    if !tag.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("part")) {
+        return None;
+    }
+    Some((tag[4..].parse().ok()?, tag.len() - 4))
+}
+
+/// The volumes the reader opens for `path`, first to last: for the first
+/// volume of a split rar set (`name.part1.rar`) it and each following
+/// `name.partN.rar`, numbered in the first one's digit width up to the
+/// first missing one; any other path is just itself.
+pub(crate) fn rar_volumes(path: &Path) -> Vec<PathBuf> {
+    let mut volumes = vec![path.to_path_buf()];
+    let (Some((1, width)), Some(stem), Some(ext)) = (
+        rar_part(path),
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+    ) else {
+        return volumes;
     };
+    let prefix = &stem[..stem.len() - width];
+    for number in 2u32.. {
+        let volume = path.with_file_name(format!("{prefix}{number:0width$}.{ext}"));
+        if !volume.is_file() {
+            break;
+        }
+        volumes.push(volume);
+    }
+    volumes
+}
+
+/// True for `name.rar` beside `name.r00`: a split set in the old volume
+/// naming.
+pub(crate) fn has_old_rar_volumes(path: &Path) -> bool {
     crate::util::fs::has_ext(path, "rar")
-        && stem
-            .rsplit_once('.')
-            .and_then(|(_, tag)| {
-                if tag.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("part")) {
-                    tag[4..].parse::<u32>().ok()
-                } else {
-                    None
-                }
-            })
-            .is_some_and(|n| n > 1)
+        && rar_part(path).is_none()
+        && (path.with_extension("r00").is_file() || path.with_extension("R00").is_file())
 }
 
 /// Stages the member a hash should read, or `None` when the archive bytes
@@ -1261,6 +1348,32 @@ fn parent_dir(name: &str) -> &str {
     }
 }
 
+/// Lowercased basenames of the tracks the extracted sheet `sheet` (the
+/// archive member `member_name`) references. Best-effort: a non-UTF-8 or
+/// nonstandard sheet yields none rather than failing extraction of the
+/// primary member.
+fn sheet_track_names(sheet: &Path, member_name: &str) -> Result<HashSet<String>> {
+    Ok(if name_has_ext(member_name, &["gdi"]) {
+        crate::sega::katana::parse_gdi_index(sheet)
+            .map(|index| {
+                index
+                    .tracks
+                    .iter()
+                    .map(|track| basename(&track.filename).to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        crate::disc::cue::CueParser::new(sheet)
+            .parse_reader(BufReader::new(File::open(sheet)?))
+            .map(|cue| cue.files)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|file| basename(&file.filename).to_ascii_lowercase())
+            .collect()
+    })
+}
+
 fn cue_sidecar_members(
     path: &Path,
     members: &[ArchiveMember],
@@ -1405,27 +1518,7 @@ fn stage_selection(
         None
     };
     if let Some(sheet_path) = extracted_sheet.as_ref() {
-        // Best-effort: a non-UTF-8 or nonstandard sheet yields no sidecars
-        // rather than failing extraction of the primary member.
-        let wanted: HashSet<String> = if name_has_ext(&member.name, &["gdi"]) {
-            crate::sega::katana::parse_gdi_index(sheet_path)
-                .map(|index| {
-                    index
-                        .tracks
-                        .iter()
-                        .map(|track| basename(&track.filename).to_ascii_lowercase())
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            crate::disc::cue::CueParser::new(sheet_path)
-                .parse_reader(BufReader::new(File::open(sheet_path)?))
-                .map(|cue| cue.files)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|file| basename(&file.filename).to_ascii_lowercase())
-                .collect()
-        };
+        let wanted = sheet_track_names(sheet_path, &member.name)?;
         referenced = cue_sidecar_members(path, &members, &member.name, &wanted)?;
         for &index in &referenced {
             needed = needed
@@ -2797,5 +2890,75 @@ mod tests {
             .unwrap();
         builder.into_inner().unwrap();
         assert_eq!(entry_count(&path).unwrap(), 1);
+    }
+
+    /// An archive goes with its conversion only when the conversion read
+    /// every entry: the picked member plus the tracks its sheet names. OS
+    /// junk does not count; an unused file or a nested archive does.
+    #[test]
+    fn uses_every_entry_counts_the_member_and_its_sheet_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cancel = CancelToken::new();
+        let cue =
+            b"FILE \"Game (Track 1).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+        type Entries<'a> = &'a [(&'a str, &'a [u8])];
+        let cases: [(&str, Entries, bool); 5] = [
+            ("iso", &[("Game.iso", b"iso")], true),
+            (
+                "junk",
+                &[
+                    ("Game.iso", b"iso"),
+                    ("__MACOSX/._Game.iso", b"junk"),
+                    (".DS_Store", b"junk"),
+                ],
+                true,
+            ),
+            (
+                "set",
+                &[("Game.cue", cue), ("Game (Track 1).bin", b"bin")],
+                true,
+            ),
+            (
+                "readme",
+                &[("Game.iso", b"iso"), ("readme.txt", b"hi")],
+                false,
+            ),
+            (
+                "nested",
+                &[("Game.iso", b"iso"), ("more.zip", b"zip")],
+                false,
+            ),
+        ];
+        for (name, entries, expected) in cases {
+            let path = dir.path().join(format!("{name}.zip"));
+            write_zip(&path, zip::CompressionMethod::Stored, entries);
+            assert_eq!(
+                uses_every_entry(&path, &["iso", "cue"], &cancel).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_first_rar_volume_owns_the_volumes_the_reader_opens_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let volumes: Vec<PathBuf> = ["set.part01.rar", "set.part02.rar", "set.part03.rar"]
+            .iter()
+            .map(|name| dir.path().join(name))
+            .collect();
+        for path in volumes.iter().chain([&dir.path().join("set.part05.rar")]) {
+            std::fs::write(path, b"x").unwrap();
+        }
+        assert_eq!(rar_volumes(&volumes[0]), volumes);
+        assert_eq!(rar_volumes(&volumes[1]), std::slice::from_ref(&volumes[1]));
+
+        let plain = dir.path().join("old.rar");
+        std::fs::write(&plain, b"x").unwrap();
+        assert_eq!(rar_volumes(&plain), std::slice::from_ref(&plain));
+        assert!(!has_old_rar_volumes(&plain));
+        std::fs::write(dir.path().join("old.r00"), b"x").unwrap();
+        assert!(has_old_rar_volumes(&plain));
+        assert!(!has_old_rar_volumes(&volumes[0]));
     }
 }

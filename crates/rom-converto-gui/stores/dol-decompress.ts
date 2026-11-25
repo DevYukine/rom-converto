@@ -11,4 +11,5 @@ export const useDolDecompressStore = makeOpStore("dol-decompress", () => ({
   reportFile: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

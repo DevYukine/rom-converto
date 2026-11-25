@@ -9,6 +9,7 @@ export const useXenonCompressStore = makeOpStore("xenon-compress", () => ({
   outputTemplate: "",
   reportFile: "",
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

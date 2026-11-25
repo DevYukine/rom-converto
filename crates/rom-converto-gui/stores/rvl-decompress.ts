@@ -12,4 +12,5 @@ export const useRvlDecompressStore = makeOpStore("rvl-decompress", () => ({
   reportFile: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

@@ -14,4 +14,5 @@ export const useWupCompressStore = makeOpStore("wup-compress", () => ({
   level: 0,
   onConflict: useUiStore().defaultOnConflict,
   skipSpaceCheck: false,
+  deleteSource: false,
 }));

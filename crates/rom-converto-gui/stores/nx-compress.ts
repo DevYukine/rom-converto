@@ -25,6 +25,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
   const reportFile = ref("");
   const userPickedMode = ref(false);
   const verifyAfter = ref(false);
+  const deleteSource = ref(false);
 
   function setMode(m: NxMode) {
     mode.value = m;
@@ -45,6 +46,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     reportFile.value = "";
     userPickedMode.value = false;
     verifyAfter.value = false;
+    deleteSource.value = false;
   }
 
   return {
@@ -61,6 +63,7 @@ export const useNxCompressStore = defineStore("nx-compress", () => {
     reportFile,
     userPickedMode,
     verifyAfter,
+    deleteSource,
     setMode,
     $reset,
   };

@@ -47,6 +47,7 @@ export function useStaging(def: OpDef) {
 		const subfolders = !!def.subfolderItems?.(store);
 		const files: string[] = [];
 		const dirs = new Set<string>();
+		const roots = new Map<string, string>();
 		for (const p of paths) {
 			const scanned = await scan.expand(p, recursive ? maxDepth : 1);
 			if (scanned !== null && def.scanFolders === false) continue;
@@ -58,8 +59,10 @@ export function useStaging(def: OpDef) {
 				expanded = subfoldersOf(p, scanned ?? []).filter((d) => d !== outDir);
 				for (const d of expanded) dirs.add(d);
 			} else if (scanned === null) expanded = [p];
-			else if (scanned.length > 0) expanded = scanned;
-			else if (folderInput) {
+			else if (scanned.length > 0) {
+				expanded = scanned;
+				for (const f of scanned) if (!roots.has(f)) roots.set(f, p);
+			} else if (folderInput) {
 				expanded = [p];
 				dirs.add(p);
 			} else expanded = [];
@@ -76,6 +79,7 @@ export function useStaging(def: OpDef) {
 				size: 0,
 				outExt: def.deriveOutput ? extOf(def.deriveOutput(path, store)) : "",
 				dir: dirs.has(path),
+				...(roots.has(path) ? { sourceRoot: roots.get(path) } : {}),
 			};
 			staged.value.push(item);
 			// `item` is the raw object; only the proxy in `staged.value` is reactive.

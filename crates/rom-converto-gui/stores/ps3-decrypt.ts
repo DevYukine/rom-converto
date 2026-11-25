@@ -11,4 +11,5 @@ export const usePs3DecryptStore = makeOpStore("ps3-decrypt", () => ({
   outputTemplate: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, ConflictPolicyArg, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use rom_converto_lib::util::CancelToken;
 use std::path::PathBuf;
@@ -121,6 +121,9 @@ pub struct CompressWupCommand {
 
     #[command(flatten)]
     pub conflict: ConflictArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Compress a .wud disc image to a WUX container
@@ -159,6 +162,9 @@ pub struct ToWuxCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Decompress a WUX container back to a plain .wud disc image
@@ -197,6 +203,9 @@ pub struct ToWudCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Runs one `wup` subcommand.
@@ -266,6 +275,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 .first()
                 .cloned()
                 .unwrap_or_else(|| cmd.output.clone());
+            cmd.source.apply(&mut options);
             batch::run(&run, "wup.compress", input, Some(cmd.output), options).await?;
         }
         WupCommands::Decrypt(cmd) => {
@@ -284,7 +294,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         WupCommands::ToWux(cmd) => {
             let eff = &effective.wup;
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir,
                 output_template: cmd.out.output_template,
@@ -297,6 +307,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "wup.to_wux",
@@ -309,7 +320,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
         WupCommands::ToWud(cmd) => {
             let eff = &effective.wup;
             require_input(&cmd.input, cmd.recursive)?;
-            let options = RunOptions::from(batch::Common {
+            let mut options = RunOptions::from(batch::Common {
                 recursive: cmd.recursive,
                 output_dir: cmd.out.output_dir,
                 output_template: cmd.out.output_template,
@@ -322,6 +333,7 @@ pub async fn run(command: WupCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 ),
                 skip_space_check,
             });
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "wup.to_wud",

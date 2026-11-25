@@ -1,5 +1,6 @@
 import {
 	commonOptions,
+	deleteSourceField,
 	directoryConflict,
 	directoryOutputRows,
 	recursiveFields,
@@ -152,6 +153,7 @@ const wup: OpDef = {
 				"WUD → WUX packs the disc image into a WUX that stores each unique 32 KiB sector once. WUX → WUD unpacks it back to the raw image. For a split dump, keep every game_partN.wud next to game_part1.wud: only game_part1.wud converts and the other parts are skipped.",
 		},
 		...recursiveFields(),
+		deleteSourceField(true),
 	],
 	outputRows: templateOutputRowsWithReport(),
 	showVerify: true,
@@ -170,7 +172,7 @@ const wup: OpDef = {
 			templateIsActive(store)
 				? null
 				: withOutputDir(deriveWupDiscPath(item.path, store.direction), store.outputDir || ""),
-			commonOptions(store),
+			commonOptions(store, true),
 			false,
 			taskId,
 			store.reportFile || null,
@@ -504,6 +506,7 @@ const chdMigrate: OpDef = {
 				"How hard each selected codec works to compress. Higher is smaller but slower, and only applies to the codecs chosen above.",
 		},
 		...recursiveFields(),
+		deleteSourceField(),
 	],
 	note: "A CHD that is already version 5 is rejected: there is nothing to migrate.",
 	outputRows: [
@@ -634,6 +637,7 @@ const xbox: OpDef = {
 				"Patches the XDK media-type check in every .xbe so the image boots on BIOSes that need it. Inert on files that do not, so leaving it on is safe.",
 		},
 		...recursiveFields(),
+		deleteSourceField(true),
 	],
 	note: "The media patch is inert on .xbe files that don't need it, so leaving it on is safe by default.",
 	outputRows: templateOutputRowsWithReport(),
@@ -646,7 +650,7 @@ const xbox: OpDef = {
 			"xbox.convert",
 			item.path,
 			templateIsActive(store) ? null : withOutputDir(deriveXisoPath(item.path), store.outputDir || ""),
-			{ media_patch: store.mediaPatch, ...commonOptions(store) },
+			{ media_patch: store.mediaPatch, ...commonOptions(store, true) },
 			false,
 			taskId,
 			store.reportFile || null,

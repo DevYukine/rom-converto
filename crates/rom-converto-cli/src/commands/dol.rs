@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -154,6 +154,9 @@ pub struct CompressDiscCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Convert a GameCube disc image to ISO, GCZ, or RVZ
@@ -254,6 +257,9 @@ pub struct DecompressDiscCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Runs one `dol` subcommand.
@@ -357,6 +363,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.level = Some(level);
             options.chunk_size = Some(chunk_size);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "dol.compress",
@@ -414,6 +421,7 @@ pub async fn run(command: DolCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 skip_space_check,
             });
             options.skip_verify = Some(cmd.skip_verify);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "dol.decompress",

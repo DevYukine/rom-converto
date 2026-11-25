@@ -11,6 +11,7 @@ export const useDolCompressStore = makeOpStore("dol-compress", () => ({
   outputTemplate: "",
   reportFile: "",
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));

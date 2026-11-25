@@ -1,5 +1,5 @@
 use crate::commands::info_command::InfoCommand;
-use crate::commands::{BatchArgs, ConflictArgs, OutputArgs};
+use crate::commands::{BatchArgs, ConflictArgs, OutputArgs, SourceArgs};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -157,6 +157,9 @@ pub struct CompressDiscCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Convert a Wii disc image to ISO, WBFS, GCZ, WIA, or RVZ
@@ -261,6 +264,9 @@ pub struct DecompressDiscCommand {
 
     #[command(flatten)]
     pub batch: BatchArgs,
+
+    #[command(flatten)]
+    pub source: SourceArgs,
 }
 
 /// Runs one `rvl` subcommand.
@@ -360,6 +366,7 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
             });
             options.level = Some(level);
             options.chunk_size = Some(chunk_size);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "rvl.compress",
@@ -418,6 +425,7 @@ pub async fn run(command: RvlCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 skip_space_check,
             });
             options.skip_verify = Some(cmd.skip_verify);
+            cmd.source.apply(&mut options);
             batch::run(
                 &run,
                 "rvl.decompress",

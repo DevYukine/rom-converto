@@ -10,4 +10,5 @@ export const useCsoDecompressStore = makeOpStore("cso-decompress", () => ({
   reportFile: "",
   recursive: true,
   maxDepth: null as number | null,
+  deleteSource: false,
 }));

@@ -7,7 +7,14 @@ import { basename } from "~/composables/useDerivedPath";
 import PrimaryButton from "~/components/ui/PrimaryButton.vue";
 import DryRunModal from "~/components/modals/DryRunModal.vue";
 import { outcomeConflicts, outcomeNote, type DryRunLine } from "~/lib/dry-run";
-import { combinedArgs, dryRunArgs, opCommand, opProgressKey, requestPath } from "~/lib/opdefs/types";
+import {
+	combinedArgs,
+	dryRunArgs,
+	opCommand,
+	opProgressKey,
+	requestPath,
+	withSourceRoot,
+} from "~/lib/opdefs/types";
 import type { OpDef, OpStore, StagedItem } from "~/lib/opdefs/types";
 import { useToast } from "~/composables/useToast";
 import type { OrganizeData, RunOutcome } from "~/types";
@@ -76,7 +83,7 @@ function enqueue() {
 			name: item.name,
 			opLabel: props.def.opLabel,
 			command: opCommand(props.def, props.store),
-			args: props.def.buildArgs(props.store, item, taskId),
+			args: withSourceRoot(props.def.buildArgs(props.store, item, taskId), item),
 			taskId,
 			progressKey: progressKeyFor(),
 			chips: props.def.chips(props.store),
@@ -132,7 +139,7 @@ async function dryRun() {
 		return;
 	}
 	for (const item of props.items) {
-		const args = props.def.buildArgs(props.store, item, taskIdFor());
+		const args = withSourceRoot(props.def.buildArgs(props.store, item, taskIdFor()), item);
 		const command = opCommand(props.def, props.store);
 		if (!cmd) cmd = buildCliCommand(args);
 		let note = "ok";

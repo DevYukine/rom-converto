@@ -10,6 +10,7 @@ export const useWupConvertStore = makeOpStore("wup-convert", () => ({
   outputTemplate: "",
   reportFile: "",
   verifyAfter: false,
+  deleteSource: false,
   recursive: true,
   maxDepth: null as number | null,
 }));
