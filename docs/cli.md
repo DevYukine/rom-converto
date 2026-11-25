@@ -1362,7 +1362,7 @@ also one of its outputs.
 | `--output-dir <DIR>` | Root of the organized library. Required unless the config file or a preset supplies `organize.output_dir` |
 | `--output-template <TEMPLATE>` | Layout inside `--output-dir`, with the same tokens as `--output-template` elsewhere. Defaults to `{console}/{basename}.{ext}` |
 | `--dat` | Rename files to their No-Intro/Redump names using the Playmatch DAT service (online) |
-| `--move` | Delete each source after it was organized successfully. Skipped and failed files keep their sources. Sources also kept: an archive that holds more than one entry (only single-entry archives are released, so sidecars survive), a run with `--patch-only` (the unpatched original always stays), with `--verify-after` a conversion whose format has no output check, and under `--on-conflict overwrite-invalid` an existing output that cannot be verified. The release exception: under `--on-conflict overwrite-invalid`, an existing zip, copy, or hardlink (never a symlink) that was checked and verified valid counts as organized and its source is deleted. A conversion never deletes its source when the output already existed: its check only proves the container is self-consistent, not that this source produced it |
+| `--move` | Delete each source after it was organized successfully. Skipped and failed files keep their sources. Sources also kept: an archive that holds more than one entry (only single-entry archives are released, so sidecars survive), a run with `--patch-only` (the unpatched original always stays), with `--verify-after` a conversion whose format has no output check, and under `--on-conflict overwrite-invalid` an existing output that cannot be verified. The release exception: under `--on-conflict overwrite-invalid`, an existing archive, copy, or hardlink (never a symlink) that was checked and verified valid counts as organized and its source is deleted. A conversion never deletes its source when the output already existed: its check only proves the container is self-consistent, not that this source produced it |
 | `--playlists` | Write `.m3u` playlists for multi-disc sets in the output folders. The playlists this run derives (one per multi-disc set, named after the set's base title) are derived data: planned before cleaning, so they are kept and never cleaned, and rewritten after cleaning only when their contents changed (with a `rewrote playlist that differed` row detail) regardless of `--on-conflict`; a playlist whose contents did not change is reported as already current, and one whose disc set was cleaned away is removed with it. An existing `.m3u` whose own location is under INPUT (including through a symlinked output folder) is never deleted, and is rewritten only when it is the tool's own output for the discs it lists (bare disc-file names of the playlist's title in planner order); anything else (comments, reordering, foreign lines) is kept with a `playlist is under the input directory` skip row, and a read-only `.m3u` is refused with a warning. Any other `.m3u` in a cleaned folder is deleted like any stale file unless `--clean-exclude` protects it, and a symlinked `.m3u` is never written through. A dry run lists playlists only for disc folders that already exist on disk and never writes them |
 | `--max-depth <N>` | Limit the library scan depth. `1` = top level only. Omit for unlimited |
 | `--on-conflict <POLICY>`, `-f` | What to do when an output already exists. See [Conflict policy](#conflict-policy) |
@@ -1370,7 +1370,7 @@ also one of its outputs.
 | `--keys <PRODKEYS>` | Path to `prod.keys`, needed to compress Switch NSP/XCI to NSZ/XCZ. Same lookup order as `nx compress` |
 | `--allow-encrypted` | Compress an encrypted ROM anyway, even though it barely compresses. Applies to the 3DS targets |
 | `--api-base <URL>` | Playmatch API base URL for this run. Defaults to the public instance |
-| `--verify-after` | Verify each written zip, copy, or converted output right after writing it: size and CRC32 for zips and copies, plus TorrentZip/RVZSTD structure for zips; conversions run the format's own verify. A zip, copy, or conversion whose post-write verification fails fails its row. Conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, and PS3) fail as unverified and keep their source. A failed check also drops the output's `--clean` protection (the invalid output is swept as stale by the same or a later `--clean` run), while an output whose check could not run is kept |
+| `--verify-after` | Verify each written archive, copy, or converted output right after writing it: size and CRC32 for archives (zip, 7z, tar, tar.gz) and copies, plus TorrentZip/RVZSTD structure for zips; conversions run the format's own verify. An archive, copy, or conversion whose post-write verification fails fails its row. Conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, and PS3) fail as unverified and keep their source. A failed check also drops the output's `--clean` protection (the invalid output is swept as stale by the same or a later `--clean` run), while an output whose check could not run is kept |
 
 Per-console targets:
 
@@ -1386,7 +1386,7 @@ Per-console targets:
 | Xbox 360 disc | ZAR |
 | PS3 (encrypted ISO) | decrypted ISO; the disc key comes from the embedded key database or a sibling `.dkey` of the source |
 | CHD v1-v4 | CHD v5 |
-| Cartridge ROMs, Nintendo DS | ZIP (TorrentZip; RVZSTD with `--zip-format rvzstd`) |
+| Cartridge ROMs, Nintendo DS | ZIP (TorrentZip; RVZSTD with `--zip-format rvzstd`), or 7z, tar, tar.gz with `--archive-format` |
 | already in its target format | copied unchanged, or hardlinked, symlinked, or reflinked with `--link-mode` |
 | anything unrecognized | skipped |
 
@@ -1408,8 +1408,8 @@ run still hashes every file and queries the API, so previewing with `--dat` cost
 the same lookups as the real run. With `--move`, the sources of a successfully
 organized item (every `.bin` and the `.cue` of a set) are deleted only after the
 output is in place, never for skipped or failed files. The one exception,
-shared with other ROM managers: under `--on-conflict overwrite-invalid`, an existing zip, copy, or hardlink (never a symlink)
-that verifies valid counts as placed and its source is deleted. For a zip or copy, valid means it holds
+shared with other ROM managers: under `--on-conflict overwrite-invalid`, an existing archive, copy, or hardlink (never a symlink)
+that verifies valid counts as placed and its source is deleted. For an archive or copy, valid means it holds
 this source's data, so an existing output of a different dump with the same name is rewritten. A conversion
 whose existing output verifies valid keeps its source: the check only proves
 the container is self-consistent, not that this source produced it.
@@ -1478,8 +1478,9 @@ the earliest listed code wins.
 | `--dir-letter-limit <N>` | Cap how many items a letter folder holds; a letter that exceeds the cap is split into numbered folders. Ignored unless `--dir-letter` is on (flag or config) |
 | `--dir-letter-group` | Merge adjacent letter folders into ranges sized by the limit, such as `A-C` and `D-F`. Requires `--dir-letter-limit`. Ignored unless `--dir-letter` is on (flag or config) |
 | `--multi-disc-dirs` | Place each multi-disc set in its own folder named after the game (`PS1/Final Fantasy VII (USA)/Final Fantasy VII (USA) (Disc 1).chd`). A set is two or more outputs in the same output folder whose names share a base title and carry a Redump or TOSEC disc token (`(Disc 1)`, `Disc 1 of 2`); single-disc titles stay flat, and a set whose folder already carries the game name is not nested again. The folder sits below the letter folder when `--dir-letter` is on, and a set never splits across the numbered folders of `--dir-letter-limit` (the folder holding it may exceed the limit). With `--playlists` the `.m3u` is written inside the game folder and lists bare file names; it is only derived for chd, cue, iso, cso, zso, and rvz outputs. A set forms from the discs one run organizes: a disc added in a later run is placed flat beside the existing game folder. With `--clean`, the game folder is cleaned recursively like every folder the run wrote into, including one that already existed under the game's name, so keep other files out of it or protect them with `--clean-exclude`. Clean removes files only, so turning the option off later leaves the emptied game folders behind, as with letter folders. Reshuffling an already flat library in place (INPUT is `--output-dir`, with `--move`) keeps the old flat `.m3u`, since files under INPUT are never deleted; remove it by hand |
-| `--zip-format <FORMAT>` | Zip structure for cartridge outputs: `torrentzip` (default) or `rvzstd` |
-| `--zip-exclude <GLOB>` | Copy instead of zip when the planned `.zip` output path under `--output-dir` matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (`--zip-exclude=`, or `zip_exclude = ""` in the config) is the explicit no-exclusion override |
+| `--archive-format <FORMAT>` | Archive format for cartridge and DS outputs: `zip` (default), `7z`, `tar`, or `tar.gz` |
+| `--zip-format <FORMAT>` | Zip structure for cartridge outputs: `torrentzip` (default) or `rvzstd`. Applies only when the archive format is zip |
+| `--zip-exclude <GLOB>` | Copy instead of zip when the planned archive path (any extension, for example `**/*.7z`) under `--output-dir` matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (`--zip-exclude=`, or `zip_exclude = ""` in the config) is the explicit no-exclusion override |
 | `--link-mode <MODE>` | Replace the copy of an already-correct file with a `hardlink`, `symlink`, or `reflink`. `symlink` cannot be combined with `--move` (flag or config) |
 | `--symlink-relative` | Make `--link-mode symlink` links relative instead of absolute |
 
@@ -1497,9 +1498,14 @@ network drive, or a subst drive stays absolute.
 Cartridge ROMs and DS games are zipped as TorrentZip: the same ROM always
 produces a byte-identical archive, so checksums stay stable across tools.
 `--zip-format rvzstd` writes Zstandard-compressed RVZSTD zips instead: smaller,
-but far fewer tools read them. A valid TorrentZip (or RVZSTD) input whose single
-member already has the planned name is copied through untouched instead of being
-re-zipped.
+but far fewer tools read them. `--archive-format` writes 7z (LZMA2), tar
+(uncompressed), or tar.gz instead of zip, without timestamps, so the same ROM
+still gives the same archive. An input archive in another format is repacked
+(`Game.zip` becomes `Game.7z`; `Game.7z` or `Game.rar` becomes `Game.zip` by
+default). An input already in the chosen format whose single member has the
+planned name is copied through untouched (for zip, only a valid TorrentZip or
+RVZSTD input in the requested flavour); header removal, trim padding, and
+patches always rewrite. Rar can be read but not written.
 
 ### Headers, trimming, and patching
 
@@ -1594,7 +1600,7 @@ report workflow of a typical ROM manager:
 | ROM-manager feature | rom-converto organize |
 |---|---|
 | copy or move ROMs | the default behavior, or `--move` |
-| zip ROMs | automatic for cartridge ROMs (TorrentZip) |
+| zip ROMs | automatic for cartridge ROMs (TorrentZip); 7z, tar, tar.gz with `--archive-format` |
 | extract archives | n/a: organize converts instead of extracting |
 | test written files | `--verify-after` |
 | clean the output folder | `--clean` |
@@ -1608,7 +1614,7 @@ report workflow of a typical ROM manager:
 | header removal | `--remove-headers` |
 | one game per parent/clone group with region, language, revision and retail preferences | `--single`, `--prefer-*` |
 | language, region, name and release-type filters | `--filter-language`, `--filter-region`, `--filter-regex`, `--no-type`, `--only-type`, `--only-retail` |
-| zip flavour, links, patches, trim padding, input and clean exclusions, clean backup, empty-folder deletion | `--zip-format`, `--link-mode`, `--patch`, `--trim-add-padding`, `--input-exclude`, `--clean-exclude`, `--clean-backup`, `--move-delete-dirs` |
+| archive format, zip flavour, links, patches, trim padding, input and clean exclusions, clean backup, empty-folder deletion | `--archive-format`, `--zip-format`, `--link-mode`, `--patch`, `--trim-add-padding`, `--input-exclude`, `--clean-exclude`, `--clean-backup`, `--move-delete-dirs` |
 | clean dry run | `--dry-run` |
 
 Not supported: local DAT files, generating DATs from a folder, arcade set

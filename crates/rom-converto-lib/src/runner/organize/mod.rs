@@ -40,8 +40,8 @@ use super::{RUN_SCHEMA, invalid_arg, is_cancelled_error, planned_verb};
 use crate::dat::units::DatUnit;
 use crate::playlist::{PlaylistMode, PlaylistOptions, PlaylistPlan, plan_playlists};
 use crate::util::{
-    CancelToken, Cancelled, ConflictPolicy, FileStatus, OutputExists, PlanDecision,
-    ProgressReporter, ReportRecord, ReportRecordInput, ResolvedInput, ZipFormat,
+    ArchiveFormat, CancelToken, Cancelled, ConflictPolicy, FileStatus, OutputExists, PlanDecision,
+    ProgressReporter, ReportRecord, ReportRecordInput, ResolvedInput,
 };
 use anyhow::{Context, Result};
 use dat_match::DatNaming;
@@ -101,7 +101,7 @@ pub(crate) async fn organize(
     // a bad glob, regex, link mode, or format is an invalid argument. The
     // parsed values flow into planning and placement, which never re-parse.
     patch::PatchIndex::validate_paths(req.options.patch.as_deref().unwrap_or(&[]))?;
-    let zip_format = place::zip_format(&req.options)?;
+    let archive_format = place::archive_format(&req.options)?;
     let link_mode = place::link_mode(&req.options)?;
     let delete_dirs = clean::move_delete_dirs(&req.options)?;
     let clean_options = clean::CleanOptions::from_options(&req.options)?;
@@ -247,6 +247,7 @@ pub(crate) async fn organize(
         &mut plans,
         &output_dir,
         &template,
+        archive_format.ext(),
         zip_exclude.as_ref(),
         link_mode,
     );
@@ -480,7 +481,7 @@ pub(crate) async fn organize(
                         stagings[plan.index].as_ref(),
                         unit,
                         own_sources,
-                        zip_format,
+                        archive_format,
                         link_mode,
                         &guards,
                         convert_keep_reason.clone(),
@@ -967,7 +968,7 @@ async fn execute_unit(
     staged_member: Option<&ResolvedInput>,
     unit: &DatUnit,
     own_sources: &[PathBuf],
-    zip_format: ZipFormat,
+    archive_format: ArchiveFormat,
     link_mode: Option<LinkMode>,
     guards: &WriteGuards<'_>,
     convert_keep_reason: Option<RefusalCause>,
@@ -1219,7 +1220,7 @@ async fn execute_unit(
                 source,
                 consume_source,
                 demote_reason,
-                zip_format,
+                archive_format,
                 link_mode,
                 guards,
                 progress,
@@ -3129,6 +3130,7 @@ mod tests {
     use crate::runner::models::{
         ComparisonData, ProgressEvent, RunComparisonData, VerifyReport, VerifyVerdict,
     };
+    use crate::util::ZipFormat;
 
     /// A [`ProgressReporter`] capturing streamed organize rows:
     /// [`RecordingProgress`] drops `row` events, so capture them here. A
@@ -3702,6 +3704,71 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "Test Game.gba");
         assert_eq!(entries[0].size, bytes.len() as u64);
+    }
+
+    /// An unknown `archive_format`, or a bad `zip_format` next to a non-zip
+    /// archive format, is an invalid argument raised before anything is
+    /// scanned or written.
+    #[tokio::test]
+    async fn invalid_archive_format_is_rejected_before_scanning() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        std::fs::write(lib.path().join("Test Game.gba"), gba_bytes()).unwrap();
+
+        for (archive_format, zip_format) in [("rar", None), ("7z", Some("bogus"))] {
+            let mut req = organize_request(lib.path(), Some(out.path()), false);
+            req.options.archive_format = Some(archive_format.to_string());
+            req.options.zip_format = zip_format.map(str::to_string);
+            let err = organize(req, &RecordingProgress::default(), CancelToken::new())
+                .await
+                .unwrap_err();
+            assert!(
+                err.downcast_ref::<crate::runner::InvalidArgument>()
+                    .is_some(),
+                "{err:#}"
+            );
+            assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
+        }
+    }
+
+    /// The disc token of a tar.gz output is read from the name without
+    /// both archive suffixes, so the set's folder is the bare game title.
+    #[tokio::test]
+    async fn multi_disc_dirs_group_tar_gz_outputs_by_title() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        for disc in 1..=2u8 {
+            let mut bytes = gba_bytes();
+            bytes[0xC0 - 1] = disc;
+            std::fs::write(
+                lib.path().join(format!("Grouped Game (Disc {disc}).gba")),
+                bytes,
+            )
+            .unwrap();
+        }
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.archive_format = Some("tar.gz".to_string());
+        req.options.multi_disc_dirs = Some(true);
+        let response = organize(req, &RecordingProgress::default(), CancelToken::new())
+            .await
+            .unwrap();
+        let Some(RunData::Organize(data)) = response.data else {
+            panic!("expected organize data");
+        };
+        assert_eq!(data.ok, 2, "{:?}", data.rows);
+        for disc in 1..=2 {
+            let row = row_for(&data, &format!("Grouped Game (Disc {disc}).gba"));
+            let output = row.output.clone().unwrap();
+            assert_eq!(
+                output.parent().and_then(Path::file_name),
+                Some(std::ffi::OsStr::new("Grouped Game"))
+            );
+            assert_eq!(
+                output.file_name().and_then(|name| name.to_str()),
+                Some(format!("Grouped Game (Disc {disc}).tar.gz").as_str())
+            );
+        }
     }
 
     /// Playlists are planned even in dry runs, without writing, so their
@@ -5409,7 +5476,7 @@ mod tests {
             None,
             &unit,
             &unit_source_files(&unit),
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             Some(LinkMode::Hard),
             &WriteGuards::never(out.path().to_path_buf()),
             None,
@@ -7172,7 +7239,7 @@ mod tests {
             None,
             &DatUnit::File(link.clone()),
             &unit_source_files(&DatUnit::File(link.clone())),
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             Some(place::LinkMode::Hard),
             &WriteGuards::never(out.path().to_path_buf()),
             None,
@@ -8056,7 +8123,7 @@ mod tests {
             None,
             &DatUnit::File(source.clone()),
             &unit_source_files(&DatUnit::File(source.clone())),
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             None,
@@ -8127,7 +8194,7 @@ mod tests {
             None,
             &DatUnit::File(source.clone()),
             &unit_source_files(&DatUnit::File(source.clone())),
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             None,
@@ -8879,7 +8946,7 @@ mod tests {
                 None,
                 &DatUnit::File(lib.path().join("Game.gcm")),
                 &unit_source_files(&DatUnit::File(lib.path().join("Game.gcm"))),
-                ZipFormat::TorrentZip,
+                ArchiveFormat::Zip(ZipFormat::TorrentZip),
                 None,
                 &WriteGuards::never(out.path().to_path_buf()),
                 Some(RefusalCause::Realized),
@@ -9335,7 +9402,7 @@ mod tests {
                 None,
                 &unit,
                 &unit_source_files(&unit),
-                ZipFormat::TorrentZip,
+                ArchiveFormat::Zip(ZipFormat::TorrentZip),
                 None,
                 &guards,
                 None,

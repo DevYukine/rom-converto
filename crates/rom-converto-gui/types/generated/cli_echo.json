@@ -350,6 +350,12 @@
       "kind": "value",
       "explicit_off": false
     },
+    "archive_format": {
+      "flag": "--archive-format",
+      "global": false,
+      "kind": "value",
+      "explicit_off": false
+    },
     "block_size": {
       "flag": "--block-size",
       "global": false,
@@ -1315,6 +1321,7 @@
     "organize": [
       "allow_encrypted",
       "api_base",
+      "archive_format",
       "clean",
       "clean_backup",
       "clean_exclude",

@@ -34,6 +34,12 @@ const CONFLICT_OPTIONS = [
 // Enum keys are selects so a typo cannot save an invalid value; the empty
 // value removes the key so the config default applies.
 const SELECT_OPTIONS: Record<string, { label: string; value: string }[]> = {
+	archive_format: [
+		{ label: "Zip", value: "zip" },
+		{ label: "7z", value: "7z" },
+		{ label: "tar", value: "tar" },
+		{ label: "tar.gz", value: "tar.gz" },
+	],
 	zip_format: [
 		{ label: "TorrentZip", value: "torrentzip" },
 		{ label: "RVZSTD", value: "rvzstd" },
@@ -134,6 +140,7 @@ const FORMAT_SCHEMA: Record<PresetFormat, FieldSpec[]> = {
 		{ key: "dir_letter_count", label: "Characters per folder", kind: "number" },
 		{ key: "dir_letter_limit", label: "Folder limit", kind: "number" },
 		{ key: "dir_letter_group", label: "Range grouping", kind: "bool" },
+		{ key: "archive_format", label: "Archive format", kind: "select" },
 		{ key: "zip_format", label: "Zip format", kind: "select" },
 		{ key: "zip_exclude", label: "Don't zip matching", kind: "text" },
 		{ key: "link_mode", label: "Link mode", kind: "select" },

@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 pub const ARCHIVE_EXTS: &[&str] = &["zip", "7z", "tar", "tgz", "gz", "rar"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ArchiveKind {
+pub(crate) enum ArchiveKind {
     Zip,
     SevenZ,
     Tar,
@@ -85,7 +85,7 @@ pub fn is_archive_path(path: &Path) -> bool {
     has_any_extension(path, ARCHIVE_EXTS)
 }
 
-fn kind_of(path: &Path) -> Option<ArchiveKind> {
+pub(crate) fn kind_of(path: &Path) -> Option<ArchiveKind> {
     let name = path.file_name()?.to_str()?.to_ascii_lowercase();
     if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
         return Some(ArchiveKind::TarGz);
@@ -330,7 +330,7 @@ pub(crate) fn probe_with_head(
 /// share that name. 7z does the same over its listing. Zip resolves by
 /// exact decoded name. Reading stops with [`crate::util::Cancelled`] once
 /// `cancel` fires.
-fn read_member<T>(
+pub(crate) fn read_member<T>(
     path: &Path,
     kind: ArchiveKind,
     member_name: &str,
@@ -473,7 +473,7 @@ fn list_rar(path: &Path) -> Result<Vec<ArchiveMember>> {
     Ok(out)
 }
 
-fn open_tar(
+pub(crate) fn open_tar(
     path: &Path,
     gz: bool,
     cancel: &crate::util::CancelToken,
@@ -533,13 +533,13 @@ fn declared_size_error(
 /// A reader that fails with [`crate::util::Cancelled`] once `cancel` fires.
 /// The error kind is `Other`, never `Interrupted`, which std's copy and
 /// read loops retry forever.
-struct CancelRead<R> {
+pub(crate) struct CancelRead<R> {
     inner: R,
     cancel: crate::util::CancelToken,
 }
 
 impl<R> CancelRead<R> {
-    fn new(inner: R, cancel: &crate::util::CancelToken) -> Self {
+    pub(crate) fn new(inner: R, cancel: &crate::util::CancelToken) -> Self {
         Self {
             inner,
             cancel: cancel.clone(),
@@ -1448,7 +1448,7 @@ pub fn resolve_input_with_selection(
 /// A decoder can carry a reader error out as text (sevenz_rust2's error has
 /// no `source()`), dropping the [`crate::util::Cancelled`] payload, so any
 /// error under a cancelled token is reported as the cancel.
-fn cancelled_or(err: anyhow::Error, cancel: &crate::util::CancelToken) -> anyhow::Error {
+pub(crate) fn cancelled_or(err: anyhow::Error, cancel: &crate::util::CancelToken) -> anyhow::Error {
     if cancel.is_cancelled() {
         crate::util::Cancelled.into()
     } else {

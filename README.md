@@ -33,7 +33,7 @@ Convert, compress, decrypt, and verify ROMs and disc images. Available as a comm
 `organize` sorts a whole library folder into per-console folders and converts each
 file to the best archival format for its console, with release-tag filtering,
 one release per game, letter folders, per-game multi-disc folders (`--multi-disc-dirs`),
-TorrentZip zips, header removal, patching, and output cleaning. See [CLI reference](docs/cli.md#organize).
+TorrentZip zips or 7z, tar, and tar.gz archives, header removal, patching, and output cleaning. See [CLI reference](docs/cli.md#organize).
 
 **Preview first:** add `--dry-run` to a conversion to see planned outputs. Use `-R` (`--recursive`) on commands that support folder scans.
 

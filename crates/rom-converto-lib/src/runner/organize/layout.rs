@@ -95,8 +95,7 @@ pub(super) fn apply_letter_dirs(plans: &mut [UnitPlan], layout: &LetterLayout) {
             let stem = plans[i]
                 .desired
                 .as_ref()
-                .and_then(|p| p.file_stem())
-                .and_then(|s| s.to_str())
+                .and_then(|p| crate::util::archive_write::split_name(p).0)
                 .unwrap_or("");
             buckets
                 .entry(letter_of(stem, layout.count))
@@ -220,7 +219,7 @@ pub(super) fn apply_multi_disc_dirs(plans: &mut [UnitPlan], fold_case: bool) {
 /// carries a disc token.
 fn disc_set_key(plans: &[UnitPlan], i: usize) -> Option<(&Path, String)> {
     let desired = plans[i].desired.as_ref()?;
-    let stem = desired.file_stem()?.to_str()?;
+    let stem = crate::util::archive_write::split_name(desired).0?;
     let (base_title, _) = parse_disc_token(stem)?;
     Some((
         desired.parent().unwrap_or_else(|| Path::new("")),
@@ -372,6 +371,25 @@ mod tests {
         assert_eq!(desired_of(&plans, 0), Path::new("/out/NES/A/Apple.rom"));
         assert_eq!(desired_of(&plans, 1), Path::new("/out/NES/B/Banana.rom"));
         assert_eq!(desired_of(&plans, 2), Path::new("/out/NES/Z/Zelda.rom"));
+    }
+
+    /// A tar.gz output buckets by its title alone, like its zip equivalent,
+    /// even where the letter count reaches past the title.
+    #[test]
+    fn a_tar_gz_output_gets_the_letter_folder_of_its_zip_equivalent() {
+        let mut plans = vec![
+            keep_plan(0, "/out/GBA/Go.zip"),
+            keep_plan(1, "/out/GBA/Go.tar.gz"),
+        ];
+        let layout = LetterLayout {
+            count: 4,
+            limit: None,
+            group: false,
+            keep_sets: false,
+        };
+        apply_letter_dirs(&mut plans, &layout);
+        assert_eq!(desired_of(&plans, 0), Path::new("/out/GBA/GO##/Go.zip"));
+        assert_eq!(desired_of(&plans, 1), Path::new("/out/GBA/GO##/Go.tar.gz"));
     }
 
     #[test]

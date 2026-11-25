@@ -40,7 +40,7 @@ const fields: FieldDef[] = [
 		kind: "toggle",
 		key: "moveSource",
 		label: "Move files (delete sources after success)",
-		tooltip: "Deletes each source file after its organized copy was written successfully. Skipped or failed files keep their sources, and so do multi-entry archives (only single-entry archives are released), patch-only runs, and, with Verify-after on, conversions whose format has no output check. The exception: an existing zip, copy, or hardlink (never a symlink) that verifies valid under Overwrite if invalid counts as written and its source is deleted.",
+		tooltip: "Deletes each source file after its organized copy was written successfully. Skipped or failed files keep their sources, and so do multi-entry archives (only single-entry archives are released), patch-only runs, and, with Verify-after on, conversions whose format has no output check. The exception: an existing archive, copy, or hardlink (never a symlink) that verifies valid under Overwrite if invalid counts as written and its source is deleted.",
 	},
 	{
 		kind: "toggle",
@@ -297,6 +297,22 @@ const fields: FieldDef[] = [
 
 	{
 		kind: "segmented",
+		key: "archiveFormat",
+		section: "Zip, links, and output layout",
+		label: "Archive format",
+		options: [
+			{ label: "Config default", value: "" },
+			{ label: "Zip", value: "zip" },
+			{ label: "7z", value: "7z" },
+			{ label: "tar", value: "tar" },
+			{ label: "tar.gz", value: "tar.gz" },
+		],
+		hint: "Config default (zip when unset) follows the config file. Sets the archive format for cartridge ROMs and Nintendo DS. Input archives in another format are repacked.",
+		tooltip:
+			"Archive format for the outputs organize archives: cartridge ROMs and Nintendo DS. An input archive in a different format is repacked; rar can be read but not written. 7z uses LZMA2, tar stores the ROM uncompressed, tar.gz uses gzip. Config default follows the config file (zip when unset).",
+	},
+	{
+		kind: "segmented",
 		key: "zipFormat",
 		section: "Zip, links, and output layout",
 		label: "Zip format",
@@ -305,9 +321,9 @@ const fields: FieldDef[] = [
 			{ label: "TorrentZip", value: "torrentzip" },
 			{ label: "RVZSTD", value: "rvzstd" },
 		],
-		hint: "Config default (TorrentZip when unset) follows the config file. TorrentZip writes deterministic zips; RVZSTD writes a zstd-compressed structured zip.",
+		hint: "Applies to zip output only. Config default (TorrentZip when unset) follows the config file. TorrentZip writes deterministic zips; RVZSTD writes a zstd-compressed structured zip.",
 		tooltip:
-			"TorrentZip is the torrent-standard deterministic zip. RVZSTD is a zstd-compressed structured zip: smaller, but far fewer tools read it. Not the RVZ disc format. Config default follows the config file (TorrentZip when unset).",
+			"Applies to zip output only. TorrentZip is the torrent-standard deterministic zip. RVZSTD is a zstd-compressed structured zip: smaller, but far fewer tools read it. Not the RVZ disc format. Config default follows the config file (TorrentZip when unset).",
 	},
 	{
 		kind: "text",
@@ -316,7 +332,7 @@ const fields: FieldDef[] = [
 		label: "Don't zip matching",
 		placeholder: "NDS/**",
 		tooltip:
-			"Glob matched against the planned .zip output path (for example 'NDS/Game.zip'); matching files are placed as a plain copy (or a link when a link mode is set) instead of zipped. `*` stops at `/`, so a recursive match needs `**/`.",
+			"Glob matched against the planned archive path, whatever its extension (for example 'NDS/Game.zip' or '**/*.7z'); matching files are placed as a plain copy (or a link when a link mode is set) instead of zipped. `*` stops at `/`, so a recursive match needs `**/`.",
 	},
 
 	{
@@ -465,7 +481,7 @@ export const organizeOps: OpDef[] = [
 		showVerify: true,
 		verifyLabel: "Verify after organize",
 		verifyTooltip:
-			"Re-verifies each written zip, copy, or converted output right after writing it: size and CRC32 for zips and copies plus TorrentZip or RVZSTD structure for zips, and the format's own verify for conversions. A failed check fails that item. Conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, PS3) fail as unverified and keep their source.",
+			"Re-verifies each written archive, copy, or converted output right after writing it: size and CRC32 for archives and copies plus TorrentZip or RVZSTD structure for zips, and the format's own verify for conversions. A failed check fails that item. Conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, PS3) fail as unverified and keep their source.",
 		showDryRun: true,
 		actionNote: "Runs in the global queue. Rows appear below as they stream in.",
 		buildArgs: (store, item, taskId) =>
@@ -524,6 +540,7 @@ export const organizeOps: OpDef[] = [
 					dir_letter_count: store.dirLetter ? (store.dirLetterCount ?? 1) : undefined,
 					dir_letter_limit: store.dirLetter ? (store.dirLetterLimit ?? undefined) : undefined,
 					dir_letter_group: store.dirLetter && store.dirLetterGroup,
+					archive_format: store.archiveFormat || undefined,
 					zip_format: store.zipFormat || undefined,
 					zip_exclude: store.zipExclude.trim(),
 					link_mode: store.linkMode || undefined,

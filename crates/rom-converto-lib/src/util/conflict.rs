@@ -85,15 +85,9 @@ fn first_free_slot(
     desired: &Path,
     occupant: impl Fn(&Path) -> Option<PathBuf>,
 ) -> std::io::Result<PathBuf> {
-    let stem = desired
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    let ext_dot = desired
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| format!(".{e}"))
-        .unwrap_or_default();
+    let (stem, ext) = crate::util::archive_write::split_name(desired);
+    let stem = stem.unwrap_or_default();
+    let ext_dot = ext.map(|e| format!(".{e}")).unwrap_or_default();
     let parent = desired.parent();
 
     for n in 1..=MAX_RENAME_SLOTS {
@@ -246,6 +240,6 @@ mod tests {
             panic!("expected write");
         };
         assert_eq!(p.extension().and_then(|e| e.to_str()), Some("gz"));
-        assert_eq!(p, dir.path().join("game.tar (1).gz"));
+        assert_eq!(p, dir.path().join("game (1).tar.gz"));
     }
 }

@@ -1061,14 +1061,9 @@ fn backup_slot(backup_dir: &Path, file: &Path, slot: usize) -> PathBuf {
     if slot == 0 {
         return backup_dir.join(name);
     }
-    let stem = Path::new(name)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or(name);
-    let ext = Path::new(name)
-        .extension()
-        .map(|ext| format!(".{}", ext.to_string_lossy()))
-        .unwrap_or_default();
+    let (stem, ext) = crate::util::archive_write::split_name(Path::new(name));
+    let stem = stem.unwrap_or(name);
+    let ext = ext.map(|ext| format!(".{ext}")).unwrap_or_default();
     backup_dir.join(format!("{stem} ({slot}){ext}"))
 }
 
@@ -2237,6 +2232,21 @@ mod tests {
             false,
         );
         assert_eq!(target, dir.path().join("Old (1).zip"));
+        assert_eq!(slot, 1);
+    }
+
+    /// A collision on a tar.gz numbers the slot before both suffixes.
+    #[test]
+    fn backup_target_numbers_a_tar_gz_before_its_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Old.tar.gz"), b"taken").unwrap();
+        let (target, slot) = backup_target(
+            dir.path(),
+            Path::new("/elsewhere/Old.tar.gz"),
+            &BTreeSet::new(),
+            false,
+        );
+        assert_eq!(target, dir.path().join("Old (1).tar.gz"));
         assert_eq!(slot, 1);
     }
 

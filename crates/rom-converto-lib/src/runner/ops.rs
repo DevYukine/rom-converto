@@ -3543,7 +3543,7 @@ async fn run_comparison_verify(
         verdict: VerifyVerdict::Unverified,
         message: format!("{COULD_NOT_VERIFY}{err}"),
     };
-    // Zip and Raw reuse the overwrite-invalid check wholesale and only map
+    // Zip, Archive and Raw reuse the overwrite-invalid check wholesale and only map
     // its verdict onto a report; only cancellation escapes it as an error.
     Some(match target {
         OutputVerify::None => return None,
@@ -3586,7 +3586,7 @@ async fn run_comparison_verify(
                 Err(e) => could_not(e.to_string()),
             }
         }
-        OutputVerify::Zip { .. } | OutputVerify::Raw { .. } => {
+        OutputVerify::Zip { .. } | OutputVerify::Archive { .. } | OutputVerify::Raw { .. } => {
             match verify_existing_output(progress, output, target, cancel.clone()).await {
                 Ok(VerifyOutcome::Valid) => report(true, false),
                 Ok(VerifyOutcome::Invalid) => report(false, false),

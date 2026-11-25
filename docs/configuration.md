@@ -47,7 +47,7 @@ An unknown preset is an error.
 | `[cso]` | `block_size`, `on_conflict`, `output_dir`, `report` |
 | `[wup]` | `level`, `on_conflict` |
 | `[dat]` | `api_base`, `report`, `input_checksum_min`, `input_checksum_max` |
-| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists`, `filter_regex`, `filter_regex_exclude`, `filter_language`, `filter_region`, `no_type`, `only_type`, `only_retail`, `single`, `prefer_game_regex`, `prefer_verified`, `prefer_good`, `prefer_language`, `prefer_region`, `prefer_revision`, `prefer_retail`, `prefer_parent`, `prefer_filename_regex`, `dir_letter`, `dir_letter_count`, `dir_letter_limit`, `dir_letter_group`, `multi_disc_dirs`, `zip_format`, `zip_exclude`, `link_mode`, `symlink_relative`, `remove_headers`, `trim_add_padding`, `clean`, `clean_exclude`, `clean_backup`, `move_delete_dirs` |
+| `[organize]` | `output_dir`, `output_template`, `on_conflict`, `report`, `dat`, `move_source`, `playlists`, `filter_regex`, `filter_regex_exclude`, `filter_language`, `filter_region`, `no_type`, `only_type`, `only_retail`, `single`, `prefer_game_regex`, `prefer_verified`, `prefer_good`, `prefer_language`, `prefer_region`, `prefer_revision`, `prefer_retail`, `prefer_parent`, `prefer_filename_regex`, `dir_letter`, `dir_letter_count`, `dir_letter_limit`, `dir_letter_group`, `multi_disc_dirs`, `archive_format`, `zip_format`, `zip_exclude`, `link_mode`, `symlink_relative`, `remove_headers`, `trim_add_padding`, `clean`, `clean_exclude`, `clean_backup`, `move_delete_dirs` |
 
 `[presets.NAME]` can contain any of these format tables. `on_conflict` accepts
 `error`, `overwrite`, `skip`, `rename`, or `overwrite-invalid`.
@@ -68,7 +68,9 @@ mirrors the organize flag of the same name.
 `[organize]` mirrors the `rom-converto organize` flags (the `--move` flag is the
 `move_source` key), with the same names as the
 flags in snake_case. List keys are arrays, for example
-`filter_language = ["EN", "FR"]`. `zip_format` is `torrentzip` or `rvzstd`,
+`filter_language = ["EN", "FR"]`. `archive_format` is `zip` (default), `7z`,
+`tar`, or `tar.gz` (rar can be read but not written). `zip_format` is
+`torrentzip` or `rvzstd` and applies only to zip,
 `link_mode` is `hardlink`, `symlink`, or `reflink`, `move_delete_dirs` is `never`,
 `auto`, or `always`, and `prefer_revision` is `older`, `newer`, or `any` (no
 preference). `zip_exclude = ""` is the explicit no-exclusion override.

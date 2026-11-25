@@ -10,10 +10,12 @@ use crate::dat::units::DatUnit;
 use crate::runner::models::{OrganizeRow, RunOptions, RunRequest, VerifyVerdict};
 use crate::runner::ops::{conflict_policy, elapsed_ms, preflight_space};
 use crate::runner::{invalid_arg, is_cancelled_error};
+use crate::util::archive::kind_of;
+use crate::util::archive_write::{sole_member, split_name};
 use crate::util::{
-    CancelToken, Cancelled, ConflictPolicy, FileStatus, OutputExists, OutputVerify, PlanDecision,
-    ProgressReporter, VerifyOutcome, ZipFormat, ZipMember, atomic_write, scratch_output_path,
-    validate_torrentzip, verify_existing_output, write_torrentzip,
+    ArchiveFormat, CancelToken, Cancelled, ConflictPolicy, FileStatus, OutputExists, OutputVerify,
+    PlanDecision, ProgressReporter, VerifyOutcome, ZipFormat, ZipMember, atomic_write,
+    scratch_output_path, validate_torrentzip, verify_existing_output, write_archive,
 };
 use anyhow::{Context, Result};
 use std::path::{Component, Path, PathBuf};
@@ -55,15 +57,26 @@ pub(super) fn link_mode(options: &RunOptions) -> Result<Option<LinkMode>> {
     Ok(Some(mode))
 }
 
-/// Parses the `zip_format` option; TorrentZip is the default.
-pub(super) fn zip_format(options: &RunOptions) -> Result<ZipFormat> {
-    match options.zip_format.as_deref() {
-        None => Ok(ZipFormat::TorrentZip),
+/// Parses the `archive_format` option, zip by default. `zip_format`
+/// (TorrentZip by default) is validated whatever the archive format and
+/// only picks the zip flavour.
+pub(super) fn archive_format(options: &RunOptions) -> Result<ArchiveFormat> {
+    let zip = match options.zip_format.as_deref() {
+        None => ZipFormat::TorrentZip,
         Some(value) => ZipFormat::parse(value).ok_or_else(|| {
             invalid_arg(format!(
                 "invalid zip_format {value:?}; expected \"torrentzip\" or \"rvzstd\""
             ))
-        }),
+        })?,
+    };
+    match options.archive_format.as_deref() {
+        None | Some("zip") => Ok(ArchiveFormat::Zip(zip)),
+        Some("7z") => Ok(ArchiveFormat::SevenZ),
+        Some("tar") => Ok(ArchiveFormat::Tar),
+        Some("tar.gz") => Ok(ArchiveFormat::TarGz),
+        Some(other) => Err(invalid_arg(format!(
+            "invalid archive_format {other:?}; expected \"zip\", \"7z\", \"tar\" or \"tar.gz\""
+        ))),
     }
 }
 
@@ -81,7 +94,7 @@ pub(super) async fn run_place(
     source: &Path,
     consume_source: bool,
     demote_reason: Option<&'static str>,
-    zip_format: ZipFormat,
+    archive_format: ArchiveFormat,
     link_mode: Option<LinkMode>,
     guards: &super::WriteGuards<'_>,
     progress: &dyn ProgressReporter,
@@ -140,11 +153,19 @@ pub(super) async fn run_place(
     };
     let verify_target = match (action, source_crc, source_size) {
         (_, None, _) | (_, _, None) => OutputVerify::None,
-        (Action::Zip, Some(crc), Some(size)) => OutputVerify::Zip {
-            format: zip_format,
-            crc,
-            size,
-            member: zip_member_name(plan, desired),
+        (Action::Zip, Some(crc), Some(size)) => match archive_format {
+            ArchiveFormat::Zip(format) => OutputVerify::Zip {
+                format,
+                crc,
+                size,
+                member: zip_member_name(plan, desired),
+            },
+            format => OutputVerify::Archive {
+                format,
+                crc,
+                size,
+                member: zip_member_name(plan, desired),
+            },
         },
         (_, Some(crc), Some(size)) => OutputVerify::Raw { crc, size },
     };
@@ -282,16 +303,19 @@ pub(super) async fn run_place(
     }
     let written = match action {
         Action::Zip => {
-            if torrentzip_passthrough(plan, zip_format, &primary, desired).await {
+            if archive_passthrough(plan, archive_format, &primary, desired, cancel).await {
                 let copied = copy_passthrough(&primary, &output, cancel).await;
                 if copied.is_ok() {
-                    detail = Some("already torrentzip".to_string());
+                    detail = Some(match archive_format {
+                        ArchiveFormat::Zip(_) => "already torrentzip".to_string(),
+                        format => format!("already {}", format.ext()),
+                    });
                 }
                 copied
             } else {
                 write_zip_output(
                     plan,
-                    zip_format,
+                    archive_format,
                     source,
                     desired,
                     &output,
@@ -423,10 +447,7 @@ pub(super) async fn run_place(
 fn zip_member_name(plan: &UnitPlan, desired: &Path) -> String {
     format!(
         "{}.{}",
-        desired
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output"),
+        split_name(desired).0.unwrap_or("output"),
         plan.payload_ext()
     )
 }
@@ -489,39 +510,49 @@ async fn source_digest(
     .context("hashing source")?
 }
 
-/// True when the unit's own `.zip` input can be placed byte-for-byte instead
-/// of re-zipping: it validates in the requested format, holds exactly the one
-/// member this plan would write under its planned name, and needs no header
-/// strip or trim padding. A patched plan never passes through: its
-/// output is a different artifact than the input archive.
-async fn torrentzip_passthrough(
+/// True when the unit's own archive input can be placed byte-for-byte instead
+/// of repacking: it is already in the chosen format (for zip, a structured
+/// zip of the requested flavour), holds exactly the one member this plan
+/// would write under its planned name, and needs no header strip or trim
+/// padding. A patched plan never passes through: its output is a different
+/// artifact than the input archive.
+async fn archive_passthrough(
     plan: &UnitPlan,
-    format: ZipFormat,
+    format: ArchiveFormat,
     primary: &Path,
     desired: &Path,
+    cancel: &CancelToken,
 ) -> bool {
-    if plan.patch.is_some()
-        || plan.strip != 0
-        || plan.pad > 0
-        || !ext_of(primary).eq_ignore_ascii_case("zip")
-    {
+    if plan.patch.is_some() || plan.strip != 0 || plan.pad > 0 {
+        return false;
+    }
+    let same_kind = match format {
+        ArchiveFormat::Zip(_) => ext_of(primary).eq_ignore_ascii_case("zip"),
+        format => kind_of(primary) == Some(format.kind()),
+    };
+    if !same_kind {
         return false;
     }
     let member_name = zip_member_name(plan, desired);
     let path = primary.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        matches!(
+    let cancel = cancel.clone();
+    tokio::task::spawn_blocking(move || match format {
+        ArchiveFormat::Zip(zip) => matches!(
             validate_torrentzip(&path),
             Ok(Some((fmt, entries)))
-                if fmt == format && entries.len() == 1 && entries[0].name == member_name
-        )
+                if fmt == zip && entries.len() == 1 && entries[0].name == member_name
+        ),
+        format => matches!(
+            sole_member(&path, format.kind(), &cancel),
+            Ok(Some((name, _))) if name == member_name
+        ),
     })
     .await
     .unwrap_or(false)
 }
 
-/// Places an already-structured zip byte-for-byte with `atomic_write`, so a
-/// failed copy leaves any existing output untouched.
+/// Places an input archive byte-for-byte with `atomic_write`, so a failed
+/// copy leaves any existing output untouched.
 async fn copy_passthrough(input: &Path, output: &Path, cancel: &CancelToken) -> Result<()> {
     if cancel.is_cancelled() {
         return Err(Cancelled.into());
@@ -536,17 +567,17 @@ async fn copy_passthrough(input: &Path, output: &Path, cancel: &CancelToken) -> 
         })
     })
     .await
-    .context("copying already-torrentzip input")?
-    .context("copying already-torrentzip input")?;
+    .context("copying the input archive")?
+    .context("copying the input archive")?;
     Ok(())
 }
 
-/// Writes `source` as the single member of a new structured zip at `output`.
+/// Writes `source` as the single member of a new archive at `output`.
 /// The member keeps the planned stem (under the headerless extension when a
 /// console header is stripped), even when a conflict renamed the output file.
 async fn write_zip_output(
     plan: &UnitPlan,
-    format: ZipFormat,
+    format: ArchiveFormat,
     source: &Path,
     desired: &Path,
     output: &Path,
@@ -563,10 +594,9 @@ async fn write_zip_output(
     let dst = output.to_path_buf();
     let cancel = cancel.clone();
     crate::util::spawn_blocking_with_progress(progress, move |progress| {
-        write_torrentzip(&member, &dst, format, progress, &cancel)
+        write_archive(&member, &dst, format, progress, &cancel)
     })
     .await
-    .map(|_entry| ())
 }
 
 /// Copies `source` to `output` through a scratch sibling and rename, in
@@ -752,6 +782,7 @@ mod tests {
     use super::*;
     use crate::runner::RecordingProgress;
     use crate::runner::models::{RunData, RunResponse};
+    use crate::util::write_torrentzip;
     use tempfile::TempDir;
 
     /// A 0xC0-byte GBA cartridge image: fixed 0x96 byte at 0xB2 and a title
@@ -839,6 +870,120 @@ mod tests {
         assert_eq!(row.detail.as_deref(), Some("already torrentzip"));
         let output = row.output.clone().unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), input);
+    }
+
+    /// Writes a one-member 7z, tar or tar.gz with settings the archive
+    /// writer never uses (stored 7z data, a tar mtime, fast gzip), so a
+    /// repack could never reproduce its bytes.
+    fn write_foreign_archive(path: &Path, format: ArchiveFormat, name: &str, data: &[u8]) {
+        if format == ArchiveFormat::SevenZ {
+            let mut writer = sevenz_rust2::ArchiveWriter::create(path).unwrap();
+            writer.set_content_methods(vec![sevenz_rust2::EncoderMethod::COPY.into()]);
+            writer
+                .push_archive_entry(sevenz_rust2::ArchiveEntry::new_file(name), Some(data))
+                .unwrap();
+            writer.finish().unwrap();
+            return;
+        }
+        let file = std::fs::File::create(path).unwrap();
+        let out: Box<dyn std::io::Write> = if format == ArchiveFormat::TarGz {
+            Box::new(flate2::write::GzEncoder::new(
+                file,
+                flate2::Compression::fast(),
+            ))
+        } else {
+            Box::new(file)
+        };
+        let mut builder = tar::Builder::new(out);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o600);
+        header.set_mtime(1_700_000_000);
+        builder.append_data(&mut header, name, data).unwrap();
+        builder.into_inner().unwrap();
+    }
+
+    /// An input already in the chosen format, holding only the planned
+    /// member, is placed byte-for-byte; a `.tgz` counts as tar.gz.
+    #[tokio::test]
+    async fn same_format_archive_inputs_are_copied_through() {
+        for (format, value, input_name, output_name) in [
+            (ArchiveFormat::Tar, "tar", "Test Game.tar", "Test Game.tar"),
+            (
+                ArchiveFormat::TarGz,
+                "tar.gz",
+                "Test Game.tar.gz",
+                "Test Game.tar.gz",
+            ),
+            (
+                ArchiveFormat::TarGz,
+                "tar.gz",
+                "Test Game.tgz",
+                "Test Game.tar.gz",
+            ),
+            (ArchiveFormat::SevenZ, "7z", "Test Game.7z", "Test Game.7z"),
+        ] {
+            let lib = TempDir::new().unwrap();
+            let out = TempDir::new().unwrap();
+            let archive = lib.path().join(input_name);
+            write_foreign_archive(&archive, format, "Test Game.gba", &gba_bytes());
+            let input = std::fs::read(&archive).unwrap();
+
+            let mut req = organize_request(lib.path(), Some(out.path()), false);
+            req.options.archive_format = Some(value.to_string());
+            let response =
+                super::super::organize(req, &RecordingProgress::default(), CancelToken::new())
+                    .await
+                    .unwrap();
+            let rows = rows_of(response);
+            let row = row_for(&rows, input_name);
+            assert_eq!(row.status, FileStatus::Ok, "{input_name}: {:?}", row.detail);
+            assert_eq!(row.action, "zip");
+            let detail = format!("already {value}");
+            assert_eq!(row.detail.as_deref(), Some(detail.as_str()), "{input_name}");
+            let output = row.output.clone().unwrap();
+            assert_eq!(
+                output.file_name().and_then(|name| name.to_str()),
+                Some(output_name)
+            );
+            assert_eq!(std::fs::read(&output).unwrap(), input, "{input_name}");
+        }
+    }
+
+    /// A same-format input whose member loses its console header is no
+    /// copy-through: the output holds the headerless payload under the
+    /// headerless extension.
+    #[tokio::test]
+    async fn a_same_format_input_with_a_stripped_header_is_repacked() {
+        let lib = TempDir::new().unwrap();
+        let out = TempDir::new().unwrap();
+        // The copier header is only detected when the total size is a
+        // multiple of 1024 plus 512.
+        let mut rom = vec![0u8; 512];
+        rom.extend_from_slice(&[0xEEu8; 1024]);
+        write_foreign_archive(
+            &lib.path().join("Copied Game.7z"),
+            ArchiveFormat::SevenZ,
+            "Copied Game.smc",
+            &rom,
+        );
+
+        let mut req = organize_request(lib.path(), Some(out.path()), false);
+        req.options.archive_format = Some("7z".to_string());
+        req.options.remove_headers = Some(vec!["smc".to_string()]);
+        let response =
+            super::super::organize(req, &RecordingProgress::default(), CancelToken::new())
+                .await
+                .unwrap();
+        let rows = rows_of(response);
+        let row = row_for(&rows, "Copied Game.7z");
+        assert_eq!(row.status, FileStatus::Ok, "{:?}", row.detail);
+        assert_eq!(row.detail.as_deref(), Some("header stripped: SMC"));
+        let output = row.output.clone().unwrap();
+        assert_eq!(
+            sole_member(&output, ArchiveFormat::SevenZ.kind(), &CancelToken::new()).unwrap(),
+            Some(("Copied Game.sfc".to_string(), 1024))
+        );
     }
 
     /// `overwrite-invalid` rewrites an existing zip output whose member CRC no
@@ -1087,7 +1232,7 @@ mod tests {
             &source,
             false,
             None,
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             &progress,
@@ -1249,13 +1394,27 @@ mod tests {
         let mut unpatched = place_plan(0);
         unpatched.patch = None;
         assert!(
-            torrentzip_passthrough(&unpatched, ZipFormat::TorrentZip, &zip_path, &desired).await
+            archive_passthrough(
+                &unpatched,
+                ArchiveFormat::Zip(ZipFormat::TorrentZip),
+                &zip_path,
+                &desired,
+                &CancelToken::new()
+            )
+            .await
         );
 
         let mut patched = place_plan(0);
         patched.patch = Some(zip_path.clone());
         assert!(
-            !torrentzip_passthrough(&patched, ZipFormat::TorrentZip, &zip_path, &desired).await
+            !archive_passthrough(
+                &patched,
+                ArchiveFormat::Zip(ZipFormat::TorrentZip),
+                &zip_path,
+                &desired,
+                &CancelToken::new()
+            )
+            .await
         );
     }
 
@@ -1288,7 +1447,7 @@ mod tests {
             &source,
             false,
             None,
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             &progress,
@@ -1327,7 +1486,7 @@ mod tests {
             &source,
             false,
             None,
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             &progress,
@@ -1400,7 +1559,7 @@ mod tests {
             &source,
             false,
             None,
-            ZipFormat::TorrentZip,
+            ArchiveFormat::Zip(ZipFormat::TorrentZip),
             None,
             &guards,
             &progress,

@@ -204,6 +204,7 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("dir_letter_group", FlagKind::Bool),
     ("multi_disc_dirs", FlagKind::Bool),
     ("zip_format", FlagKind::Value),
+    ("archive_format", FlagKind::Value),
     ("zip_exclude", FlagKind::Value),
     ("link_mode", FlagKind::Value),
     ("symlink_relative", FlagKind::Bool),
@@ -618,6 +619,7 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         &[
             "allow_encrypted",
             "api_base",
+            "archive_format",
             "clean",
             "clean_backup",
             "clean_exclude",

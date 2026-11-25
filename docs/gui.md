@@ -215,7 +215,8 @@ database, filed under `<output>/<console>/` following the layout template
 format for its console: GameCube and Wii compress to RVZ, 3DS to Z3DS, Switch
 to NSZ/XCZ (requires `prod.keys`), Wii U to WUA, PS1, PS2, Saturn, Sega CD,
 Dreamcast and LaserDisc to CHD, PSP to CSO, Xbox to XISO, Xbox 360 to ZAR, PS3 to a
-decrypted ISO, and cartridge ROMs including DS to ZIP. Files already in their target
+decrypted ISO, and cartridge ROMs including DS to ZIP (or 7z, tar, or tar.gz with
+Archive format). Files already in their target
 format are copied unchanged; unrecognized files are skipped.
 
 `Rename with DAT` hashes every file and queries the Playmatch API, including
@@ -239,9 +240,10 @@ when any of its options is set:
   not One game per set is on.
 - **Zip, links, and output layout**: letter folders with count, limit, and
   range grouping, folder per multi-disc game (with playlists on, the `.m3u`
-  goes inside the game folder), TorrentZip or RVZSTD with a
-  zip-exclusion glob, and hardlink, symlink, or reflink instead of copying
-  already-correct files.
+  goes inside the game folder), Archive format (zip, 7z, tar, or tar.gz; rar
+  can be read but not written), TorrentZip or RVZSTD for zip, a zip-exclusion
+  glob, and hardlink, symlink, or reflink instead of copying already-correct
+  files.
 - **Headers, trimming, and patching**: header stripping (`nes`, `fds`, `a78`,
   `lnx`, `smc`/`sfc`), re-padding trimmed GBA/NDS dumps, and CRC32-matched
   patch application with a patch-only mode.
@@ -250,7 +252,7 @@ when any of its options is set:
   flat backup folder. Empty folders, shown with Move files, controls
   source-folder deletion after moves.
 
-Verify after organize, under Safety, checks zips, copies, and conversions after
+Verify after organize, under Safety, checks archives, copies, and conversions after
 they are written. A conversion whose format has no output check (3DS, Wii U,
 Xbox, Xbox 360, and PS3) fails as unverified and keeps its source.
 
@@ -289,7 +291,7 @@ write, using the input size plus 256 MiB as a conservative floor. A page option
 can skip that check. Organize's Move files option deletes source files only
 after their organized copies were written successfully; skipped or failed files keep
 their sources, except with On conflict set to Overwrite if invalid: an existing
-zip, copy, or hardlink (never a symlink) that verifies valid, meaning it holds this source's data,
+archive, copy, or hardlink (never a symlink) that verifies valid, meaning it holds this source's data,
 counts as written and its source is deleted. Any item whose planned output path is its own source file
 is left untouched as already in place, also through a symlinked folder, a bind mount, or a letter-case
 variant of the path. Union filesystems such as mergerfs or Unraid's `/mnt/user` are not detected, so

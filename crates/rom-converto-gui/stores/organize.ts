@@ -43,6 +43,7 @@ export const useOrganizeStore = defineStore("organize", () => {
   const dirLetterGroup = ref(false);
   // Empty means "follow the config file"; the segmented options carry the
   // explicit values.
+  const archiveFormat = ref("");
   const zipFormat = ref("");
   const zipExclude = ref("");
   const linkMode = ref("");
@@ -143,6 +144,7 @@ export const useOrganizeStore = defineStore("organize", () => {
     dirLetterCount.value = null;
     dirLetterLimit.value = null;
     dirLetterGroup.value = false;
+    archiveFormat.value = "";
     zipFormat.value = "";
     zipExclude.value = "";
     linkMode.value = "";
@@ -193,6 +195,7 @@ export const useOrganizeStore = defineStore("organize", () => {
     dirLetterCount,
     dirLetterLimit,
     dirLetterGroup,
+    archiveFormat,
     zipFormat,
     zipExclude,
     linkMode,

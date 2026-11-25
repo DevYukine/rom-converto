@@ -44,7 +44,7 @@ pub struct OrganizeCommand {
     #[arg(long, require_equals = true, default_missing_value = "true", num_args = 0..=1)]
     pub dat: Option<bool>,
 
-    /// Delete each source after it was organized successfully. Multi-entry archives, patch-only runs, and, with --verify-after, conversions whose format has no output check keep their sources. Under --on-conflict overwrite-invalid, an existing zip, copy, or hardlink that verifies valid counts as organized and its source is deleted. Bare flag or =true enables; =false disables, overriding the config
+    /// Delete each source after it was organized successfully. Multi-entry archives, patch-only runs, and, with --verify-after, conversions whose format has no output check keep their sources. Under --on-conflict overwrite-invalid, an existing archive, copy, or hardlink that verifies valid counts as organized and its source is deleted. Bare flag or =true enables; =false disables, overriding the config
     #[arg(long = "move", require_equals = true, default_missing_value = "true", num_args = 0..=1)]
     pub move_source: Option<bool>,
 
@@ -167,11 +167,15 @@ pub struct OrganizeCommand {
     #[arg(long, require_equals = true, default_missing_value = "true", num_args = 0..=1)]
     pub multi_disc_dirs: Option<bool>,
 
-    /// Zip archive format: torrentzip (default) or rvzstd
+    /// Archive format for cartridge and DS outputs: zip (default), 7z, tar, or tar.gz; an input archive in another format is repacked. Rar can be read but not written
+    #[arg(long, value_parser = ["zip", "7z", "tar", "tar.gz"])]
+    pub archive_format: Option<String>,
+
+    /// Zip archive format: torrentzip (default) or rvzstd. Applies only when the archive format is zip
     #[arg(long, value_parser = ["torrentzip", "rvzstd"])]
     pub zip_format: Option<String>,
 
-    /// Copy instead of zipping files whose planned .zip output path under --output-dir matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (--zip-exclude=) overrides the config with no exclusion
+    /// Copy instead of archiving files whose planned archive path (any extension, for example **/*.7z) under --output-dir matches this glob; `*` stops at `/`, so a recursive match needs `**/`. An empty value (--zip-exclude=) overrides the config with no exclusion
     #[arg(long, value_name = "GLOB")]
     pub zip_exclude: Option<String>,
 
@@ -215,7 +219,7 @@ pub struct OrganizeCommand {
     #[arg(long, value_parser = ["never", "auto", "always"])]
     pub move_delete_dirs: Option<String>,
 
-    /// Re-verify each written zip, copy, or converted output after writing it (size and CRC32 for zips and copies plus TorrentZip or RVZSTD structure for zips; the format's own verify for conversions). A zip, copy, or conversion whose post-write verification fails fails its row, and conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, and PS3) fail as unverified and keep their source
+    /// Re-verify each written archive, copy, or converted output after writing it (size and CRC32 for archives and copies plus TorrentZip or RVZSTD structure for zips; the format's own verify for conversions). An archive, copy, or conversion whose post-write verification fails fails its row, and conversions whose format has no output check (3DS, Wii U, Xbox, Xbox 360, and PS3) fail as unverified and keep their source
     #[arg(long, default_value_t = false)]
     pub verify_after: bool,
 }
@@ -265,6 +269,7 @@ impl OrganizeCommand {
             dir_letter_limit: self.dir_letter_limit,
             dir_letter_group: self.dir_letter_group,
             multi_disc_dirs: self.multi_disc_dirs,
+            archive_format: self.archive_format.clone(),
             zip_format: self.zip_format.clone(),
             zip_exclude: self.zip_exclude.clone(),
             link_mode: self.link_mode.clone(),
@@ -595,6 +600,7 @@ mod tests {
             symlink_relative: Some(flag),
             trim_add_padding: Some(flag),
             zip_exclude: Some("**/*.gba".to_string()),
+            archive_format: Some("tar".to_string()),
             zip_format: Some("rvzstd".to_string()),
             link_mode: Some("symlink".to_string()),
             move_delete_dirs: Some("always".to_string()),

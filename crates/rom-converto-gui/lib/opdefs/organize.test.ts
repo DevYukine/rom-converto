@@ -65,6 +65,7 @@ describe("organize echo fixture", () => {
 			dirLetterCount: 2,
 			dirLetterLimit: 10,
 			dirLetterGroup: true,
+			archiveFormat: "7z",
 			zipFormat: "torrentzip",
 			zipExclude: "**/*.zip",
 			linkMode: "hardlink",
@@ -224,6 +225,20 @@ describe("organize buildArgs", () => {
 		expect(buildCliCommand(payloadOf())).not.toContain("--patch-only");
 		const withPatch = buildCliCommand(payloadOf({ patch: "~/patches", patchOnly: true }));
 		expect(withPatch).toContain("--patch-only");
+	});
+});
+
+describe("organize archive format", () => {
+	it("sends the chosen archive format and echoes its flag", () => {
+		const payload = payloadOf({ archiveFormat: "7z" });
+		expect(payload.request.options.archive_format).toBe("7z");
+		expect(buildCliCommand(payload)).toContain("--archive-format 7z");
+	});
+
+	it("sends no archive format for Config default", () => {
+		const payload = payloadOf({ archiveFormat: "" });
+		expect(payload.request.options.archive_format).toBeUndefined();
+		expect(buildCliCommand(payload)).not.toContain("--archive-format");
 	});
 });
 

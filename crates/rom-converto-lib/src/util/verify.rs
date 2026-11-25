@@ -15,8 +15,9 @@ use std::path::Path;
 /// `Zip` pins the structured zip flavour the output must be (a TorrentZip
 /// file is invalid when RvZstd was requested, and vice versa, so
 /// overwrite-invalid migrates between the two) plus the one member it must
-/// hold (name plus the source payload's CRC-32 and size); `Raw` pins a plain
-/// file's CRC-32 and size.
+/// hold (name plus the source payload's CRC-32 and size); `Archive` pins the
+/// same one member for a 7z, tar or tar.gz output, which has no structured
+/// flavour; `Raw` pins a plain file's CRC-32 and size.
 #[derive(Clone)]
 pub enum OutputVerify {
     Chd,
@@ -25,6 +26,12 @@ pub enum OutputVerify {
     Nx(Box<crate::nintendo::nx::KeySet>),
     Zip {
         format: ZipFormat,
+        crc: u32,
+        size: u64,
+        member: String,
+    },
+    Archive {
+        format: super::ArchiveFormat,
         crc: u32,
         size: u64,
         member: String,
@@ -177,7 +184,7 @@ fn binrw_io(err: &binrw::Error) -> Option<&std::io::Error> {
 /// environment, not the data. `Other` and `EIO` are deliberately not here:
 /// from these decoders they surface data-side breakage (a stream that went
 /// bad mid-read), not an environment that refused to serve the file.
-fn env_io_error(err: &std::io::Error) -> bool {
+pub(crate) fn env_io_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
         std::io::ErrorKind::NotFound
@@ -325,6 +332,28 @@ pub async fn verify_existing_output(
                 .await,
             )
         }
+        OutputVerify::Archive {
+            format,
+            crc,
+            size,
+            member,
+        } => {
+            let path = path.to_path_buf();
+            let cancel = cancel.clone();
+            blocking_outcome(
+                tokio::task::spawn_blocking(move || {
+                    super::archive_write::member_matches(
+                        &path,
+                        format.kind(),
+                        crc,
+                        size,
+                        &member,
+                        &cancel,
+                    )
+                })
+                .await,
+            )
+        }
         OutputVerify::Raw { crc, size } => {
             let path = path.to_path_buf();
             let cancel = cancel.clone();
@@ -453,6 +482,7 @@ fn verify_label(target: &OutputVerify) -> Option<&'static str> {
         OutputVerify::Nx(keys) if keys.header_key.is_some() => Some("nx"),
         OutputVerify::Nx(_)
         | OutputVerify::Zip { .. }
+        | OutputVerify::Archive { .. }
         | OutputVerify::Raw { .. }
         | OutputVerify::None => None,
     }
@@ -911,5 +941,54 @@ mod tests {
                 .unwrap(),
             VerifyOutcome::Invalid
         );
+    }
+
+    /// A 7z, tar or tar.gz output is checked against its pinned member on
+    /// every run: a cached verdict keyed by path would ignore the pins. An
+    /// output that is not there was never checked.
+    #[tokio::test]
+    async fn archive_verify_checks_the_pinned_member_and_is_never_cached() {
+        let dir = tempdir().unwrap();
+        let raw = dir.path().join("game.payload");
+        let payload = b"rom payload bytes";
+        std::fs::write(&raw, payload).unwrap();
+        let output = dir.path().join("game.7z");
+        crate::util::write_archive(
+            &crate::util::ZipMember {
+                name: "game.rom".to_string(),
+                path: raw,
+                skip: 0,
+                pad: 0,
+                fill: 0,
+            },
+            &output,
+            crate::util::ArchiveFormat::SevenZ,
+            &NoProgress,
+            &CancelToken::new(),
+        )
+        .unwrap();
+        let pin = |crc| OutputVerify::Archive {
+            format: crate::util::ArchiveFormat::SevenZ,
+            crc,
+            size: payload.len() as u64,
+            member: "game.rom".to_string(),
+        };
+        let crc = crate::util::hash::CRC32.checksum(payload);
+        assert_eq!(verify_label(&pin(crc)), None);
+
+        let verify = |path: &Path, target| {
+            let path = path.to_path_buf();
+            async move {
+                verify_existing_output(&NoProgress, &path, target, CancelToken::new())
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(verify(&output, pin(crc)).await, VerifyOutcome::Valid);
+        assert_eq!(verify(&output, pin(crc ^ 1)).await, VerifyOutcome::Invalid);
+        assert!(matches!(
+            verify(&dir.path().join("gone.7z"), pin(crc)).await,
+            VerifyOutcome::Unverified(_)
+        ));
     }
 }

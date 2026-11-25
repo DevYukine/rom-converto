@@ -8,6 +8,7 @@ use std::path::Path;
 
 pub mod aes;
 pub mod archive;
+pub mod archive_write;
 pub mod bounded_line;
 pub mod bytes;
 pub mod conflict;
@@ -42,6 +43,7 @@ pub use archive::{
     ResolvedInput, TempSpaceShortfall, collect_input_entries, collect_inputs, is_archive_path,
     list_members, probe_archive, resolve_for_hash, resolve_input, resolve_input_with_selection,
 };
+pub use archive_write::{ArchiveFormat, write_archive};
 pub use conflict::{
     ConflictPolicy, ConflictResolution, OutputExists, resolve_conflict, resolve_conflict_by,
 };

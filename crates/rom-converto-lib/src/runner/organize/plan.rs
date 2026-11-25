@@ -862,8 +862,9 @@ fn dol_rvl_convert(op: &'static str) -> Action {
 }
 
 /// Resolves every Keep plan's desired output path from its tokens; Skip
-/// plans keep `desired: None`. A Zip plan whose output matches `zip_exclude`
-/// demotes to a link (when `link_mode` is
+/// plans keep `desired: None`. A Zip plan is named with `archive_ext`, the
+/// chosen archive format's extension; one whose output matches
+/// `zip_exclude` demotes to a link (when `link_mode` is
 /// configured) or copy of the raw payload under the source's extension. A
 /// plan whose template resolves to an invalid path (for example a hostile
 /// DAT token containing `..`) records the failure in `output_error` and
@@ -872,12 +873,16 @@ pub(super) fn resolve_paths(
     plans: &mut [UnitPlan],
     output_dir: &Path,
     template: &str,
+    archive_ext: &str,
     zip_exclude: Option<&GlobSet>,
     link_mode: Option<LinkMode>,
 ) {
     for plan in plans.iter_mut() {
         if plan.decision != Decision::Keep {
             continue;
+        }
+        if matches!(plan.action, Action::Zip) {
+            plan.tokens.ext = archive_ext.to_string();
         }
         plan.tokens.input_dir = (!plan.input_subdir.as_os_str().is_empty())
             .then(|| plan.input_subdir.display().to_string());
@@ -1090,6 +1095,7 @@ mod tests {
             std::slice::from_mut(&mut plan),
             out.path(),
             "{console}/{basename}.{ext}",
+            "zip",
             Some(&globs),
             None,
         );
@@ -1111,6 +1117,7 @@ mod tests {
             std::slice::from_mut(&mut plan),
             out.path(),
             "{console}/{basename}.{ext}",
+            "zip",
             Some(&globs),
             Some(LinkMode::Hard),
         );
@@ -1137,7 +1144,14 @@ mod tests {
         let mut plans = vec![good, hostile];
         let out = tempfile::tempdir().unwrap();
 
-        resolve_paths(&mut plans, out.path(), "{dat}/{basename}.{ext}", None, None);
+        resolve_paths(
+            &mut plans,
+            out.path(),
+            "{dat}/{basename}.{ext}",
+            "zip",
+            None,
+            None,
+        );
 
         assert_eq!(
             plans[0].decision,
