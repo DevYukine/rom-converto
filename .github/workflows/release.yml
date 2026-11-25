@@ -17,6 +17,9 @@ jobs:
       skipped: ${{ steps.changelog.outputs.skipped }}
     name: Create Changelog
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
     steps:
       - name: Checkout Source code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -31,6 +34,7 @@ jobs:
       - name: Write release notes
         if: ${{ steps.changelog.outputs.skipped == 'false' }}
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.changelog.outputs.tag }}
           CHANGELOG: ${{ steps.changelog.outputs.clean_changelog }}
         run: |
@@ -51,6 +55,11 @@ jobs:
 
           <!-- changelog -->
           EOF
+          # Credit PR authors: "(#36)" becomes "(#36 by @DevYukine)".
+          while read -r pr; do
+            login=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq .user.login) || { echo "::warning::no PR author for #$pr"; continue; }
+            CHANGELOG=$(sed -E "s|\(\[#$pr\]\(([^)]*)\)\) \(\[([0-9a-f]{7})\]|([#$pr](\1) by @$login) ([\2]|" <<<"$CHANGELOG")
+          done < <(sed -nE 's/.*\(\[#([0-9]+)\]\([^)]*\)\) \(\[[0-9a-f]{7}\].*/\1/p' <<<"$CHANGELOG" | sort -u)
           printf '%s\n' "$CHANGELOG" >> notes.md
 
       - name: Create Release
