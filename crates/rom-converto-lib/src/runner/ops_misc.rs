@@ -1,21 +1,31 @@
 //! Cue, NTR, NX, CTR and ROM patch handlers.
 
 use super::invalid_arg;
-use super::models::{RunData, RunRequest, RunResponse, WupTitleInputOption};
+use super::models::{RunData, RunPlansData, RunRequest, RunResponse, RunRow, WupTitleInputOption};
 use super::ops::{
-    ConvertTarget, convert_op, cso_format, dir_op, nx_keys_for_run, output_or, preflight_space,
-    required_input, skipped_already_done,
+    ConvertTarget, conflict_policy, convert_op, cso_format, dir_conflict_write, dir_op,
+    dir_op_record, elapsed_ms, nx_keys_for_run, output_or, plan_record, preflight_space,
+    required_input, skipped as skipped_response, skipped_already_done, totals_for_records,
 };
 use super::organize::{FileIdentity, location_under_root};
 use crate::nintendo::ntr::NtrError;
-use crate::nintendo::nx::{NxError, NxMergeFormat};
+use crate::nintendo::nx::{
+    NxError, NxExtractParts, NxExtractPlan, NxMergeFormat, extract_planned_async, plan_extract,
+};
 use crate::util::fs::file_len;
-use crate::util::{CancelToken, Cancelled, OutputVerify, ProgressReporter};
+use crate::util::{
+    CancelToken, Cancelled, ConflictPolicy, OutputVerify, PlanDecision, PlanLine, ProgressReporter,
+    ReportRecord,
+};
 use anyhow::{Context, Result};
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Containers a merge reads, plain or as an archive member.
 const MERGE_EXTS: &[&str] = &["nsp", "xci"];
+
+/// Containers an extract reads, plain or as an archive member.
+pub(crate) const EXTRACT_EXTS: &[&str] = &["nsp", "xci", "nsz", "xcz"];
 
 /// The scan that collects one game folder's inputs, shared with the
 /// recursive run so both agree on what a game is.
@@ -225,10 +235,11 @@ fn option_inputs(req: &RunRequest) -> Result<Vec<PathBuf>> {
         .ok_or_else(|| invalid_arg("options.inputs must not be empty"))
 }
 
-/// Stages every merge input, stopping before the next extraction once
-/// `cancel` fires so Ctrl-C does not wait for each remaining archive.
-fn stage_merge_inputs(
+/// Stages every input, stopping before the next extraction once `cancel`
+/// fires so Ctrl-C does not wait for each remaining archive.
+fn stage_inputs(
     inputs: &[PathBuf],
+    exts: &[&str],
     cancel: &CancelToken,
 ) -> Result<Vec<crate::util::ResolvedInput>> {
     inputs
@@ -237,7 +248,7 @@ fn stage_merge_inputs(
             if cancel.is_cancelled() {
                 return Err(Cancelled.into());
             }
-            crate::util::resolve_input(path, MERGE_EXTS, cancel)
+            crate::util::resolve_input(path, exts, cancel)
         })
         .collect()
 }
@@ -324,9 +335,10 @@ pub(crate) async fn nx_merge(
         cancel,
         |_input, output, cancel| async move {
             let stage_cancel = cancel.clone();
-            let staged =
-                tokio::task::spawn_blocking(move || stage_merge_inputs(&inputs, &stage_cancel))
-                    .await??;
+            let staged = tokio::task::spawn_blocking(move || {
+                stage_inputs(&inputs, MERGE_EXTS, &stage_cancel)
+            })
+            .await??;
             if !skip_space_check {
                 preflight_space(
                     output.parent().unwrap_or(&output),
@@ -352,6 +364,231 @@ pub(crate) async fn nx_merge(
         line.missing_keys = missing_keys;
     }
     Ok(response)
+}
+
+/// Extracts the RomFS and ExeFS of every title in `options.inputs`. Each
+/// target directory settles its own conflict decision before anything is
+/// written, so one refused target fails the job with the others untouched.
+pub(crate) async fn nx_extract(
+    req: RunRequest,
+    progress: &dyn ProgressReporter,
+    cancel: CancelToken,
+) -> Result<RunResponse> {
+    const OPERATION: &str = "nx.extract";
+    let inputs = option_inputs(&req)?;
+    let first = req.input.clone().unwrap_or_else(|| inputs[0].clone());
+    let output_dir = req
+        .output
+        .clone()
+        .or_else(|| req.options.output_dir.clone())
+        .unwrap_or_else(|| crate::nintendo::nx::derive_extract_dir(&first));
+    let (romfs, exefs) = (
+        req.options.romfs.unwrap_or(false),
+        req.options.exefs.unwrap_or(false),
+    );
+    // Neither flag means both.
+    let parts = NxExtractParts {
+        romfs: romfs || !exefs,
+        exefs: exefs || !romfs,
+    };
+    let policy = conflict_policy(&req)?;
+    let (keys, missing_keys) = nx_keys_for_run(&req)?;
+    let started = Instant::now();
+    // Without keys nothing can be read, so a dry run plans the output
+    // directory the way nx.merge and nx.split plan theirs. The targets
+    // below it need the keys to be named; only a non-directory in the way
+    // is known, and every run fails on it.
+    if req.dry_run && missing_keys.is_some() {
+        // A link to a directory is fine; a dangling one fails like a file.
+        if output_dir.symlink_metadata().is_ok() && !output_dir.is_dir() {
+            return Err(invalid_arg(format!(
+                "output path is not a directory: {}",
+                output_dir.display()
+            )));
+        }
+        let line = PlanLine {
+            operation: OPERATION.to_string(),
+            input: first,
+            decision: PlanDecision::New,
+            output: output_dir,
+            media: None,
+            missing_keys,
+        };
+        return Ok(plans_response(vec![line], progress, started));
+    }
+
+    let stage_inputs_list = inputs.clone();
+    let stage_cancel = cancel.clone();
+    // `staged` owns the temp dirs of archive inputs; it must outlive the
+    // extraction the plan reads from.
+    let staged = tokio::task::spawn_blocking(move || {
+        stage_inputs(&stage_inputs_list, EXTRACT_EXTS, &stage_cancel)
+    })
+    .await??;
+    let staged_paths: Vec<PathBuf> = staged
+        .iter()
+        .map(|resolved| resolved.path().to_path_buf())
+        .collect();
+    let plan_dir = output_dir.clone();
+    let mut plan =
+        tokio::task::spawn_blocking(move || plan_extract(&staged_paths, &plan_dir, parts, &keys))
+            .await??;
+    for warning in &plan.warnings {
+        progress.warn(warning);
+    }
+
+    let decisions = plan
+        .targets
+        .iter()
+        .map(|target| extract_decision(&target.dir, policy))
+        .collect::<Result<Vec<_>>>()?;
+    // An input that is a link into a target counts by where it points too.
+    let real_inputs: Vec<PathBuf> = inputs
+        .iter()
+        .filter_map(|input| input.canonicalize().ok())
+        .collect();
+    for (target, decision) in plan.targets.iter().zip(&decisions) {
+        if *decision == PlanDecision::Skip {
+            continue;
+        }
+        let root = target
+            .dir
+            .canonicalize()
+            .unwrap_or_else(|_| target.dir.clone());
+        if inputs
+            .iter()
+            .chain(&real_inputs)
+            .any(|input| location_under_root(input, &root))
+        {
+            return Err(invalid_arg(format!(
+                "{} holds an input; extracting there would overwrite it",
+                target.dir.display()
+            )));
+        }
+        super::release::check_output_dir(&target.dir)?;
+    }
+
+    if req.dry_run {
+        let plans = plan
+            .targets
+            .iter()
+            .zip(decisions)
+            .map(|(target, decision)| PlanLine {
+                operation: OPERATION.to_string(),
+                input: first.clone(),
+                output: target.dir.clone(),
+                decision,
+                media: None,
+                missing_keys: None,
+            })
+            .collect();
+        return Ok(plans_response(plans, progress, started));
+    }
+
+    let skipped = settle_targets(&mut plan, decisions);
+    let skipped_records = skipped
+        .iter()
+        .flat_map(|dir| skipped_response(&first, dir, OPERATION, None).records);
+    if plan.targets.is_empty() {
+        return Ok(extract_response(
+            format!("Skipped existing {}", output_dir.display()),
+            None,
+            skipped_records.collect(),
+            started,
+        ));
+    }
+    if !req.options.skip_space_check.unwrap_or(false) {
+        let total = plan
+            .targets
+            .iter()
+            .fold(0u64, |sum, target| sum.saturating_add(target.bytes));
+        preflight_space(&output_dir, total)?;
+    }
+    let dirs: Vec<PathBuf> = plan
+        .targets
+        .iter()
+        .map(|target| target.dir.clone())
+        .collect();
+    let written = extract_planned_async(plan, progress, cancel).await?;
+    let records = dirs
+        .iter()
+        .zip(written)
+        .map(|(dir, bytes)| dir_op_record(&first, dir, OPERATION, bytes, started))
+        .chain(skipped_records)
+        .collect();
+    Ok(extract_response(
+        format!("Wrote {}", output_dir.display()),
+        None,
+        records,
+        started,
+    ))
+}
+
+/// Drops the targets decided `Skip`, returning their directories, and sets
+/// `overwrite` on the rest: only a target that replaces an existing
+/// directory is flagged, never a new one.
+fn settle_targets(plan: &mut NxExtractPlan, decisions: Vec<PlanDecision>) -> Vec<PathBuf> {
+    let mut skipped = Vec::new();
+    let targets = std::mem::take(&mut plan.targets);
+    for (mut target, decision) in targets.into_iter().zip(decisions) {
+        if decision == PlanDecision::Skip {
+            skipped.push(target.dir);
+        } else {
+            target.overwrite = decision == PlanDecision::Overwrite;
+            plan.targets.push(target);
+        }
+    }
+    skipped
+}
+
+/// A dry run's plan lines, streamed and answered as one `Plans` payload.
+fn plans_response(
+    plans: Vec<PlanLine>,
+    progress: &dyn ProgressReporter,
+    started: Instant,
+) -> RunResponse {
+    for line in &plans {
+        progress.row(&RunRow::Plan(line.clone()));
+    }
+    let records = plans.iter().map(plan_record).collect();
+    extract_response(
+        "Dry run planned.".to_string(),
+        Some(RunData::Plans(RunPlansData { plans })),
+        records,
+        started,
+    )
+}
+
+/// What `policy` does with one extract target: a free path is new, an
+/// occupied one follows the policy. Nothing is touched. Anything but an
+/// empty directory counts as occupied, a dangling symlink included.
+fn extract_decision(dir: &std::path::Path, policy: ConflictPolicy) -> Result<PlanDecision> {
+    let occupied = match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.is_dir() => std::fs::read_dir(dir)?.next().is_some(),
+        Ok(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err.into()),
+    };
+    Ok(if !occupied {
+        PlanDecision::New
+    } else if dir_conflict_write(dir, policy)? {
+        PlanDecision::Overwrite
+    } else {
+        PlanDecision::Skip
+    })
+}
+
+/// One response for all targets of an extract run.
+fn extract_response(
+    message: String,
+    data: Option<RunData>,
+    records: Vec<ReportRecord>,
+    started: Instant,
+) -> RunResponse {
+    let mut response = RunResponse::ok(message, data);
+    response.totals = Some(totals_for_records(&records, elapsed_ms(started)));
+    response.records = records;
+    response
 }
 
 pub(crate) async fn nx_split(
@@ -642,9 +879,14 @@ mod tests {
             })
             .collect();
         let token = CancelToken::new();
-        assert_eq!(super::stage_merge_inputs(&inputs, &token).unwrap().len(), 2);
+        assert_eq!(
+            super::stage_inputs(&inputs, &["nsp"], &token)
+                .unwrap()
+                .len(),
+            2
+        );
         token.cancel();
-        let err = super::stage_merge_inputs(&inputs, &token).unwrap_err();
+        let err = super::stage_inputs(&inputs, &["nsp"], &token).unwrap_err();
         assert!(crate::runner::is_cancelled_error(&err));
     }
 
@@ -1149,6 +1391,369 @@ mod tests {
         // Only the base's meta and program NCA: the update one level down is
         // past the limit.
         assert_eq!(pfs0_entry_count(&dir.path().join("Game (Merged).nsp")), 2);
+    }
+
+    const EXTRACT_TITLE: u64 = 0x0100_1234_AAAA_0000;
+
+    /// An encrypted base-game NSP in `dir` whose ExeFS and RomFS each hold
+    /// one file.
+    fn write_base_nsp(dir: &std::path::Path) -> std::path::PathBuf {
+        use crate::nintendo::nx::models::cnmt::{CNMT_CONTENT_TYPE_PROGRAM, CNMT_TYPE_APPLICATION};
+        use crate::nintendo::nx::models::nca::CONTENT_TYPE_PROGRAM;
+        use crate::nintendo::nx::test_fixtures::{
+            build_meta_nca_records, build_nca, build_test_nsp, pfs0_section, romfs_image,
+            romfs_section,
+        };
+
+        let exefs = [("main".to_string(), vec![0x5A; 0x400])];
+        let romfs = [("a.bin".to_string(), vec![0xA5; 0x300])];
+        let program = build_nca(
+            CONTENT_TYPE_PROGRAM,
+            EXTRACT_TITLE,
+            [0; 16],
+            &[pfs0_section(&exefs), romfs_section(&romfs_image(&romfs).0)],
+        );
+        let meta = build_meta_nca_records(
+            EXTRACT_TITLE,
+            0,
+            CNMT_TYPE_APPLICATION,
+            &[0; 0x10],
+            &[([0x11; 16], CNMT_CONTENT_TYPE_PROGRAM, 0)],
+        );
+        let files = [
+            (format!("{}.cnmt.nca", hex::encode([0x22; 16])), meta),
+            (format!("{}.nca", hex::encode([0x11; 16])), program),
+        ];
+        let path = dir.join("game.nsp");
+        std::fs::write(&path, build_test_nsp(&files)).unwrap();
+        path
+    }
+
+    async fn run_extract(
+        nsp: &std::path::Path,
+        keys: &std::path::Path,
+        out: &std::path::Path,
+        extra: serde_json::Value,
+        dry_run: bool,
+    ) -> crate::runner::models::RunResponse {
+        let mut options = json!({ "inputs": [nsp], "keys": keys });
+        options.as_object_mut().unwrap().extend(
+            extra
+                .as_object()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        let req = json!({
+            "operation": "nx.extract",
+            "input": nsp,
+            "output": out,
+            "dry_run": dry_run,
+            "options": options
+        });
+        run_json(&req.to_string(), CancelToken::new()).await
+    }
+
+    fn plan_decisions(res: &crate::runner::models::RunResponse) -> Vec<(String, String)> {
+        let data = serde_json::to_value(res.data.as_ref().unwrap()).unwrap();
+        data["plans"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|line| {
+                let output = std::path::Path::new(line["output"].as_str().unwrap());
+                (
+                    output.file_name().unwrap().to_string_lossy().into_owned(),
+                    line["decision"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn nx_extract_dry_run_plans_each_target_and_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let keys = write_keys_file(dir.path());
+        let out = dir.path().join("out");
+
+        let res = run_extract(&nsp, &keys, &out, json!({}), true).await;
+
+        assert!(res.ok, "{res:?}");
+        let new = |part: &str| (part.to_string(), "New".to_string());
+        assert_eq!(plan_decisions(&res), [new("exefs"), new("romfs")]);
+        assert!(!out.exists());
+
+        let res = run_extract(&nsp, &keys, &out, json!({ "romfs": true }), true).await;
+        assert_eq!(plan_decisions(&res), [new("romfs")]);
+    }
+
+    #[tokio::test]
+    async fn nx_extract_conflict_policies_decide_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let keys = write_keys_file(dir.path());
+        let out = dir.path().join("out");
+        let romfs = out.join(format!("{EXTRACT_TITLE:016X}")).join("romfs");
+        std::fs::create_dir_all(&romfs).unwrap();
+        std::fs::write(romfs.join("stale.txt"), b"stale").unwrap();
+        let exefs = romfs.with_file_name("exefs");
+
+        let decide = |policy: &'static str| {
+            let (nsp, keys, out) = (nsp.clone(), keys.clone(), out.clone());
+            async move { run_extract(&nsp, &keys, &out, json!({ "on_conflict": policy }), true).await }
+        };
+        let skip = decide("skip").await;
+        assert_eq!(
+            plan_decisions(&skip),
+            [
+                ("exefs".to_string(), "New".to_string()),
+                ("romfs".to_string(), "Skip".to_string())
+            ]
+        );
+        let overwrite = decide("overwrite").await;
+        assert_eq!(
+            plan_decisions(&overwrite),
+            [
+                ("exefs".to_string(), "New".to_string()),
+                ("romfs".to_string(), "Overwrite".to_string())
+            ]
+        );
+        for policy in ["error", "rename"] {
+            let res = decide(policy).await;
+            assert!(!res.ok, "{policy}: {res:?}");
+        }
+
+        // A refused target fails the job before the free one is written.
+        let res = run_extract(&nsp, &keys, &out, json!({ "on_conflict": "error" }), false).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(!exefs.exists());
+
+        // Skip keeps the occupied target and still writes the free one.
+        let res = run_extract(&nsp, &keys, &out, json!({ "on_conflict": "skip" }), false).await;
+        assert!(res.ok, "{res:?}");
+        assert!(romfs.join("stale.txt").exists());
+        assert!(exefs.join("main").exists());
+
+        // Overwrite replaces the stale tree.
+        let res = run_extract(
+            &nsp,
+            &keys,
+            &out,
+            json!({ "on_conflict": "overwrite" }),
+            false,
+        )
+        .await;
+        assert!(res.ok, "{res:?}");
+        assert!(!romfs.join("stale.txt").exists());
+        assert_eq!(
+            std::fs::read(romfs.join("a.bin")).unwrap(),
+            vec![0xA5; 0x300]
+        );
+
+        // Everything already extracted: a skipped response, nothing rewritten.
+        let res = run_extract(&nsp, &keys, &out, json!({ "on_conflict": "skip" }), false).await;
+        assert!(res.ok, "{res:?}");
+        assert!(
+            res.records
+                .iter()
+                .all(|r| r.status == crate::util::FileStatus::Skipped)
+        );
+    }
+
+    #[tokio::test]
+    async fn nx_extract_refuses_a_target_holding_an_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let target = dir
+            .path()
+            .join(format!("{EXTRACT_TITLE:016X}"))
+            .join("romfs");
+        std::fs::create_dir_all(&target).unwrap();
+        let nsp = write_base_nsp(&target);
+
+        let res = run_extract(
+            &nsp,
+            &keys,
+            dir.path(),
+            json!({ "on_conflict": "overwrite", "romfs": true }),
+            false,
+        )
+        .await;
+
+        assert!(!res.ok && res.message.contains("holds an input"), "{res:?}");
+        assert!(nsp.exists());
+    }
+
+    #[tokio::test]
+    async fn nx_extract_dry_run_without_keys_plans_the_output_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let missing_keys = dir.path().join("missing.keys");
+        let out = dir.path().join("out");
+
+        let res = run_extract(&nsp, &missing_keys, &out, json!({}), true).await;
+
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.as_ref().unwrap()).unwrap();
+        let plans = data["plans"].as_array().unwrap();
+        assert_eq!(plans.len(), 1, "{data}");
+        assert_eq!(plans[0]["decision"], "New");
+        assert!(plans[0]["missing_keys"].is_string(), "{data}");
+        assert!(!out.exists());
+
+        // A reused output dir is not a conflict: only the targets below it
+        // could be, and naming them needs the keys.
+        std::fs::create_dir_all(out.join("older")).unwrap();
+        let res = run_extract(&nsp, &missing_keys, &out, json!({}), true).await;
+        assert!(res.ok, "{res:?}");
+        let data = serde_json::to_value(res.data.as_ref().unwrap()).unwrap();
+        assert_eq!(data["plans"][0]["decision"], "New", "{data}");
+        std::fs::remove_dir_all(&out).unwrap();
+
+        // A file at the output path fails every run, whatever the policy.
+        std::fs::write(&out, b"x").unwrap();
+        let res = run_extract(
+            &nsp,
+            &missing_keys,
+            &out,
+            json!({ "on_conflict": "overwrite" }),
+            true,
+        )
+        .await;
+        assert!(!res.ok, "{res:?}");
+        std::fs::remove_file(&out).unwrap();
+
+        // A link to a directory is a directory.
+        #[cfg(unix)]
+        {
+            let real = dir.path().join("real");
+            std::fs::create_dir(&real).unwrap();
+            std::os::unix::fs::symlink(&real, &out).unwrap();
+            let res = run_extract(&nsp, &missing_keys, &out, json!({}), true).await;
+            assert!(res.ok, "{res:?}");
+            std::fs::remove_file(&out).unwrap();
+        }
+
+        let res = run_extract(&nsp, &missing_keys, &out, json!({}), false).await;
+        assert!(!res.ok, "{res:?}");
+    }
+
+    /// A target is never replaced while it holds the only copy of a source
+    /// an earlier `delete_source` run deleted.
+    #[tokio::test]
+    async fn nx_extract_never_overwrites_a_target_holding_an_only_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let keys = write_keys_file(dir.path());
+        let out = dir.path().join("out");
+        let title = out.join(format!("{EXTRACT_TITLE:016X}"));
+        let held = title.join("romfs").join("Game.cso");
+        std::fs::create_dir_all(held.parent().unwrap()).unwrap();
+        std::fs::write(&held, b"only copy").unwrap();
+        crate::runner::release::claim_output(&dir.path().join("Deleted.iso"), &held, true)
+            .unwrap()
+            .commit();
+
+        let overwrite = json!({ "on_conflict": "overwrite" });
+        for dry_run in [true, false] {
+            let res = run_extract(&nsp, &keys, &out, overwrite.clone(), dry_run).await;
+            assert!(
+                !res.ok && res.message.contains("is the only copy of"),
+                "{res:?}"
+            );
+        }
+        assert_eq!(std::fs::read(&held).unwrap(), b"only copy");
+        assert!(!title.join("exefs").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nx_extract_counts_a_dangling_symlink_target_as_occupied() {
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let keys = write_keys_file(dir.path());
+        let out = dir.path().join("out");
+        let title = out.join(format!("{EXTRACT_TITLE:016X}"));
+        std::fs::create_dir_all(&title).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), title.join("romfs")).unwrap();
+
+        let res = run_extract(&nsp, &keys, &out, json!({ "on_conflict": "skip" }), true).await;
+        assert_eq!(
+            plan_decisions(&res),
+            [
+                ("exefs".to_string(), "New".to_string()),
+                ("romfs".to_string(), "Skip".to_string())
+            ]
+        );
+
+        let res = run_extract(&nsp, &keys, &out, json!({ "on_conflict": "error" }), false).await;
+        assert!(!res.ok, "{res:?}");
+        assert!(!title.join("exefs").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nx_extract_refuses_an_input_that_links_into_an_overwritten_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = write_keys_file(dir.path());
+        let target = dir
+            .path()
+            .join("out")
+            .join(format!("{EXTRACT_TITLE:016X}"))
+            .join("romfs");
+        std::fs::create_dir_all(&target).unwrap();
+        let real = write_base_nsp(&target);
+        let link = dir.path().join("link.nsp");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let res = run_extract(
+            &link,
+            &keys,
+            &dir.path().join("out"),
+            json!({ "on_conflict": "overwrite", "romfs": true }),
+            false,
+        )
+        .await;
+
+        assert!(!res.ok && res.message.contains("holds an input"), "{res:?}");
+        assert!(real.exists());
+    }
+
+    #[test]
+    fn nx_extract_flags_overwrite_only_on_replaced_targets() {
+        use crate::nintendo::nx::test_fixtures::synthetic_keyset;
+        use crate::nintendo::nx::{NxExtractParts, plan_extract};
+        use crate::util::PlanDecision;
+
+        let dir = tempfile::tempdir().unwrap();
+        let nsp = write_base_nsp(dir.path());
+        let parts = NxExtractParts {
+            romfs: true,
+            exefs: true,
+        };
+        let mut plan =
+            plan_extract(&[nsp], &dir.path().join("out"), parts, &synthetic_keyset()).unwrap();
+        assert_eq!(plan.targets.len(), 2);
+        let (first, second) = (plan.targets[0].dir.clone(), plan.targets[1].dir.clone());
+
+        let skipped =
+            super::settle_targets(&mut plan, vec![PlanDecision::Overwrite, PlanDecision::New]);
+
+        assert!(skipped.is_empty());
+        assert!(plan.targets[0].overwrite && plan.targets[0].dir == first);
+        assert!(!plan.targets[1].overwrite && plan.targets[1].dir == second);
+
+        let mut plan = plan_extract(
+            &[dir.path().join("game.nsp")],
+            &dir.path().join("out"),
+            parts,
+            &synthetic_keyset(),
+        )
+        .unwrap();
+        let skipped = super::settle_targets(&mut plan, vec![PlanDecision::Skip, PlanDecision::New]);
+        assert_eq!(skipped, [first]);
+        assert_eq!(plan.targets.len(), 1);
     }
 
     #[tokio::test]

@@ -159,6 +159,48 @@ pub enum NxError {
         "NCA {nca} section {section} did not decrypt to a valid filesystem; the title key or key area key is wrong"
     )]
     WrongKey { nca: String, section: usize },
+
+    #[error(
+        "NCA {nca} section {section} has a compression layer, which extraction does not support"
+    )]
+    CompressedSectionUnsupported { nca: String, section: usize },
+
+    #[error("NCA {nca} section {section} declares its filesystem outside the section")]
+    InvalidDataLayer { nca: String, section: usize },
+
+    #[error("RomFS is malformed: {0}")]
+    InvalidRomfs(&'static str),
+
+    #[error("PFS0 is malformed: {0}")]
+    InvalidPfs0(&'static str),
+
+    #[error("filesystem entry name {0:?} is not a safe file name")]
+    UnsafeEntryName(String),
+
+    #[error(
+        "{} appears twice in the extracted filesystem (names may differ only in case)",
+        .0.display()
+    )]
+    DuplicateEntryName(PathBuf),
+
+    #[error("the inputs hold no RomFS or ExeFS to extract")]
+    NothingToExtract,
+
+    #[error(
+        "NCZ {nca} was read out of order so often that it would decode its payload over and over; decompress it first with `rom-converto nx decompress` to avoid that"
+    )]
+    NczReadOutOfOrder { nca: String },
+
+    #[error(
+        "could not restore {} after a failed extract ({source}); its previous contents are in {}",
+        .target.display(),
+        .backup.display()
+    )]
+    RestoreFailed {
+        target: PathBuf,
+        backup: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 fn format_paths(paths: &[PathBuf]) -> String {

@@ -543,6 +543,7 @@ fn try_read_control(
                 entry.abs_offset,
                 entry.size,
                 header_key,
+                name,
             ) {
                 Ok(reader) => reader,
                 Err(e) => {

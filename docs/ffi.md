@@ -93,7 +93,7 @@ set through the C ABI.
 ### Operations
 
 Operations added since the first ABI v1 release: `cue.to_iso`, `cue.to_cso`, `ntr.encrypt`, `ntr.decrypt` (the original `nds.encrypt` and `nds.decrypt` ids still resolve as aliases),
-`dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `ctr.bundle`, `ctr.unbundle`, `patch.apply`, `ps3.decrypt`, `psp.to_iso`,
+`dol.convert`, `rvl.convert`, `nx.decrypt`, `nx.merge`, `nx.split`, `nx.extract`, `ctr.bundle`, `ctr.unbundle`, `patch.apply`, `ps3.decrypt`, `psp.to_iso`,
 `psp.extract`, `psx.to_pbp`, `vita.extract`, `xbox.convert`, `xbox.extract`, `wup.to_wux`, `wup.to_wud`,
 `xenon.compress`, `xenon.convert`, `xenon.extract`, and `xenon.verify`.
 
@@ -116,6 +116,13 @@ integrity-skip option, but write ISO (or WBFS for Wii when `output` ends in `.wb
 `nx.merge` takes its containers in `options.inputs` (the first names the
 record) and its format in `options.format` (`nsp`, default, or `xci`); each
 input may be an archive holding an NSP or XCI.
+`nx.extract` takes its containers (NSP, XCI, NSZ, XCZ, or an archive holding one)
+in `options.inputs`, the first naming the records. It writes
+`<TITLE ID>/romfs` and `<TITLE ID>/exefs` under `output` or `options.output_dir`,
+defaulting to a directory named after the first input. `options.romfs` and
+`options.exefs` select one filesystem; neither or both writes both. It also takes
+`options.keys`, `on_conflict`, and `skip_space_check`. A dry run returns a `plans`
+list with one line per target directory and writes nothing.
 `nx.decrypt` writes a single output file, `<name>.dnsp` or `<name>.dxci`, and
 takes the same options as `nx.decompress`. It needs `prod.keys`, and the
 output loads only in NxEmu.
@@ -129,7 +136,7 @@ and its dry run plans a write. A single-title XCI converts to one NSP.
 the record); an explicit `output` must end in the bundle extension the member
 set produces (`.bcci`, `.bcxi`, or `.bcia`). `ctr.unbundle` writes into
 `output` or `options.output_dir`, defaulting to a `<name>_unbundled` directory
-next to the input. Directory-output operations (`nx.split`, `ctr.unbundle`,
+next to the input. Directory-output operations (`nx.split`, `nx.extract`, `ctr.unbundle`,
 `psp.extract`, `vita.extract`, `xbox.extract`, `xenon.extract`,
 `xenon.convert`, `wup.decrypt`) accept `on_conflict` `error`, `overwrite`, and `skip`;
 `rename` is refused when the output directory already holds files. `overwrite` replaces an

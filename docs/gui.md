@@ -140,6 +140,22 @@ decompress NSZ/XCZ first.
 Files mode defaults to `<first stem> (Merged).nsp` or `.xci`. Split does not offer Rename
 because its output is a directory.
 
+### Extract Switch RomFS/ExeFS
+
+Under Tools, **Extract Switch RomFS/ExeFS** writes the RomFS and ExeFS of Switch
+titles to folders. It takes NSP, XCI, NSZ and XCZ files: base games, updates and
+DLC in any combination, and merged containers. All staged files extract in one job.
+
+The RomFS and ExeFS toggles are both on by default. Turn one off to extract only the
+other. With both off the page shows a notice.
+Output goes to `<output>/<TITLE ID>/romfs` and `<output>/<TITLE ID>/exefs`. The
+output directory defaults to a folder named after the first input, next to it.
+
+An update staged with its base writes the patched RomFS and the update ExeFS. DLC
+has a RomFS only. A lone update has no RomFS, because that needs the base game.
+The page supports `prod.keys`, conflicts (no Rename, since the output is a
+directory), and a dry run. The page shows the equivalent CLI command.
+
 Under Decrypt, **Decrypt for NxEmu** converts an encrypted NSP or XCI into the DNSP or DXCI
 that [NxEmu](https://www.nxemu.com/) loads. The page takes `prod.keys` and accepts plain
 NSP/XCI files or archives holding one; decompress NSZ/XCZ first. The output is

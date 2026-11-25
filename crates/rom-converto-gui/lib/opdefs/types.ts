@@ -185,6 +185,8 @@ export interface OpDef {
 	verifyTooltip?: string;
 	showDryRun?: boolean;
 	actionNote: string;
+	// A message disables Run and Dry run; the op shows it itself (e.g. as a field note). null lets them run.
+	runBlocked?: (store: OpStore) => string | null;
 
 	// Runs after new items are staged (e.g. to adapt defaults to the input kind).
 	onStaged?: (store: OpStore, items: StagedItem[]) => void;

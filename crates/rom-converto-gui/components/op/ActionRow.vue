@@ -32,6 +32,7 @@ const queue = useQueueStore();
 const { show: showToast } = useToast();
 
 const count = computed(() => props.items.length);
+const blocked = computed(() => !!props.def.runBlocked?.(props.store));
 const label = computed(() => (count.value > 0 ? `Add ${count.value} to queue` : "Nothing staged"));
 
 // Every job owns a unique task id, which is what the backend's cancel registry
@@ -54,7 +55,7 @@ function blockedByExplicitKey(): boolean {
 }
 
 function enqueue() {
-	if (!count.value) return;
+	if (!count.value || blocked.value) return;
 	if (blockedByExplicitKey()) return;
 	const taskId = taskIdFor();
 	const args = combinedArgs(props.def, props.store, props.items, taskId);
@@ -109,7 +110,7 @@ function isOrganizeData(data: unknown): data is OrganizeData {
 // rows, so every planned row is listed. The staged item's own summary line
 // above the plan keeps the runner's message and conflict state.
 async function dryRun() {
-	if (!count.value) return;
+	if (!count.value || blocked.value) return;
 	if (blockedByExplicitKey()) return;
 	const lines: DryRunLine[] = [];
 	let cmd = "";
@@ -177,8 +178,8 @@ async function dryRun() {
 
 <template>
 	<div class="rc-actions">
-		<PrimaryButton :disabled="count === 0" @click="enqueue">{{ label }}</PrimaryButton>
-		<PrimaryButton v-if="def.showDryRun !== false" variant="outlined" :disabled="count === 0" @click="dryRun">
+		<PrimaryButton :disabled="count === 0 || blocked" @click="enqueue">{{ label }}</PrimaryButton>
+		<PrimaryButton v-if="def.showDryRun !== false" variant="outlined" :disabled="count === 0 || blocked" @click="dryRun">
 			Dry run
 		</PrimaryButton>
 		<span class="rc-actions__note">{{ def.actionNote }}</span>

@@ -191,6 +191,20 @@ accepts hactool plaintext NSPs and rewrites only the NCA headers. Compressing, m
 or splitting a decrypted container keeps its NCAs decrypted but does not produce a
 DNSP/DXCI.
 
+`nx extract` reads NSP, XCI, NSZ and XCZ files and writes the ExeFS and RomFS as plain
+files. `--romfs` or `--exefs` picks one part. Neither flag, or both, writes both. Each
+title goes to `<output>/<TITLE ID>/exefs` and `<output>/<TITLE ID>/romfs`, the layout
+that LayeredFS mod loaders such as Atmosphere use.
+
+Inputs are grouped by their metadata. An update's RomFS is applied over the base RomFS,
+and its ExeFS replaces the base ExeFS. When several updates match, the highest version
+wins. Each DLC gets its own title ID folder with only the RomFS. The base game, its
+updates and its DLC can be separate files or one merged container.
+
+An update given without its base game yields only its ExeFS, because its RomFS only
+describes changes to the base. Sparse and compressed NCA sections are not supported and
+fail with an error. XCI update partitions (system firmware) are ignored.
+
 ### CHD
 
 CHD mode is chosen from the input: CUE input makes a CD CHD, suitable ISO input is

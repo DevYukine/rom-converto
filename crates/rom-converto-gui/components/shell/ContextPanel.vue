@@ -112,6 +112,7 @@ const CONSOLES: Record<string, ConsoleRow[]> = {
 		{ id: "ticket", name: "Generate ticket", hint: "" },
 		{ id: "nx-merge", name: "Merge Switch NSP/XCI", hint: "→ super NSP/XCI" },
 		{ id: "nx-split", name: "Split Switch NSP/XCI", hint: "per-title" },
+		{ id: "nx-extract", name: "Extract Switch RomFS/ExeFS", hint: "→ folders" },
 		{ id: "ctr-bundle", name: "Bundle 3DS ROM (Azahar)", hint: "→ .bcci/.bcxi/.bcia" },
 		{ id: "ctr-unbundle", name: "Unbundle 3DS ROM", hint: "→ members" },
 	],

@@ -216,6 +216,8 @@ const FIELDS: &[(&str, FlagKind)] = &[
     ("clean_exclude", FlagKind::Repeated),
     ("clean_backup", FlagKind::Value),
     ("move_delete_dirs", FlagKind::Value),
+    ("romfs", FlagKind::Bool),
+    ("exefs", FlagKind::Bool),
 ];
 
 /// Non-global option fields each subcommand accepts, keyed by the joined
@@ -584,6 +586,10 @@ const PATH_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "nx extract",
+        &["exefs", "keys", "on_conflict", "output_dir", "romfs"],
+    ),
+    (
         "nx merge",
         &[
             "format",
@@ -837,6 +843,7 @@ const PATH_OUTPUT: &[(&str, OutputKind)] = &[
     ("dol verify", OutputKind::None),
     ("hash", OutputKind::None),
     ("info", OutputKind::None),
+    ("nx extract", OutputKind::OutputDir),
     ("nx merge", OutputKind::OutputFlag),
     ("nx split", OutputKind::OutputDir),
     ("nx verify", OutputKind::None),

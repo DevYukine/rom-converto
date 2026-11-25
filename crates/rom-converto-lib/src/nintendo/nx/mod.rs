@@ -1,5 +1,5 @@
-//! Nintendo Switch (NX) support: NSP/XCI to NSZ/XCZ compression and
-//! NSP/XCI to NxEmu DNSP/DXCI decryption.
+//! Nintendo Switch (NX) support: NSP/XCI to NSZ/XCZ compression,
+//! NSP/XCI to NxEmu DNSP/DXCI decryption, and RomFS/ExeFS extraction.
 //!
 //! Switch is a current-generation console, so no keys are baked into
 //! this crate. Every operation (compress, decompress, verify) requires
@@ -18,6 +18,7 @@ pub mod decrypt;
 pub mod derive_paths;
 /// Error type shared by every NX (Switch) operation.
 pub mod error;
+pub mod extract;
 pub mod info;
 pub mod keys;
 pub mod merge;
@@ -40,10 +41,14 @@ pub use container::{ContainerKind, detect_container};
 pub use decompress::decompress_container_async;
 pub use decrypt::{decrypt_container, decrypt_container_async};
 pub use derive_paths::{
-    derive_compressed_path, derive_decompressed_path, derive_decrypted_path, derive_merged_path,
-    derive_split_dir,
+    derive_compressed_path, derive_decompressed_path, derive_decrypted_path, derive_extract_dir,
+    derive_merged_path, derive_split_dir,
 };
 pub use error::{NxError, NxResult};
+pub use extract::{
+    NxExtractPart, NxExtractParts, NxExtractPlan, NxExtractTarget, extract_planned_async,
+    plan_extract,
+};
 pub use keys::{KeyAreaKind, KeySet, find_keys_file, load_keyset};
 pub use merge::{NxMergeFormat, merge_containers, merge_containers_async};
 pub use models::{Hfs0, NcaHeader, Pfs0};

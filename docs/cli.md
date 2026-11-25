@@ -120,9 +120,9 @@ With `overwrite-invalid`, the preview reads and verifies an existing output befo
 Recursive `ctr` batches show resolved output paths;
 recursive `ctr cdn-to-cia` also shows each conflict decision.
 
-A conversion dry run lists an archive without extracting it, with two exceptions: `chd extract`,
-and any run with an output template, read the member to plan the output, so they extract it
-to a temporary directory that is removed afterward. Verification, `hash`, and `info` have no
+A conversion dry run lists an archive without extracting it, with three exceptions: `chd extract`,
+`nx extract`, and any run with an output template read the member to plan the output, so they
+extract it to a temporary directory that is removed afterward. Verification, `hash`, and `info` have no
 plan to make, so they run normally and extract under `--dry-run` too. A `dol`, `rvl`, or
 `chd` `migrate` dry run reads only the header of a zip, 7z, or tar member:
 `chd migrate` refuses a v5 or newer CHD and a member that is not a CHD, the others refuse
@@ -223,7 +223,7 @@ size or modification time changes. DAT commands still query the remote database.
 Every command that takes one input file can read `.zip`, `.7z`, `.rar`, `.tar`, `.tar.gz`,
 and `.tgz` archives: conversion, extraction, verification, and info under `ctr`, `dol`,
 `rvl`, `nx`, `chd`, `cso`, `wup`, `ntr`, `cue`, `ps3`, `psp`, `psx`, `vita`, `xbox`, and `xenon`,
-including `nx merge`, `nx split`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
+including `nx merge`, `nx split`, `nx extract`, and `xenon convert`, plus `hash`, `info`, `dat verify`,
 and `dat identify`. Commands that take a directory, such as `wup decrypt` and
 `ctr cdn-to-cia`, cannot. `ctr bundle` and `patch apply` require plain files and do not
 open archives.
@@ -231,7 +231,7 @@ open archives.
 The first matching member in name order is extracted to a temporary directory, with a cue
 or gdi sheet first and a `.md` member last. Cue and GDI track files are extracted with
 their sheet. Output is named after the member and written next to the archive unless another
-output path is set; directory outputs (`nx split`, `xenon convert`, `ctr unbundle`) and
+output path is set; directory outputs (`nx split`, `nx extract`, `xenon convert`, `ctr unbundle`) and
 `nx merge` are named after the archive. An archive holding several matching members
 converts only the first and logs a warning, also for the archives a recursive run keeps. Encrypted archives and plain `.gz` files are unsupported. RAR input is read
 only. The temp filesystem needs room for the unpacked input. A 7z is refused when its
@@ -643,6 +643,7 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `decrypt <INPUT> [-o OUTPUT]` | Convert an encrypted NSP/XCI to an NxEmu DNSP/DXCI |
 | `merge <INPUT>... [-o OUTPUT] [-R] [--output-dir DIR]` | Combine base, update, or DLC containers into one NSP or XCI. A game folder is one game; with `-R` each subfolder of a base folder is one game |
 | `split <INPUT> [--output-dir DIR] [-R]` | Write one NSP per title from an NSP or XCI, or from every one under a directory |
+| `extract <INPUT>... [--output-dir DIR] [--romfs] [--exefs]` | Write the RomFS and ExeFS of base games, updates, and DLC from NSP, XCI, NSZ, or XCZ inputs |
 | `verify <INPUT>` | Check that the header and the start of every section of each NCA decrypt and read back, including in compressed and decrypted containers |
 | `info <INPUT>` | Inspect container metadata. See [info](#info) |
 
@@ -652,9 +653,10 @@ rom-converto nx <SUBCOMMAND> <INPUT>
 | `-l, --level <LEVEL>` | `compress` | Zstd level 1..=22; default 18 |
 | `--mode <MODE>` | `compress` | `solid` (one zstd frame per NCA, default for NSP) or `block` (default for XCI) |
 | `--block-size-exp <EXP>` | `compress` | Block size is `1 << exp` bytes; range 14..=32, default 20 (1 MiB) |
-| `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Choose the output directory. On `merge` it conflicts with `-o` |
+| `--output-dir <DIR>` | `compress`, `decompress`, `decrypt`, `merge`, `split`, `extract` | Choose the output directory. On `merge` it conflicts with `-o` |
+| `--romfs`, `--exefs` | `extract` | Extract only the RomFS or only the ExeFS. With neither flag, or both, extract both |
 | `--format <nsp\|xci>` | `merge` | Default NSP. XCI output accepts NSP and XCI inputs. See [Merge and split](#merge-and-split) |
-| `--on-conflict <POLICY>`, `-f, --force` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Default `error` (`compress`, `decompress`, and `decrypt` take the config's `on_conflict` first); `-f` means overwrite. The flags conflict |
+| `--on-conflict <POLICY>`, `-f, --force` | `compress`, `decompress`, `decrypt`, `merge`, `split`, `extract` | Default `error` (`compress`, `decompress`, and `decrypt` take the config's `on_conflict` first); `-f` means overwrite. The flags conflict |
 | `-R, --recursive` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Process every container found in `INPUT` and its subdirectories. On `merge`, each subfolder of `INPUT` is one game |
 | `--max-depth <N>` | `compress`, `decompress`, `decrypt`, `verify`, `merge`, `split` | Maximum directory depth under `--recursive`. 1 = top level only. On `merge`, depth counts from each game folder |
 | `--report <FILE>` | `compress`, `decompress`, `decrypt`, `merge`, `split` | Write a run report. See [Run reports](#run-reports) |
@@ -763,7 +765,35 @@ rom-converto nx merge -R ./games --format xci --output-dir ./merged --report mer
 rom-converto nx split merged.nsp --output-dir ./titles
 rom-converto nx split ./merged -R --output-dir ./titles
 rom-converto nx decrypt game.nsp --keys prod.keys
+rom-converto nx extract base.nsp update.nsp dlc.nsp --romfs --output-dir ./out
 ```
+
+### Extract
+
+`nx extract` writes `<output dir>/<TITLE ID>/romfs` and `<output dir>/<TITLE ID>/exefs`.
+`TITLE ID` is 16 uppercase hex digits. Pass a base game with its updates and DLC in any
+order, as separate files, one merged container, or archives holding them. `--output-dir`
+defaults to a directory named after the first input, beside it.
+
+- An update passed with its base game patches the RomFS and supplies the ExeFS. With
+  several updates for one title, the highest version wins.
+- DLC has a RomFS only, in a folder named after the DLC title ID. It is skipped with a
+  warning when only `--exefs` is set.
+- An update without its base game extracts its ExeFS only, in the base game's folder, and
+  warns that the RomFS needs the base game.
+- A title without the requested section is skipped with a warning. Sparse and compressed
+  sections are rejected. An XCI `update` partition is ignored.
+- An NSZ or XCZ that would be read far out of order, such as a base under an update that
+  reorders it, is refused once the extra decoding passes 16 times its size (at least
+  4 GiB), since each backward read decodes it again. Decompress it first with
+  `nx decompress`.
+
+Each `romfs` and `exefs` directory is written to a scratch directory first and published
+once every target succeeded, so a failure or Ctrl-C leaves no partial output. With the
+default `error` policy, any existing non-empty target fails the run before anything is
+written. `skip` and `overwrite-invalid` leave that target alone and write the rest.
+`overwrite` replaces it. `rename` is rejected, as for `split`. A target directory that
+holds one of the inputs is refused. The free-space check sizes the sum of all targets.
 
 ## ntr (Nintendo DS)
 

@@ -53,6 +53,15 @@ pub fn derive_split_dir(input: &Path) -> PathBuf {
     input.with_file_name(name)
 }
 
+/// Derives the default extract output directory for `first_input`: its
+/// stem, beside it, with archive wrappers stripped the way every default
+/// output is, so `/roms/Game [0100][v0].nsp` yields `/roms/Game [0100][v0]`.
+pub fn derive_extract_dir(first_input: &Path) -> PathBuf {
+    first_input.with_file_name(crate::util::derive_output_stem(
+        first_input.file_name().unwrap_or_default(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +179,22 @@ mod tests {
         assert_eq!(
             derive_merged_path(Path::new("/roms/game.iso.zip"), "xci"),
             PathBuf::from("/roms/game (Merged).xci")
+        );
+    }
+
+    #[test]
+    fn extract_dir_is_the_first_input_stem() {
+        assert_eq!(
+            derive_extract_dir(Path::new("/roms/Game [0100][v0].nsp")),
+            PathBuf::from("/roms/Game [0100][v0]")
+        );
+        assert_eq!(
+            derive_extract_dir(Path::new("/roms/Game.XCZ")),
+            PathBuf::from("/roms/Game")
+        );
+        assert_eq!(
+            derive_extract_dir(Path::new("/roms/Game.nsp.zip")),
+            PathBuf::from("/roms/Game")
         );
     }
 }

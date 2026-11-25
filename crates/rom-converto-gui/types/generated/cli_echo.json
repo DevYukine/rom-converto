@@ -189,6 +189,10 @@
       "nx",
       "decrypt"
     ],
+    "nx.extract": [
+      "nx",
+      "extract"
+    ],
     "nx.merge": [
       "nx",
       "merge"
@@ -502,6 +506,12 @@
       "kind": "bool",
       "explicit_off": false
     },
+    "exefs": {
+      "flag": "--exefs",
+      "global": false,
+      "kind": "bool",
+      "explicit_off": false
+    },
     "extensions": {
       "flag": "--ext",
       "global": false,
@@ -806,6 +816,12 @@
       "flag": "--report",
       "global": false,
       "kind": "value",
+      "explicit_off": false
+    },
+    "romfs": {
+      "flag": "--romfs",
+      "global": false,
+      "kind": "bool",
       "explicit_off": false
     },
     "single": {
@@ -1267,6 +1283,13 @@
       "recursive",
       "report"
     ],
+    "nx.extract": [
+      "exefs",
+      "keys",
+      "on_conflict",
+      "output_dir",
+      "romfs"
+    ],
     "nx.merge": [
       "format",
       "keys",
@@ -1607,6 +1630,7 @@
     "nx.compress": "positional",
     "nx.decompress": "positional",
     "nx.decrypt": "positional",
+    "nx.extract": "output_dir",
     "nx.merge": "output_flag",
     "nx.split": "output_dir",
     "nx.verify": "none",

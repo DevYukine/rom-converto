@@ -17,6 +17,7 @@ import {
   deriveNszPath,
   deriveNxMergedPath,
   deriveNxSplitDir,
+  deriveNxExtractDir,
   derivePatchedPath,
   derivePbpDir,
   deriveRvzPath,
@@ -204,6 +205,13 @@ describe("nx merge and split derivation", () => {
     expect(deriveNxSplitDir("D:\\switch\\Game.xci")).toBe(
       "D:\\switch\\Game_split",
     );
+  });
+
+  it("derives the extract directory from the first input's stem", () => {
+    expect(deriveNxExtractDir("D:\\switch\\Game.nsp")).toBe("D:\\switch\\Game");
+    expect(deriveNxExtractDir("/roms/Game [0100][v0].xci")).toBe("/roms/Game [0100][v0]");
+    expect(deriveNxExtractDir("Game.nsp.zip")).toBe("Game");
+    expect(deriveNxExtractDir(`${DOTTED}.zip`)).toBe(DOTTED);
   });
 
   it("takes the container extension from the chosen format", () => {

@@ -63,6 +63,7 @@ describe("op registry", () => {
 		for (const id of [
 			"ctr-unbundle",
 			"nx-split",
+			"nx-extract",
 			"wup-decrypt",
 			"xenon-convert",
 			"xbox-extract",

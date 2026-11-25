@@ -7,13 +7,18 @@ use std::sync::Mutex;
 use aes::Aes128;
 use aes::cipher::array::Array;
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
+use sha2::{Digest, Sha256};
 
 use crate::nintendo::nx::constants::{
-    ENC_AES_CTR, NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_HEADER_SIZE, NCA3_MAGIC,
+    ENC_AES_CTR, ENC_AES_CTR_EX, NCA_FS_ENTRY_OFFSET, NCA_FS_HEADER_OFFSET, NCA_HEADER_SIZE,
+    NCA3_MAGIC,
 };
-use crate::nintendo::nx::crypto::aes_ctr::apply_ctr;
+use crate::nintendo::nx::crypto::aes_ctr::{apply_ctr, apply_ctr_at};
 use crate::nintendo::nx::crypto::aes_xts::encrypt_nca_header;
 use crate::nintendo::nx::crypto::derive::{KEY_AREA_KEY_COUNT, KEY_AREA_KEY_SIZE, KEY_AREA_TOTAL};
+use crate::nintendo::nx::decrypt::bucket_tree::{AesCtrExEntry, IndirectEntry, build_table};
+use crate::nintendo::nx::decrypt::nca::ctr_iv;
+use crate::nintendo::nx::error::NxResult;
 use crate::nintendo::nx::keys::{KeyAreaKind, KeySet};
 use crate::nintendo::nx::merge::round_up_media_unit;
 use crate::nintendo::nx::models::cnmt::CNMT_CONTENT_TYPE_PROGRAM;
@@ -21,11 +26,12 @@ use crate::nintendo::nx::models::hfs0::{
     self as hfs0_mod, DEFAULT_HASHED_REGION, Hfs0FileSpec, Hfs0LayoutHints, hash_first_chunk,
 };
 use crate::nintendo::nx::models::nca::{
-    CONTENT_TYPE_META, FS_TYPE_PARTITION_FS, FsHeader, HASH_TYPE_HIERARCHICAL_SHA256,
-    initial_ctr_for_offset,
+    CONTENT_TYPE_META, FS_TYPE_PARTITION_FS, FS_TYPE_ROMFS, FsHeader,
+    HASH_TYPE_HIERARCHICAL_INTEGRITY, HASH_TYPE_HIERARCHICAL_SHA256, initial_ctr_for_offset,
 };
 use crate::nintendo::nx::models::pfs0::{self as pfs0_mod, Pfs0LayoutHints};
 use crate::nintendo::nx::models::xci::{MEDIA_UNIT, XCI_PREFIX_SIZE, build_xci_prefix};
+use crate::nintendo::nx::walker::NcaInput;
 
 /// Captures every `warn()` call; every other method is a no-op.
 #[derive(Default)]
@@ -192,43 +198,68 @@ fn build_nca_with_body_key(
     nca
 }
 
+/// One CNMT content record: content id, record type, id offset.
+pub type CnmtRecord = ([u8; 16], u8, u8);
+
 /// Serialize a minimal `PackagedContentMeta` (CNMT) blob matching the
-/// layout `Cnmt::parse` expects. No extended header; content records
-/// carry only the content id (hash/size zeroed).
-fn build_cnmt_bytes(title_id: u64, version: u32, title_type: u8, contents: &[[u8; 16]]) -> Vec<u8> {
+/// layout `Cnmt::parse` expects; content records carry no hash or size.
+fn build_cnmt_bytes(
+    title_id: u64,
+    version: u32,
+    title_type: u8,
+    extended_header: &[u8],
+    records: &[CnmtRecord],
+) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend_from_slice(&title_id.to_le_bytes());
     b.extend_from_slice(&version.to_le_bytes());
     b.push(title_type);
     b.push(0); // reserved
-    b.extend_from_slice(&0u16.to_le_bytes()); // extended_header_size
-    b.extend_from_slice(&(contents.len() as u16).to_le_bytes());
+    b.extend_from_slice(&(extended_header.len() as u16).to_le_bytes());
+    b.extend_from_slice(&(records.len() as u16).to_le_bytes());
     b.extend_from_slice(&0u16.to_le_bytes()); // content_meta_count
     b.push(0); // attributes
     b.push(0); // storage_id
     b.push(0); // install_type
     b.push(0); // reserved
     b.extend_from_slice(&0u64.to_le_bytes()); // required_download_system_version
-    for cid in contents {
+    b.extend_from_slice(extended_header);
+    for (cid, content_type, id_offset) in records {
         b.extend_from_slice(&[0u8; 32]); // hash
         b.extend_from_slice(cid); // content_id
         b.extend_from_slice(&[0u8; 6]); // size (48-bit)
-        b.push(CNMT_CONTENT_TYPE_PROGRAM);
-        b.push(0); // id_offset
+        b.push(*content_type);
+        b.push(*id_offset);
     }
     b
 }
 
 /// Build an encrypted Meta NCA (content_type = Meta) readable by
 /// `read_meta_cnmt` under [`synthetic_keyset`]. Section 0 holds a PFS0
-/// wrapping a single `{title_id:016x}.cnmt` file.
+/// wrapping a single `{title_id:016x}.cnmt` file whose records are all
+/// Program content with no extended header.
 pub fn build_meta_nca(
     title_id: u64,
     version: u32,
     title_type: u8,
     contents: &[[u8; 16]],
 ) -> Vec<u8> {
-    let cnmt = build_cnmt_bytes(title_id, version, title_type, contents);
+    let records: Vec<CnmtRecord> = contents
+        .iter()
+        .map(|cid| (*cid, CNMT_CONTENT_TYPE_PROGRAM, 0))
+        .collect();
+    build_meta_nca_records(title_id, version, title_type, &[], &records)
+}
+
+/// [`build_meta_nca`] with an explicit extended header and typed records.
+pub fn build_meta_nca_records(
+    title_id: u64,
+    version: u32,
+    title_type: u8,
+    extended_header: &[u8],
+    records: &[CnmtRecord],
+) -> Vec<u8> {
+    let cnmt = build_cnmt_bytes(title_id, version, title_type, extended_header, records);
     let cnmt_name = format!("{title_id:016x}.cnmt");
     let hdr = pfs0_mod::build_header(
         &[(cnmt_name, cnmt.len() as u64)],
@@ -450,4 +481,408 @@ mod tests {
         walker.read_section_plain(section, 0, &mut got).unwrap();
         assert_eq!(got, plain);
     }
+}
+
+/// Section offset of the IVFC data level (the RomFS image) in
+/// [`romfs_section`] and [`patch_romfs_section`].
+pub const DATA_LEVEL: u64 = 0x4000;
+
+/// FS header generation every fixture section is encrypted under.
+pub const FIXTURE_GENERATION: u32 = 1;
+
+/// Deterministic xorshift bytes, so a read from a wrong offset never
+/// matches by accident.
+pub fn noise(len: usize, seed: u32) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9) | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x as u8
+        })
+        .collect()
+}
+
+/// In-memory [`NcaInput`].
+pub struct MemInput(pub Vec<u8>);
+
+impl NcaInput for MemInput {
+    fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> NxResult<()> {
+        let src = usize::try_from(offset)
+            .ok()
+            .and_then(|start| self.0.get(start..start.checked_add(buf.len())?))
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        buf.copy_from_slice(src);
+        Ok(())
+    }
+}
+
+/// One section of [`build_nca`]: plaintext body, FS header, and the CTR
+/// runs `(start, end, generation)`, section-relative, it is encrypted with.
+#[derive(Clone)]
+pub struct FixtureSection {
+    pub body: Vec<u8>,
+    pub fs: [u8; 0x200],
+    pub runs: Vec<(u64, u64, u32)>,
+}
+
+fn ctr_section(mut body: Vec<u8>, mut fs: [u8; 0x200]) -> FixtureSection {
+    body.resize(body.len().next_multiple_of(0x200), 0);
+    fs[4] = ENC_AES_CTR;
+    fs[0x140..0x144].copy_from_slice(&FIXTURE_GENERATION.to_le_bytes());
+    FixtureSection {
+        runs: vec![(0, body.len() as u64, FIXTURE_GENERATION)],
+        body,
+        fs,
+    }
+}
+
+/// ExeFS-style section: a PFS0 of `files` behind a 0x200-byte
+/// HierarchicalSha256 hash table (left zero, but covered by the master
+/// hash).
+pub fn pfs0_section(files: &[(String, Vec<u8>)]) -> FixtureSection {
+    let pfs0 = build_test_nsp(files);
+    let mut body = vec![0u8; 0x200];
+    body.extend_from_slice(&pfs0);
+    let mut fs = [0u8; 0x200];
+    fs[0x08..0x28].copy_from_slice(&Sha256::digest(&body[..0x20]));
+    fs[0] = 2;
+    fs[2] = FS_TYPE_PARTITION_FS;
+    fs[3] = HASH_TYPE_HIERARCHICAL_SHA256;
+    fs[0x28..0x2C].copy_from_slice(&0x1000u32.to_le_bytes());
+    fs[0x2C..0x30].copy_from_slice(&2u32.to_le_bytes());
+    fs[0x38..0x40].copy_from_slice(&0x20u64.to_le_bytes());
+    fs[0x40..0x48].copy_from_slice(&0x200u64.to_le_bytes());
+    fs[0x48..0x50].copy_from_slice(&(pfs0.len() as u64).to_le_bytes());
+    ctr_section(body, fs)
+}
+
+/// RomFS image of `files` (`/`-separated paths, data laid out in list
+/// order after a 0x200-byte gap, metadata tables last, every entry in one
+/// hash bucket). Returns the image and each file's data offset in it.
+pub fn romfs_image<S: AsRef<str>>(files: &[(S, Vec<u8>)]) -> (Vec<u8>, Vec<u64>) {
+    const EMPTY: u32 = u32::MAX;
+    const FILE_DATA: u64 = 0x200;
+    struct Dir {
+        name: String,
+        parent: usize,
+        dirs: Vec<usize>,
+        files: Vec<usize>,
+    }
+    let mut dirs = vec![Dir {
+        name: String::new(),
+        parent: 0,
+        dirs: Vec::new(),
+        files: Vec::new(),
+    }];
+    let mut file_dirs = Vec::new();
+    let mut file_names = Vec::new();
+    for (path, _) in files {
+        let mut parts: Vec<&str> = path.as_ref().split('/').collect();
+        let name = parts.pop().unwrap();
+        let mut cur = 0;
+        for part in parts {
+            cur = match dirs[cur]
+                .dirs
+                .iter()
+                .copied()
+                .find(|&d| dirs[d].name == part)
+            {
+                Some(d) => d,
+                None => {
+                    dirs.push(Dir {
+                        name: part.into(),
+                        parent: cur,
+                        dirs: Vec::new(),
+                        files: Vec::new(),
+                    });
+                    let id = dirs.len() - 1;
+                    dirs[cur].dirs.push(id);
+                    id
+                }
+            };
+        }
+        dirs[cur].files.push(file_names.len());
+        file_dirs.push(cur);
+        file_names.push(name);
+    }
+
+    let mut dir_offs = Vec::new();
+    let mut at = 0;
+    for d in &dirs {
+        dir_offs.push(at as u32);
+        at += 0x18 + d.name.len().next_multiple_of(4);
+    }
+    let mut file_offs = Vec::new();
+    at = 0;
+    for name in &file_names {
+        file_offs.push(at as u32);
+        at += 0x20 + name.len().next_multiple_of(4);
+    }
+    let next = |list: &[usize], item: usize, offs: &[u32]| {
+        list.iter()
+            .position(|&x| x == item)
+            .and_then(|p| list.get(p + 1))
+            .map_or(EMPTY, |&x| offs[x])
+    };
+
+    let mut dir_table = Vec::new();
+    for (i, d) in dirs.iter().enumerate() {
+        for v in [
+            dir_offs[d.parent],
+            next(&dirs[d.parent].dirs, i, &dir_offs),
+            d.dirs.first().map_or(EMPTY, |&c| dir_offs[c]),
+            d.files.first().map_or(EMPTY, |&f| file_offs[f]),
+            dir_offs.get(i + 1).copied().unwrap_or(EMPTY),
+            d.name.len() as u32,
+        ] {
+            dir_table.extend_from_slice(&v.to_le_bytes());
+        }
+        dir_table.extend_from_slice(d.name.as_bytes());
+        dir_table.resize(dir_table.len().next_multiple_of(4), 0);
+    }
+
+    let mut data = Vec::new();
+    let mut data_offs = Vec::new();
+    for (_, bytes) in files {
+        data.resize(data.len().next_multiple_of(0x10), 0);
+        data_offs.push(data.len() as u64);
+        data.extend_from_slice(bytes);
+    }
+    let mut file_table = Vec::new();
+    for (i, name) in file_names.iter().enumerate() {
+        let parent = file_dirs[i];
+        file_table.extend_from_slice(&dir_offs[parent].to_le_bytes());
+        file_table.extend_from_slice(&next(&dirs[parent].files, i, &file_offs).to_le_bytes());
+        file_table.extend_from_slice(&data_offs[i].to_le_bytes());
+        file_table.extend_from_slice(&(files[i].1.len() as u64).to_le_bytes());
+        let hash_next = file_offs.get(i + 1).copied().unwrap_or(EMPTY);
+        file_table.extend_from_slice(&hash_next.to_le_bytes());
+        file_table.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        file_table.extend_from_slice(name.as_bytes());
+        file_table.resize(file_table.len().next_multiple_of(4), 0);
+    }
+
+    let mut image = vec![0u8; FILE_DATA as usize];
+    image.extend_from_slice(&data);
+    image.resize(image.len().next_multiple_of(4), 0);
+    let mut append = |bytes: &[u8]| {
+        let off = image.len() as u64;
+        image.extend_from_slice(bytes);
+        [off, bytes.len() as u64]
+    };
+    let dir_hash = append(&0u32.to_le_bytes());
+    let dir_meta = append(&dir_table);
+    let file_hash = append(&0u32.to_le_bytes());
+    let file_meta = append(&file_table);
+    let header = [
+        0x50,
+        dir_hash[0],
+        dir_hash[1],
+        dir_meta[0],
+        dir_meta[1],
+        file_hash[0],
+        file_hash[1],
+        file_meta[0],
+        file_meta[1],
+        FILE_DATA,
+    ];
+    for (i, v) in header.into_iter().enumerate() {
+        image[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+    }
+    (image, data_offs.iter().map(|o| FILE_DATA + o).collect())
+}
+
+/// RomFS section: IVFC levels 0..4 as (zeroed) hash levels, level 5
+/// holding `image` at [`DATA_LEVEL`]. The master hash covers level 0.
+pub fn romfs_section(image: &[u8]) -> FixtureSection {
+    let mut body = vec![0u8; DATA_LEVEL as usize];
+    body.extend_from_slice(image);
+    let mut fs = [0u8; 0x200];
+    fs[0] = 2;
+    fs[2] = FS_TYPE_ROMFS;
+    fs[3] = HASH_TYPE_HIERARCHICAL_INTEGRITY;
+    fs[8..12].copy_from_slice(b"IVFC");
+    fs[0x0C..0x10].copy_from_slice(&0x2_0000u32.to_le_bytes());
+    fs[0x10..0x14].copy_from_slice(&0x20u32.to_le_bytes());
+    fs[0x14..0x18].copy_from_slice(&7u32.to_le_bytes());
+    for level in 0..6 {
+        let at = 0x18 + level * 0x18;
+        let (offset, size) = if level == 5 {
+            (DATA_LEVEL, image.len() as u64)
+        } else {
+            (level as u64 * 0x200, 0x20)
+        };
+        fs[at..at + 8].copy_from_slice(&offset.to_le_bytes());
+        fs[at + 8..at + 16].copy_from_slice(&size.to_le_bytes());
+        fs[at + 0x10..at + 0x14].copy_from_slice(&0xEu32.to_le_bytes());
+    }
+    // Level 0 is 0x20 zero bytes, hashed as one zero-padded 0x4000 block.
+    fs[0xC8..0xE8].copy_from_slice(&Sha256::digest([0u8; 0x4000]));
+    ctr_section(body, fs)
+}
+
+/// BKTR patch section whose patched virtual space is the
+/// [`romfs_section`] of `patched_image`, except each `(virtual start,
+/// length, base offset)` range of `from_base`, which reads the base
+/// section instead. Layout: patch data, indirect table, AesCtrEx table.
+/// The data switches generation at 0x800 and 0x1000 with an unencrypted
+/// run between them; the tables use the FS header generation.
+pub fn patch_romfs_section(patched_image: &[u8], from_base: &[(u64, u64, u64)]) -> FixtureSection {
+    let FixtureSection {
+        body: virtual_body,
+        mut fs,
+        ..
+    } = romfs_section(patched_image);
+    let mut data = Vec::new();
+    let mut entries = Vec::new();
+    let mut virt = 0u64;
+    let patch_run = |data: &mut Vec<u8>, entries: &mut Vec<IndirectEntry>, from: u64, to: u64| {
+        entries.push(IndirectEntry {
+            virtual_offset: from,
+            physical_offset: data.len() as u64,
+            storage_index: 1,
+        });
+        data.extend_from_slice(&virtual_body[from as usize..to as usize]);
+    };
+    for &(start, len, base) in from_base {
+        if start > virt {
+            patch_run(&mut data, &mut entries, virt, start);
+        }
+        entries.push(IndirectEntry {
+            virtual_offset: start,
+            physical_offset: base,
+            storage_index: 0,
+        });
+        virt = start + len;
+    }
+    if virt < virtual_body.len() as u64 {
+        patch_run(&mut data, &mut entries, virt, virtual_body.len() as u64);
+    }
+    data.resize(data.len().next_multiple_of(0x200), 0);
+    let indirect_offset = data.len() as u64;
+    let indirect = build_table(&entries, virtual_body.len() as u64);
+    data.extend_from_slice(&indirect);
+    let aes_ctr_ex_offset = data.len() as u64;
+    let ex_entries = [
+        AesCtrExEntry {
+            offset: 0,
+            encrypted: true,
+            generation: 7,
+        },
+        AesCtrExEntry {
+            offset: 0x800,
+            encrypted: false,
+            generation: 0,
+        },
+        AesCtrExEntry {
+            offset: 0x1000,
+            encrypted: true,
+            generation: 9,
+        },
+        AesCtrExEntry {
+            offset: indirect_offset,
+            encrypted: true,
+            generation: FIXTURE_GENERATION,
+        },
+    ];
+    let ex_table = build_table(&ex_entries, aes_ctr_ex_offset);
+    data.extend_from_slice(&ex_table);
+
+    fs[4] = ENC_AES_CTR_EX;
+    let mut put_table = |at: usize, offset: u64, size: usize, count: usize| {
+        fs[at..at + 8].copy_from_slice(&offset.to_le_bytes());
+        fs[at + 8..at + 0x10].copy_from_slice(&(size as u64).to_le_bytes());
+        fs[at + 0x10..at + 0x14].copy_from_slice(b"BKTR");
+        fs[at + 0x14..at + 0x18].copy_from_slice(&1u32.to_le_bytes());
+        fs[at + 0x18..at + 0x1C].copy_from_slice(&(count as u32).to_le_bytes());
+    };
+    put_table(0x100, indirect_offset, indirect.len(), entries.len());
+    put_table(0x120, aes_ctr_ex_offset, ex_table.len(), ex_entries.len());
+    FixtureSection {
+        runs: vec![
+            (0, 0x800, 7),
+            (0x1000, indirect_offset, 9),
+            (indirect_offset, data.len() as u64, FIXTURE_GENERATION),
+        ],
+        body: data,
+        fs,
+    }
+}
+
+/// Encrypted NCA3 of `sections` laid out from 0x4000, readable with
+/// [`synthetic_keyset`] (or [`synthetic_keyset_with_titlekek`] plus
+/// `build_common_ticket(rights_id, TEST_BODY_KEY)` when `rights_id` is set). Section `i` gets secure value `i + 1`.
+pub fn build_nca(
+    content_type: u8,
+    title_id: u64,
+    rights_id: [u8; 16],
+    sections: &[FixtureSection],
+) -> Vec<u8> {
+    assemble_nca(content_type, title_id, rights_id, sections, true)
+}
+
+/// [`build_nca`] stored plaintext: header and sections in the clear, the
+/// key area and the padding at 0x340 zero.
+pub fn build_plaintext_nca(
+    content_type: u8,
+    title_id: u64,
+    sections: &[FixtureSection],
+) -> Vec<u8> {
+    assemble_nca(content_type, title_id, [0; 16], sections, false)
+}
+
+fn assemble_nca(
+    content_type: u8,
+    title_id: u64,
+    rights_id: [u8; 16],
+    sections: &[FixtureSection],
+    encrypt: bool,
+) -> Vec<u8> {
+    let mut header = [0u8; NCA_HEADER_SIZE];
+    header[0x200..0x204].copy_from_slice(&NCA3_MAGIC);
+    header[0x205] = content_type;
+    header[0x210..0x218].copy_from_slice(&title_id.to_le_bytes());
+    header[0x230..0x240].copy_from_slice(&rights_id);
+    if encrypt {
+        header[0x220] = 1;
+        header[0x300..0x340].copy_from_slice(&encrypt_key_area_block([
+            [0x11; 16],
+            [0x22; 16],
+            TEST_BODY_KEY,
+            [0x44; 16],
+        ]));
+    }
+    let mut nca = vec![0u8; 0x4000];
+    for (i, section) in sections.iter().enumerate() {
+        let start = nca.len() as u64;
+        let secure = i as u32 + 1;
+        let mut body = section.body.clone();
+        body.resize(body.len().next_multiple_of(0x200), 0);
+        if encrypt {
+            for &(from, to, generation) in &section.runs {
+                apply_ctr_at(
+                    &TEST_BODY_KEY,
+                    &ctr_iv(secure, generation),
+                    start + from,
+                    &mut body[from as usize..to as usize],
+                )
+                .unwrap();
+            }
+        }
+        nca.extend_from_slice(&body);
+        let entry = NCA_FS_ENTRY_OFFSET + i * 0x10;
+        header[entry..entry + 4].copy_from_slice(&((start / 0x200) as u32).to_le_bytes());
+        header[entry + 4..entry + 8].copy_from_slice(&((nca.len() / 0x200) as u32).to_le_bytes());
+        let fs = NCA_FS_HEADER_OFFSET + i * 0x200;
+        header[fs..fs + 0x200].copy_from_slice(&section.fs);
+        header[fs + 0x144..fs + 0x148].copy_from_slice(&secure.to_le_bytes());
+    }
+    header[0x208..0x210].copy_from_slice(&(nca.len() as u64).to_le_bytes());
+    if encrypt {
+        encrypt_nca_header(&mut header, &TEST_HEADER_KEY).unwrap();
+    }
+    nca[..NCA_HEADER_SIZE].copy_from_slice(&header);
+    nca
 }

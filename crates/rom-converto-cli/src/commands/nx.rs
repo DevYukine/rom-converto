@@ -22,6 +22,7 @@ pub enum NxCommands {
     Verify(NxVerifyCommand),
     Merge(NxMergeCommand),
     Split(NxSplitCommand),
+    Extract(NxExtractCommand),
     Info(InfoCommand),
 }
 
@@ -278,6 +279,47 @@ pub struct NxSplitCommand {
     pub batch: BatchArgs,
 }
 
+/// Extract the RomFS and ExeFS of base games, updates and DLC
+#[derive(Parser, Debug, Clone, Eq, PartialEq)]
+#[command(
+    long_about = "Extract the RomFS and ExeFS of base games, updates and DLC\n\nEach title is written to `<output dir>/<TITLE ID>/romfs` and `<output dir>/<TITLE ID>/exefs`. An update passed with its base game patches the RomFS and supplies the ExeFS; the highest version wins. DLC has a RomFS only. An update without its base game extracts its ExeFS only.",
+    after_long_help = "EXAMPLES:\n  rom-converto nx extract game.nsp\n  rom-converto nx extract base.nsp update.nsp dlc.nsp --output-dir ./out\n  rom-converto nx extract game.xci --romfs\n"
+)]
+pub struct NxExtractCommand {
+    /// Path to `prod.keys`. Defaults to `$HOME/.switch/prod.keys` on Linux/macOS or `%USERPROFILE%/.switch/prod.keys` on Windows, then the binary's own directory
+    #[arg(long = "keys", value_name = "PRODKEYS")]
+    pub keys: Option<PathBuf>,
+
+    /// Base game plus its updates and DLC (NSP, XCI, NSZ or XCZ), in any order
+    #[arg(required = true, num_args = 1.., value_name = "INPUT")]
+    pub inputs: Vec<PathBuf>,
+
+    /// Directory to write the `<TITLE ID>` folders into. Created if missing. Defaults to `<first input's name>` next to the first input
+    #[arg(long = "output-dir", value_name = "DIR")]
+    pub output_dir: Option<PathBuf>,
+
+    /// Extract only the RomFS. With neither --romfs nor --exefs, both are extracted
+    #[arg(long, default_value_t = false)]
+    pub romfs: bool,
+
+    /// Extract only the ExeFS. With neither --romfs nor --exefs, both are extracted
+    #[arg(long, default_value_t = false)]
+    pub exefs: bool,
+
+    /// What to do when a `<TITLE ID>/romfs` or `/exefs` directory already holds files: error, overwrite, or skip. `rename` is rejected for directory outputs
+    #[arg(long = "on-conflict", value_enum)]
+    pub on_conflict: Option<ConflictPolicyArg>,
+
+    /// Alias for --on-conflict overwrite
+    #[arg(
+        long,
+        short = 'f',
+        default_value_t = false,
+        conflicts_with = "on_conflict"
+    )]
+    pub force: bool,
+}
+
 /// `nx decompress` and `nx decrypt` are the same dispatch up to the
 /// runner op name.
 #[allow(clippy::too_many_arguments)]
@@ -503,6 +545,36 @@ pub async fn run(command: NxCommands, ctx: DispatchCtx<'_>) -> Result<()> {
                 && record.status == FileStatus::Ok
             {
                 log::info!("wrote {}", record.output_path);
+            }
+        }
+        NxCommands::Extract(cmd) => {
+            let eff = &effective.nx;
+            for input in &cmd.inputs {
+                ensure_input_exists(input)?;
+            }
+            let mut options = RunOptions::from(batch::Common {
+                recursive: false,
+                output_dir: cmd.output_dir.or_else(|| eff.output_dir.clone()),
+                output_template: None,
+                max_depth: None,
+                report: None,
+                policy: resolve_policy(cmd.on_conflict, cmd.force, ConflictPolicy::Error),
+                skip_space_check,
+            });
+            options.keys = cmd.keys;
+            options.romfs = cmd.romfs.then_some(true);
+            options.exefs = cmd.exefs.then_some(true);
+            options.inputs = Some(
+                cmd.inputs
+                    .iter()
+                    .cloned()
+                    .map(WupTitleInputOption::Path)
+                    .collect(),
+            );
+            let first = cmd.inputs[0].clone();
+            let response = batch::run(&run, "nx.extract", first, None, options).await?;
+            if response.records.iter().any(|r| r.status == FileStatus::Ok) {
+                log::info!("{}", response.message);
             }
         }
         NxCommands::Split(cmd) => {

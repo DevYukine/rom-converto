@@ -310,3 +310,78 @@ describe("nx merge input modes", () => {
 		expect(echo).not.toContain("--output ");
 	});
 });
+
+describe("nx extract", () => {
+	function extract(mutate: (store: OpStore) => void) {
+		const def = defByStoreId["nx-extract"]!;
+		const store = def.useStore();
+		mutate(store);
+		return def.buildArgsAll!(store, [item("/lib/a.nsp"), item("/lib/b.nsp")], "t1");
+	}
+
+	it("sends neither romfs nor exefs when both toggles are on", () => {
+		const { request } = extract(() => {});
+		expect(request.operation).toBe("nx.extract");
+		expect(request.input).toBe("/lib/a.nsp");
+		expect(request.output).toBe("/lib/a");
+		expect(request.options.inputs).toEqual(["/lib/a.nsp", "/lib/b.nsp"]);
+		expect(request.options).not.toHaveProperty("romfs");
+		expect(request.options).not.toHaveProperty("exefs");
+	});
+
+	it("sends only the toggle that is on", () => {
+		const romfs = extract((s) => {
+			s.romfs = true;
+			s.exefs = false;
+		}).request.options;
+		expect(romfs).toMatchObject({ romfs: true });
+		expect(romfs).not.toHaveProperty("exefs");
+
+		const exefs = extract((s) => {
+			s.romfs = false;
+			s.exefs = true;
+		}).request.options;
+		expect(exefs).toMatchObject({ exefs: true });
+		expect(exefs).not.toHaveProperty("romfs");
+	});
+
+	it("passes keys, output directory and a non-rename conflict", () => {
+		const { request } = extract((s) => {
+			s.keys = "/k/prod.keys";
+			s.outputDir = "/out";
+			s.onConflict = "rename";
+		});
+		expect(request.output).toBe("/out");
+		expect(request.options.keys).toBe("/k/prod.keys");
+		expect(request.options.on_conflict).toBe("error");
+	});
+
+	it("blocks the run only when both toggles are off", () => {
+		const def = defByStoreId["nx-extract"]!;
+		const store = def.useStore();
+		store.romfs = false;
+		store.exefs = false;
+		expect(def.runBlocked!(store)).toBe("Turn on RomFS or ExeFS to extract.");
+		store.exefs = true;
+		expect(def.runBlocked!(store)).toBeNull();
+		store.romfs = true;
+		expect(def.runBlocked!(store)).toBeNull();
+	});
+
+	it("explains the empty selection once, under the last toggle", () => {
+		const def = defByStoreId["nx-extract"]!;
+		const store = def.useStore();
+		store.romfs = false;
+		store.exefs = false;
+		const notes = () => def.fields.map((f) => (f.kind === "toggle" ? f.note?.(store) || null : undefined));
+		expect(notes().filter((n) => n !== undefined)).toEqual([null, "Turn on RomFS or ExeFS to extract."]);
+		store.exefs = true;
+		expect(notes().filter(Boolean)).toEqual([]);
+	});
+
+	it("accepts archives like the other Switch tools", () => {
+		const def = defByStoreId["nx-extract"]!;
+		expect(def.acceptedExts).toEqual(expect.arrayContaining(["nsp", "xci", "nsz", "xcz", "zip", "7z"]));
+		expect(def.browseFilters?.[0]?.extensions).toEqual(def.acceptedExts);
+	});
+});

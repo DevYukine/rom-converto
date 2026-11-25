@@ -338,7 +338,15 @@ source_root: string | null, playlists: boolean | null, input_exclude: Array<stri
 /**
  * The single patch file `patch.apply` applies.
  */
-patch_file: string | null, patch_only: boolean | null, clean: boolean | null, clean_exclude: Array<string> | null, clean_backup: string | null, move_delete_dirs: string | null, };
+patch_file: string | null, patch_only: boolean | null, clean: boolean | null, clean_exclude: Array<string> | null, clean_backup: string | null, move_delete_dirs: string | null, 
+/**
+ * `nx.extract` writes only the RomFS. Neither this nor `exefs` set writes both.
+ */
+romfs: boolean | null, 
+/**
+ * `nx.extract` writes only the ExeFS. Neither this nor `romfs` set writes both.
+ */
+exefs: boolean | null, };
 
 /**
  * Result of a report-capable command. The message drives the operation log;

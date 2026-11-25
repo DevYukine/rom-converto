@@ -767,6 +767,10 @@ pub struct RunOptions {
     pub clean_exclude: Option<Vec<String>>,
     pub clean_backup: Option<PathBuf>,
     pub move_delete_dirs: Option<String>,
+    /// `nx.extract` writes only the RomFS. Neither this nor `exefs` set writes both.
+    pub romfs: Option<bool>,
+    /// `nx.extract` writes only the ExeFS. Neither this nor `romfs` set writes both.
+    pub exefs: Option<bool>,
 }
 
 /// One Wii U title input: a bare path, or a path with an explicit format

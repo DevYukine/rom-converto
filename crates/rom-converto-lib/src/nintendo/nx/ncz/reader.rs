@@ -33,6 +33,7 @@
 
 use std::fs::File;
 use std::io::{BufReader, Read};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aes::Aes128;
@@ -67,6 +68,19 @@ const LARGE_PAYLOAD_THRESHOLD: u64 = 8 * 1024 * 1024;
 /// streamed decode paths, so large transfers cost one syscall per
 /// megabyte rather than one per few KiB.
 const STREAM_CHUNK: usize = 1024 * 1024;
+/// Times over its payload a reader may decode before reads fail: the
+/// bytes a streamed decoder skips, and every small block it decodes. A
+/// forward pass costs about one payload, so only a reader that keeps
+/// jumping back runs out.
+const REDECODE_BUDGET: u64 = 16;
+/// Bytes any payload may decode that way however small it is, so a
+/// fragmented update over a small NCZ still reads.
+const REDECODE_FLOOR: u64 = 4 << 30;
+
+/// Bytes a payload of `len` bytes may decode before reads fail.
+fn decode_budget(len: u64, floor: u64) -> u64 {
+    REDECODE_BUDGET.saturating_mul(len).max(floor)
+}
 
 fn buffered_decoder(source: PositionalReader) -> NxResult<SolidDecoder> {
     let buffered = BufReader::with_capacity(STREAM_CHUNK, source);
@@ -88,6 +102,11 @@ struct BlockPayload {
     /// Most recently decoded block; small blocks retain their bytes,
     /// while large blocks retain a decoder cursor for forward reads.
     cache: Mutex<Option<BlockCache>>,
+    /// Bytes charged to [`decode_budget`]: each small block decoded on
+    /// a cache miss, each byte a large-block cursor skips, and each byte
+    /// a frame decodes past its block. Updated under the `cache` lock.
+    spent: AtomicU64,
+    budget_floor: u64,
 }
 enum BlockCache {
     Decoded(usize, Vec<u8>),
@@ -109,6 +128,7 @@ struct SolidCursor {
     payload_compressed_size: u64,
     /// Logical (decompressed) length from the decrypted NCA header.
     total_len: u64,
+    budget_floor: u64,
     state: Mutex<SolidState>,
 }
 
@@ -118,10 +138,12 @@ struct SolidState {
     failed: bool,
     /// Reused for skipped bytes rather than allocated per read.
     scratch: Vec<u8>,
+    /// Bytes decoded only to reach a later offset and thrown away.
+    skipped: u64,
 }
 
 impl SolidCursor {
-    fn read_at(&self, dest: &mut [u8], payload_off: u64) -> NxResult<usize> {
+    fn read_at(&self, dest: &mut [u8], payload_off: u64, nca: &str) -> NxResult<usize> {
         let mut state = self
             .state
             .lock()
@@ -171,6 +193,14 @@ impl SolidCursor {
                 break;
             }
             state.position += n as u64;
+            // A forward pass skips at most the payload once, so only reads
+            // that keep jumping back run out of budget.
+            state.skipped = state.skipped.saturating_add(n as u64);
+            if state.skipped > decode_budget(self.total_len, self.budget_floor) {
+                return Err(NxError::NczReadOutOfOrder {
+                    nca: nca.to_owned(),
+                });
+            }
         }
         if state.position < payload_off || state.decoder.is_none() {
             return Ok(0);
@@ -234,6 +264,8 @@ pub struct NczReader {
     prefix: Box<[u8; NCA_PREFIX_SIZE]>,
     sections: Vec<NczSectionEntry>,
     payload: NczPayload,
+    /// Entry name the decode budget error reports.
+    nca: String,
 }
 
 impl NczReader {
@@ -243,7 +275,7 @@ impl NczReader {
     /// on-demand decompression, while solid mode sets up a lazy
     /// decoder cursor whose logical length comes from the decrypted
     /// NCA header's own `content_size` field. Opening never touches
-    /// payload bytes.
+    /// payload bytes. `name` is the entry name errors report.
     ///
     /// # Errors
     ///
@@ -254,6 +286,25 @@ impl NczReader {
         nca_offset_in_container: u64,
         ncz_total_size: u64,
         header_key: &[u8; 32],
+        name: &str,
+    ) -> NxResult<Self> {
+        Self::open_with_budget_floor(
+            file,
+            nca_offset_in_container,
+            ncz_total_size,
+            header_key,
+            name,
+            REDECODE_FLOOR,
+        )
+    }
+
+    fn open_with_budget_floor(
+        file: Arc<File>,
+        nca_offset_in_container: u64,
+        ncz_total_size: u64,
+        header_key: &[u8; 32],
+        name: &str,
+        budget_floor: u64,
     ) -> NxResult<Self> {
         if ncz_total_size < NCA_PREFIX_SIZE as u64 {
             return Err(NxError::IncompleteSection);
@@ -291,6 +342,8 @@ impl NczReader {
                     block_sizes: block_info.compressed_block_sizes,
                     decompressed_payload_size: block_info.decompressed_size as u64,
                     cache: Mutex::new(None),
+                    spent: AtomicU64::new(0),
+                    budget_floor,
                 })
             }
             None => {
@@ -336,11 +389,13 @@ impl NczReader {
                         payload_abs_start,
                         payload_compressed_size,
                         total_len,
+                        budget_floor,
                         state: Mutex::new(SolidState {
                             decoder: Some(decoder),
                             position: 0,
                             failed: false,
                             scratch: vec![0u8; STREAM_CHUNK],
+                            skipped: 0,
                         }),
                     }))
                 }
@@ -351,6 +406,7 @@ impl NczReader {
             prefix,
             sections: parsed.sections,
             payload,
+            nca: name.to_owned(),
         })
     }
 
@@ -383,14 +439,16 @@ impl NczReader {
                 dest[..take].copy_from_slice(&v[off..off + take]);
                 Ok(take)
             }
-            NczPayload::Solid(SolidPayload::Cursor(cursor)) => cursor.read_at(dest, payload_off),
-            NczPayload::Block(b) => b.read_at(dest, payload_off),
+            NczPayload::Solid(SolidPayload::Cursor(cursor)) => {
+                cursor.read_at(dest, payload_off, &self.nca)
+            }
+            NczPayload::Block(b) => b.read_at(dest, payload_off, &self.nca),
         }
     }
 }
 
 impl BlockPayload {
-    fn read_at(&self, dest: &mut [u8], payload_off: u64) -> NxResult<usize> {
+    fn read_at(&self, dest: &mut [u8], payload_off: u64, nca: &str) -> NxResult<usize> {
         let block_idx = usize::try_from(payload_off / self.block_size)
             .map_err(|_| NxError::IncompleteSection)?;
         let in_block = payload_off % self.block_size;
@@ -444,6 +502,7 @@ impl BlockPayload {
                 dest[..actual_take].copy_from_slice(&decoded[in_block..in_block + actual_take]);
                 return Ok(actual_take);
             }
+            self.charge(logical_size as u64, nca)?;
             let source = PositionalReader::new(self.file.clone(), offset, csz as u64);
             let mut decoder = buffered_decoder(source)?;
             let mut decoded = vec![0u8; logical_size];
@@ -458,7 +517,7 @@ impl BlockPayload {
                 filled += n;
             }
             decoded.truncate(filled);
-            drain_decoder(&mut decoder, block_idx)?;
+            drain_decoder(&mut decoder, block_idx, |n| self.charge(n, nca))?;
             if in_block >= decoded.len() {
                 *cache = Some(BlockCache::Decoded(block_idx, decoded));
                 return Ok(0);
@@ -494,6 +553,7 @@ impl BlockPayload {
                 return Err(NxError::IncompleteSection);
             }
             position += n as u64;
+            self.charge(n as u64, nca)?;
         }
         let mut written = 0usize;
         while written < take {
@@ -507,16 +567,35 @@ impl BlockPayload {
         }
         position += written as u64;
         if reaches_block_end {
-            drain_decoder(&mut decoder, block_idx)?;
+            drain_decoder(&mut decoder, block_idx, |n| self.charge(n, nca))?;
         }
         *cache = Some(BlockCache::Cursor(block_idx, decoder, position, scratch));
         Ok(written)
     }
+
+    /// Charges `n` decoded bytes to the budget; callers hold the `cache`
+    /// lock, so the load and store cannot race.
+    fn charge(&self, n: u64, nca: &str) -> NxResult<()> {
+        let spent = self.spent.load(Ordering::Relaxed).saturating_add(n);
+        if spent > decode_budget(self.decompressed_payload_size, self.budget_floor) {
+            return Err(NxError::NczReadOutOfOrder {
+                nca: nca.to_owned(),
+            });
+        }
+        self.spent.store(spent, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 /// Drains the remainder of a block frame to validate it while ignoring
-/// output beyond the NCA-declared logical block size.
-fn drain_decoder(decoder: &mut SolidDecoder, block_idx: usize) -> NxResult<()> {
+/// output beyond the NCA-declared logical block size. `charge` pays for
+/// that output, so a frame that decodes far past its block cannot be
+/// drained without end.
+fn drain_decoder(
+    decoder: &mut SolidDecoder,
+    block_idx: usize,
+    mut charge: impl FnMut(u64) -> NxResult<()>,
+) -> NxResult<()> {
     let mut scratch = [0u8; 16 * 1024];
     loop {
         let n = decoder
@@ -525,6 +604,7 @@ fn drain_decoder(decoder: &mut SolidDecoder, block_idx: usize) -> NxResult<()> {
         if n == 0 {
             return Ok(());
         }
+        charge(n as u64)?;
     }
 }
 
@@ -661,30 +741,51 @@ mod tests {
         assert_eq!(block0.len(), block_size);
         assert!(!block1.is_empty() && block1.len() <= block_size);
 
-        let mut bytes = vec![prefix_byte; NCA_PREFIX_SIZE];
-        write_sections(&mut bytes, sections);
-
         let c0 = zstd::stream::encode_all(std::io::Cursor::new(block0), level).unwrap();
         let c1 = zstd::stream::encode_all(std::io::Cursor::new(block1), level).unwrap();
+        build_two_frame_ncz(
+            prefix_byte,
+            &c0,
+            &c1,
+            (block0.len() + block1.len()) as i64,
+            sections,
+        )
+    }
+
+    /// Two-block NCZ (block size 0x4000) from ready frames, declaring
+    /// `decompressed_size` whatever the frames decode to.
+    fn build_two_frame_ncz(
+        prefix_byte: u8,
+        c0: &[u8],
+        c1: &[u8],
+        decompressed_size: i64,
+        sections: &[NczSectionEntry],
+    ) -> Vec<u8> {
+        let mut bytes = vec![prefix_byte; NCA_PREFIX_SIZE];
+        write_sections(&mut bytes, sections);
 
         bytes.write_all(&NCZBLOCK_MAGIC).unwrap();
         bytes.write_u8(1).unwrap();
         bytes.write_u8(0).unwrap();
         bytes.write_u8(0).unwrap();
-        bytes.write_u8(block_size_exp).unwrap();
+        bytes.write_u8(14).unwrap();
         bytes.write_u32::<LE>(2).unwrap();
-        bytes
-            .write_i64::<LE>((block0.len() + block1.len()) as i64)
-            .unwrap();
+        bytes.write_i64::<LE>(decompressed_size).unwrap();
         bytes.write_u32::<LE>(c0.len() as u32).unwrap();
         bytes.write_u32::<LE>(c1.len() as u32).unwrap();
 
-        bytes.extend_from_slice(&c0);
-        bytes.extend_from_slice(&c1);
+        bytes.extend_from_slice(c0);
+        bytes.extend_from_slice(c1);
         bytes
     }
 
+    /// Opens with no budget floor, so small fixtures can run out of the
+    /// relative budget.
     fn open_reader(bytes: &[u8]) -> NczReader {
+        open_reader_with_floor(bytes, 0)
+    }
+
+    fn open_reader_with_floor(bytes: &[u8], budget_floor: u64) -> NczReader {
         static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "rom-converto-ncz-test-{}-{}",
@@ -702,11 +803,13 @@ mod tests {
         let file = Arc::new(File::open(&path).unwrap());
         std::fs::remove_file(path).unwrap();
         let len = bytes.len() as u64;
-        NczReader::open(
+        NczReader::open_with_budget_floor(
             file,
             0,
             len,
             &crate::nintendo::nx::test_fixtures::TEST_HEADER_KEY,
+            "test.ncz",
+            budget_floor,
         )
         .unwrap()
     }
@@ -912,40 +1015,115 @@ mod tests {
         assert_eq!(backward, forward[0x3F00..0x4000]);
     }
 
-    #[test]
-    fn large_block_streams_without_materializing_whole_block() {
-        // The logical size exceeds LARGE_PAYLOAD_THRESHOLD so the
-        // streaming path is selected even though the nominal block
-        // exponent is larger.
-        let large_exp = 24u8; // 16 MiB nominal block size
-        let payload_len = usize::try_from(LARGE_PAYLOAD_THRESHOLD + 1).unwrap();
-        let payload: Vec<u8> = (0..payload_len).map(|i| (i & 0xFF) as u8).collect();
-
-        let mut bytes = vec![0xAAu8; NCA_PREFIX_SIZE];
-        write_sections(&mut bytes, &[]);
-        let compressed =
-            zstd::stream::encode_all(std::io::Cursor::new(payload.as_slice()), 3).unwrap();
-        // Exercise the streaming path with a logical size above the
-        // threshold, not merely a large nominal exponent.
+    /// Builds a one-block NCZ with a 16 MiB nominal block size whose
+    /// logical size exceeds LARGE_PAYLOAD_THRESHOLD, so it takes the
+    /// streaming path rather than merely having a large exponent.
+    fn build_large_block_ncz(payload: &[u8]) -> Vec<u8> {
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(payload), 3).unwrap();
         assert!(payload.len() as u64 > LARGE_PAYLOAD_THRESHOLD);
         assert_ne!(compressed.len(), payload.len());
 
+        let mut bytes = vec![0xAAu8; NCA_PREFIX_SIZE];
+        write_sections(&mut bytes, &[]);
         bytes.write_all(&NCZBLOCK_MAGIC).unwrap();
         bytes.write_u8(1).unwrap();
         bytes.write_u8(0).unwrap();
         bytes.write_u8(0).unwrap();
-        bytes.write_u8(large_exp).unwrap();
+        bytes.write_u8(24).unwrap();
         bytes.write_u32::<LE>(1).unwrap();
         bytes.write_i64::<LE>(payload.len() as i64).unwrap();
         bytes.write_u32::<LE>(compressed.len() as u32).unwrap();
         bytes.extend_from_slice(&compressed);
+        bytes
+    }
 
-        let reader = open_reader(&bytes);
+    #[test]
+    fn large_block_streams_without_materializing_whole_block() {
+        let payload_len = usize::try_from(LARGE_PAYLOAD_THRESHOLD + 1).unwrap();
+        let payload: Vec<u8> = (0..payload_len).map(|i| (i & 0xFF) as u8).collect();
+
+        let reader = open_reader(&build_large_block_ncz(&payload));
         let mut got = vec![0u8; 0x20];
         reader
             .read_exact_at(&mut got, NCA_PREFIX_SIZE as u64 + 0x800)
             .unwrap();
         assert_eq!(got, payload[0x800..0x820]);
+    }
+
+    #[test]
+    fn large_block_cursor_refuses_reads_that_keep_jumping_back() {
+        let payload_len = LARGE_PAYLOAD_THRESHOLD + 0x4000;
+        let payload: Vec<u8> = (0..payload_len).map(|i| (i & 0xFF) as u8).collect();
+        let reader = open_reader(&build_large_block_ncz(&payload));
+        let start = NCA_PREFIX_SIZE as u64;
+        let end = start + payload_len;
+        let mut buf = [0u8; 0x10];
+
+        for at in (0..payload_len).step_by(1 << 20) {
+            reader.read_exact_at(&mut buf, start + at).unwrap();
+        }
+        reader.read_exact_at(&mut buf, end - 0x10).unwrap();
+        reader.read_exact_at(&mut buf, start).unwrap();
+
+        // Each repeat jumps back inside the block and skips nearly all of
+        // it again.
+        let result = (0..20).try_for_each(|_| reader.read_exact_at(&mut buf, end - 0x20));
+        assert!(
+            matches!(&result, Err(NxError::NczReadOutOfOrder { nca }) if nca == "test.ncz"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn small_blocks_decoded_over_and_over_run_out_of_budget() {
+        let block0: Vec<u8> = (0..0x4000).map(|i| (i & 0xFF) as u8).collect();
+        let block1: Vec<u8> = (0..0x4000).map(|i| ((i * 7) & 0xFF) as u8).collect();
+        let reader = open_reader(&build_two_block_ncz(0xAA, &block0, &block1, &[], 3));
+        let start = NCA_PREFIX_SIZE as u64;
+
+        // A sequential pass decodes each block once.
+        let mut all = vec![0u8; 0x8000];
+        for (i, chunk) in all.chunks_mut(0x100).enumerate() {
+            reader
+                .read_exact_at(chunk, start + (i * 0x100) as u64)
+                .unwrap();
+        }
+        assert_eq!(all, [block0, block1].concat());
+
+        // Alternating between the blocks decodes one on every read.
+        let mut buf = [0u8; 0x10];
+        let result = (0..20).try_for_each(|_| {
+            reader.read_exact_at(&mut buf, start)?;
+            reader.read_exact_at(&mut buf, start + 0x4000)
+        });
+        assert!(
+            matches!(result, Err(NxError::NczReadOutOfOrder { .. })),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_frame_decoding_far_past_its_block_runs_out_of_budget() {
+        let block0: Vec<u8> = (0..0x4000).map(|i| (i & 0xFF) as u8).collect();
+        let c0 = zstd::stream::encode_all(std::io::Cursor::new(&block0[..]), 3).unwrap();
+        // Block 1 holds 0x10 bytes, but its frame decodes 1 MiB.
+        let c1 = zstd::stream::encode_all(std::io::Cursor::new(vec![0u8; 1 << 20]), 3).unwrap();
+        let ncz = build_two_frame_ncz(0xAA, &c0, &c1, 0x4010, &[]);
+        let start = NCA_PREFIX_SIZE as u64;
+        let mut buf = [0u8; 0x10];
+
+        let reader = open_reader(&ncz);
+        reader.read_exact_at(&mut buf, start).unwrap();
+        let result = reader.read_exact_at(&mut buf, start + 0x4000);
+        assert!(
+            matches!(result, Err(NxError::NczReadOutOfOrder { .. })),
+            "{result:?}"
+        );
+
+        // The production floor still lets one such read through.
+        let reader = open_reader_with_floor(&ncz, REDECODE_FLOOR);
+        reader.read_exact_at(&mut buf, start + 0x4000).unwrap();
+        assert_eq!(buf, [0u8; 0x10]);
     }
 
     #[test]
@@ -1058,6 +1236,46 @@ mod tests {
             .read_exact_at(&mut back, NCA_PREFIX_SIZE as u64 + 0x10)
             .unwrap();
         assert_eq!(back, payload[0x10..0x50]);
+    }
+
+    #[test]
+    fn solid_cursor_refuses_reads_that_keep_jumping_back() {
+        let payload_len = LARGE_PAYLOAD_THRESHOLD + 0x4000;
+        let payload: Vec<u8> = (0..payload_len).map(|i| (i & 0xFF) as u8).collect();
+        let reader = open_reader(&build_solid_ncz(&payload, &[]));
+        let start = NCA_PREFIX_SIZE as u64;
+        let end = start + payload_len;
+        let mut buf = [0u8; 0x10];
+
+        // Sequential reads, then one restart from the tables at the end
+        // back to the data at the start.
+        for at in (0..payload_len).step_by(1 << 20) {
+            reader.read_exact_at(&mut buf, start + at).unwrap();
+        }
+        reader.read_exact_at(&mut buf, end - 0x10).unwrap();
+        reader.read_exact_at(&mut buf, start).unwrap();
+
+        // Each repeat jumps back and decodes nearly the whole payload again.
+        let result = (0..20).try_for_each(|_| reader.read_exact_at(&mut buf, end - 0x20));
+        assert!(matches!(result, Err(NxError::NczReadOutOfOrder { .. })));
+
+        // A jump back to the start costs nothing by itself; the skip to the
+        // far end after it does.
+        let ncz = build_solid_ncz(&payload, &[]);
+        let alternate = |reader: &NczReader| {
+            let mut buf = [0u8; 0x10];
+            (0..20).try_for_each(|_| {
+                reader.read_exact_at(&mut buf, end - 0x20)?;
+                reader.read_exact_at(&mut buf, start)
+            })
+        };
+        let result = alternate(&open_reader(&ncz));
+        assert!(matches!(result, Err(NxError::NczReadOutOfOrder { .. })));
+
+        // The same reads cost about 160 MiB, which the production floor
+        // allows for a payload this small.
+        assert!(alternate(&open_reader_with_floor(&ncz, REDECODE_FLOOR)).is_ok());
+        assert_eq!(decode_budget(payload_len, REDECODE_FLOOR), REDECODE_FLOOR);
     }
 
     #[test]

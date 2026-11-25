@@ -247,6 +247,12 @@ export function deriveNxSplitDir(input: string): string {
   return `${stemOf(stripArchiveExt(input))}_split`;
 }
 
+// Mirrors `rom-converto nx extract`'s default output directory: the first
+// input's stem, beside it.
+export function deriveNxExtractDir(input: string): string {
+  return stemOf(stripArchiveExt(input));
+}
+
 // Mirrors `rom-converto ctr bundle`'s default output: named after the main
 // member (bcci for 3ds/cci/zcci, bcxi for cxi/zcxi), else after the first
 // input with bcia when only CIA members are staged.

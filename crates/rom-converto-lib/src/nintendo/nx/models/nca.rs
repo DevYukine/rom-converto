@@ -35,6 +35,7 @@ pub struct NcaHeader {
 pub const CONTENT_TYPE_PROGRAM: u8 = 0;
 pub const CONTENT_TYPE_META: u8 = 1;
 pub const CONTENT_TYPE_CONTROL: u8 = 2;
+pub const CONTENT_TYPE_DATA: u8 = 4;
 pub const CONTENT_TYPE_PUBLIC_DATA: u8 = 5;
 
 /// One entry in the NCA's filesystem section table: the start and end
@@ -90,6 +91,23 @@ pub struct FsHeader {
     /// hierarchical SHA-256/SHA3 and integrity hash types; `None` for
     /// any other hash type.
     pub hash_target_offset: Option<u64>,
+    /// Size of that hash target layer: the PFS0 region of a SHA-256
+    /// section, the RomFS image of an integrity section.
+    pub hash_target_size: Option<u64>,
+    /// The master hash and the first hash block it covers, for the
+    /// SHA-256 hash types; `None` for the SHA3 variants and any other.
+    pub master_hash: Option<MasterHash>,
+}
+
+/// The FS header's master hash: the SHA-256 of `size` bytes at the
+/// section-relative `offset` (the hash table of a SHA-256 section, IVFC
+/// level 0 of an integrity section), zero-padded to `block` bytes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MasterHash {
+    pub digest: [u8; 32],
+    pub offset: u64,
+    pub size: u64,
+    pub block: u64,
 }
 
 pub const FS_TYPE_ROMFS: u8 = 0;
@@ -108,6 +126,8 @@ pub const HASH_TYPE_HIERARCHICAL_INTEGRITY_SHA3: u8 = 6;
 pub struct PatchInfo {
     pub indirect_offset: u64,
     pub indirect_size: u64,
+    /// Entry count from the indirect bucket-tree header.
+    pub indirect_entry_count: u32,
     pub aes_ctr_ex_offset: u64,
     pub aes_ctr_ex_size: u64,
     /// Entry count from the AesCtrEx bucket-tree header stored in the
@@ -216,13 +236,14 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
     let encryption_type = cur.read_u8()?;
     let metadata_hash_type = cur.read_u8()?;
     let _reserved = cur.read_u16::<LE>()?;
-    let hash_target_offset = match hash_type {
+    // Where the hash target's `{offset u64, size u64}` pair sits.
+    let hash_target = match hash_type {
         // HierarchicalSha256Data: layer count at 0x2C, regions at 0x30.
         HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_SHA3_256 => {
             let layer_count = u32_le(buf, 0x2C) as usize;
             (1..=5)
                 .contains(&layer_count)
-                .then(|| u64_le(buf, 0x30 + (layer_count - 1) * 0x10))
+                .then(|| 0x30 + (layer_count - 1) * 0x10)
         }
         // IntegrityMetaInfo: max layers at 0x14, level infos at 0x18;
         // `max_layers` counts the master hash, so the last level info
@@ -232,13 +253,35 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
             let max_layers = u32_le(buf, 0x14) as usize;
             (2..=7)
                 .contains(&max_layers)
-                .then(|| u64_le(buf, 0x18 + (max_layers - 2) * 0x18))
+                .then(|| 0x18 + (max_layers - 2) * 0x18)
+        }
+        _ => None,
+    };
+    let hash_target_offset = hash_target.map(|at| u64_le(buf, at));
+    let hash_target_size = hash_target.map(|at| u64_le(buf, at + 8));
+    let master_hash = match hash_type {
+        HASH_TYPE_HIERARCHICAL_SHA256 => Some(MasterHash {
+            digest: buf[0x08..0x28].try_into().unwrap_or_default(),
+            offset: u64_le(buf, 0x30),
+            size: u64_le(buf, 0x38),
+            block: u64_le(buf, 0x38),
+        }),
+        // IVFC level 0 is hashed as one block of its own block size.
+        HASH_TYPE_HIERARCHICAL_INTEGRITY => {
+            let order = u32_le(buf, 0x28);
+            (order < 32).then(|| MasterHash {
+                digest: buf[0xC8..0xE8].try_into().unwrap_or_default(),
+                offset: u64_le(buf, 0x18),
+                size: u64_le(buf, 0x20).min(1 << order),
+                block: 1 << order,
+            })
         }
         _ => None,
     };
     let patch = PatchInfo {
         indirect_offset: u64_le(buf, 0x100),
         indirect_size: u64_le(buf, 0x108),
+        indirect_entry_count: u32_le(buf, 0x118),
         aes_ctr_ex_offset: u64_le(buf, 0x120),
         aes_ctr_ex_size: u64_le(buf, 0x128),
         aes_ctr_ex_entry_count: u32_le(buf, 0x138),
@@ -261,6 +304,8 @@ fn parse_fs_header(buf: &[u8]) -> NxResult<FsHeader> {
         sparse_generation,
         has_compression_layer,
         hash_target_offset,
+        hash_target_size,
+        master_hash,
     })
 }
 

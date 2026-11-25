@@ -21,6 +21,11 @@ describe("buildCliCommand", () => {
     expect(buildCliCommand(payload)).toBe("rom-converto nx merge a.nsp b.nsp --output merged.nsp");
   });
 
+  it("echoes nx extract with inputs, a part flag and the output directory", () => {
+    const payload = runArgs("nx.extract", "a.nsp", "dir", { inputs: ["a.nsp", "b.nsp"], romfs: true }, false, "t2x");
+    expect(buildCliCommand(payload)).toBe("rom-converto nx extract a.nsp b.nsp --output-dir dir --romfs");
+  });
+
   it("echoes the patch file between the ROM and output positionals", () => {
     const payload = runArgs(
       "patch.apply",

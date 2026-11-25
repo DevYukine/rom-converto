@@ -7,6 +7,7 @@ import { useCtrCdnToCiaStore } from "~/stores/ctr-cdn-to-cia";
 import { useCtrGenerateTicketStore } from "~/stores/ctr-generate-ticket";
 import { useNxMergeStore } from "~/stores/nx-merge";
 import { useNxSplitStore } from "~/stores/nx-split";
+import { useNxExtractStore } from "~/stores/nx-extract";
 import { useCtrBundleStore } from "~/stores/ctr-bundle";
 import { useCtrUnbundleStore } from "~/stores/ctr-unbundle";
 import {
@@ -14,12 +15,14 @@ import {
 	deriveCtrBundlePath,
 	deriveCtrUnbundleDir,
 	deriveMergedCuePath,
+	deriveNxExtractDir,
 	deriveNxMergedPath,
 	deriveNxSplitDir,
 	derivePatchedPath,
 	dirName,
 	withOutputDir,
 } from "~/composables/useDerivedPath";
+import type { RunOptions } from "~/types";
 import { nxKeysColor, nxKeysDisplay } from "./nx-keys";
 import { NX_KEYS_AUTO, NX_KEYS_TOOLTIP, commonOptions, directoryConflict, directoryOutputRows, runArgs, runnerDerivedOutput, type OpDef, type OpStore, type RunPayload } from "./types";
 
@@ -722,6 +725,107 @@ const nxSplit: OpDef = {
 	chips: () => "",
 };
 
+// Both toggles on is the runner's default, so it sends neither option.
+function extractParts(store: OpStore): Partial<RunOptions> {
+	if (store.romfs === store.exefs) return {};
+	return store.romfs ? { romfs: true } : { exefs: true };
+}
+
+const NX_EXTRACT_NO_PARTS = "Turn on RomFS or ExeFS to extract.";
+
+function extractBlocked(store: OpStore): string | null {
+	return store.romfs || store.exefs ? null : NX_EXTRACT_NO_PARTS;
+}
+
+const nxExtract: OpDef = {
+	op: "tools",
+	console: "nx-extract",
+	opLabel: "Tools",
+	storeId: "nx-extract",
+	useStore: () => useNxExtractStore(),
+	command: "cmd_run",
+	resultKind: "text",
+
+	title: "Extract Switch RomFS/ExeFS",
+	subtitle: "Extracts RomFS and ExeFS from base games, updates and DLC.",
+	dropText: "Drop NSP, XCI, NSZ or XCZ files to extract",
+	acceptedExts: ["nsp", "xci", "nsz", "xcz", ...ARCHIVE_EXTS],
+	browseFilters: [{ name: "Switch container", extensions: ["nsp", "xci", "nsz", "xcz", ...ARCHIVE_EXTS] }],
+	progressKey: "nx-extract",
+
+	fields: [
+		{
+			kind: "toggle",
+			key: "romfs",
+			label: "RomFS",
+			tooltip: "Extract the RomFS of each title into <TITLE ID>/romfs.",
+		},
+		{
+			kind: "toggle",
+			key: "exefs",
+			label: "ExeFS",
+			tooltip: "Extract the ExeFS of each title into <TITLE ID>/exefs. DLC has no ExeFS.",
+			note: (store) => extractBlocked(store) ?? false,
+		},
+		{
+			kind: "file",
+			key: "keys",
+			label: "prod.keys",
+			tooltip: NX_KEYS_TOOLTIP,
+			filters: [{ name: "Keys", extensions: ["keys", "txt", "dat"] }],
+			display: nxKeysDisplay,
+			placeholder: NX_KEYS_AUTO,
+			color: nxKeysColor,
+		},
+	],
+	note: "Add a base game with its update and DLC to extract them together. A lone update has no RomFS.",
+	outputRows: [
+		{
+			kind: "directory",
+			label: "Output directory",
+			display: (store) => store.outputDir || "",
+			placeholder: "<input>",
+			value: (store) => store.outputDir,
+			set: (store, value) => {
+				store.outputDir = value;
+			},
+			tooltip:
+				"Where the <TITLE ID> folders are written. Leave empty to use a folder named after the first input, next to it.",
+		},
+	],
+
+	renameDisabled: true,
+	showConflict: true,
+	showDryRun: true,
+	actionNote: "All staged files extract in one queue job.",
+	runBlocked: extractBlocked,
+
+	deriveOutput: (input, store) => store.outputDir || deriveNxExtractDir(input),
+	buildArgs: (store, item, taskId) => extractArgs(store, [item.path], taskId),
+	buildArgsAll: (store, items, taskId) =>
+		extractArgs(store, items.map((i) => i.path), taskId),
+	chips: () => "",
+};
+
+// Every staged file extracts in one job, so the first input names the job and
+// the rest travel in `options.inputs`.
+function extractArgs(store: OpStore, inputs: string[], taskId: string): RunPayload {
+	return runArgs(
+		"nx.extract",
+		inputs[0] ?? null,
+		store.outputDir || (inputs[0] ? deriveNxExtractDir(inputs[0]) : ""),
+		{
+			inputs,
+			...extractParts(store),
+			keys: store.keys || null,
+			on_conflict: directoryConflict(store.onConflict),
+			skip_space_check: store.skipSpaceCheck,
+		},
+		false,
+		taskId,
+	);
+}
+
 // The extension follows the main member, so the name is derived from the
 // staged members and joined with the chosen folder (default: beside the main).
 function bundleOutput(store: OpStore, inputs: string[]): string {
@@ -851,6 +955,7 @@ export const toolOps: OpDef[] = [
 	ticket,
 	nxMerge,
 	nxSplit,
+	nxExtract,
 	ctrBundle,
 	ctrUnbundle,
 ];

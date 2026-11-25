@@ -10,7 +10,7 @@ use super::models::{
 };
 use super::ops_misc::{
     ctr_bundle, ctr_unbundle, cue_to_cso, cue_to_iso, game_scan, ntr_decrypt, ntr_encrypt,
-    nx_merge, nx_split, patch_apply,
+    nx_extract, nx_merge, nx_split, patch_apply,
 };
 use super::ops_ms::{
     xbox_convert, xbox_extract, xenon_compress, xenon_convert, xenon_extract, xenon_verify,
@@ -707,6 +707,17 @@ pub(crate) static OPS: &[OpSpec] = &[
         }),
         required_bytes: None,
         run: |req, progress, cancel| Box::pin(nx_merge(req, progress, cancel)),
+    },
+    OpSpec {
+        name: "nx.extract",
+        aliases: &[],
+        batch_exts: None,
+        input_exts: Some(super::ops_misc::EXTRACT_EXTS),
+        batch_output_dir: None,
+        writes_output: true,
+        derive_output: None,
+        required_bytes: None,
+        run: |req, progress, cancel| Box::pin(nx_extract(req, progress, cancel)),
     },
     OpSpec {
         name: "nx.split",
@@ -3345,7 +3356,7 @@ pub(crate) fn planned(line: PlanLine) -> RunResponse {
 
 /// Report record for a dry-run plan line: a keep decision is a skip with
 /// its reason, everything else is ok with nothing written yet.
-fn plan_record(line: &PlanLine) -> ReportRecord {
+pub(crate) fn plan_record(line: &PlanLine) -> ReportRecord {
     let (status, error) = match line.decision {
         PlanDecision::Skip => (FileStatus::Skipped, Some("output exists")),
         PlanDecision::KeepValid => (FileStatus::Skipped, Some(VERIFIED_VALID)),
@@ -3652,6 +3663,42 @@ pub(crate) fn output_exists(desired: &Path, message: String) -> anyhow::Error {
     .context(message)
 }
 
+/// Whether `policy` lets a write replace an occupied directory output:
+/// `overwrite` does, `skip` and `overwrite-invalid` keep it, `rename` and
+/// `error` refuse. The caller decides what counts as occupied; nothing is
+/// touched here.
+pub(crate) fn dir_conflict_write(desired: &Path, policy: ConflictPolicy) -> Result<bool> {
+    if desired.is_file() {
+        match policy {
+            ConflictPolicy::Overwrite => Ok(true),
+            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(false),
+            _ => Err(output_exists(
+                desired,
+                format!(
+                    "output path exists and is a file, use --on-conflict overwrite to replace it: {}",
+                    desired.display()
+                ),
+            )),
+        }
+    } else {
+        match policy {
+            ConflictPolicy::Overwrite => Ok(true),
+            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => Ok(false),
+            ConflictPolicy::Rename => anyhow::bail!(
+                "rename is not supported for directory outputs, use overwrite/skip/error: {}",
+                desired.display()
+            ),
+            ConflictPolicy::Error => Err(output_exists(
+                desired,
+                format!(
+                    "output directory is not empty, use overwrite to replace it: {}",
+                    desired.display()
+                ),
+            )),
+        }
+    }
+}
+
 /// Directory-output twin of [`prepare_output`]. Directories cannot
 /// auto-number, so `rename` is rejected; `skip` keeps a directory that
 /// already holds files and `error` refuses it. `overwrite` removes an
@@ -3667,41 +3714,7 @@ pub(crate) fn prepare_output_dir(
     let policy = conflict_policy(req)?;
     let occupied =
         desired.is_file() || (desired.is_dir() && std::fs::read_dir(desired)?.next().is_some());
-    let write = if !occupied {
-        true
-    } else if desired.is_file() {
-        match policy {
-            ConflictPolicy::Overwrite => true,
-            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => false,
-            _ => {
-                return Err(output_exists(
-                    desired,
-                    format!(
-                        "output path exists and is a file, use --on-conflict overwrite to replace it: {}",
-                        desired.display()
-                    ),
-                ));
-            }
-        }
-    } else {
-        match policy {
-            ConflictPolicy::Overwrite => true,
-            ConflictPolicy::Skip | ConflictPolicy::OverwriteInvalid => false,
-            ConflictPolicy::Rename => anyhow::bail!(
-                "rename is not supported for directory outputs, use overwrite/skip/error: {}",
-                desired.display()
-            ),
-            ConflictPolicy::Error => {
-                return Err(output_exists(
-                    desired,
-                    format!(
-                        "output directory is not empty, use overwrite to replace it: {}",
-                        desired.display()
-                    ),
-                ));
-            }
-        }
-    };
+    let write = !occupied || dir_conflict_write(desired, policy)?;
     if write {
         super::release::check_output_dir(desired)?;
     }

@@ -30,11 +30,12 @@ use crate::nintendo::nx::constants::{
     NCA_HEADER_SIZE, NCA_XTS_SECTOR, PFS0_MAGIC,
 };
 use crate::nintendo::nx::crypto::aes_ctr::apply_ctr_at;
-use crate::nintendo::nx::decrypt::bucket_tree;
+use crate::nintendo::nx::decrypt::bucket_tree::{self, AesCtrExEntry};
 use crate::nintendo::nx::error::{NxError, NxResult};
 use crate::nintendo::nx::keys::KeySet;
 use crate::nintendo::nx::models::nca::{
     FS_TYPE_PARTITION_FS, FS_TYPE_ROMFS, FsHeader, HASH_TYPE_HIERARCHICAL_INTEGRITY,
+    HASH_TYPE_HIERARCHICAL_INTEGRITY_SHA3, HASH_TYPE_HIERARCHICAL_SHA3_256,
     HASH_TYPE_HIERARCHICAL_SHA256,
 };
 use crate::nintendo::nx::romfs::ROMFS_HEADER_SIZE;
@@ -51,7 +52,7 @@ const CHUNK: usize = 4 * 1024 * 1024;
 /// with the 8-byte counter prefix (`secure_value || generation`) its
 /// keystream starts from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CtrRun {
+pub(crate) struct CtrRun {
     start: u64,
     end: u64,
     ctr_iv: [u8; 8],
@@ -96,6 +97,7 @@ impl NcaPlainPlan {
                 &walker.header.fs_headers[section.index],
                 section.index,
                 name,
+                false,
             )?;
             if !walker.plaintext {
                 section_runs(&walker, section, name, &mut runs)?;
@@ -227,35 +229,53 @@ impl NcaPlainPlan {
         Ok(hasher.finalize().into())
     }
 
-    /// Decrypts the encrypted runs overlapping the chunk `buf` that
-    /// sits at NCA offset `pos`; bytes outside any run pass through.
     fn apply(&self, pos: u64, buf: &mut [u8]) -> NxResult<()> {
-        let end = pos + buf.len() as u64;
-        let first = self.runs.partition_point(|r| r.end <= pos);
-        for run in self.runs[first..].iter().take_while(|r| r.start < end) {
-            let start = run.start.max(pos);
-            let stop = run.end.min(end);
-            let slice = &mut buf[(start - pos) as usize..(stop - pos) as usize];
-            apply_ctr_at(&self.key, &run.ctr_iv, start, slice)?;
-        }
-        Ok(())
+        apply_runs(&self.key, &self.runs, pos, buf)
     }
+}
+
+/// Decrypts the runs (ascending, non-overlapping) that overlap the
+/// chunk `buf` sitting at NCA offset `pos`; bytes outside any run pass
+/// through.
+pub(crate) fn apply_runs(
+    key: &[u8; 16],
+    runs: &[CtrRun],
+    pos: u64,
+    buf: &mut [u8],
+) -> NxResult<()> {
+    let end = pos + buf.len() as u64;
+    let first = runs.partition_point(|r| r.end <= pos);
+    for run in runs[first..].iter().take_while(|r| r.start < end) {
+        let start = run.start.max(pos);
+        let stop = run.end.min(end);
+        let slice = &mut buf[(start - pos) as usize..(stop - pos) as usize];
+        apply_ctr_at(key, &run.ctr_iv, start, slice)?;
+    }
+    Ok(())
 }
 
 /// Rejects section layouts NxEmu cannot mount, whatever the input's
 /// encryption state: sparse layers, and any hash type other than the
-/// SHA-256 and integrity layers.
-fn check_section_layout(fs: &FsHeader, index: usize, name: &str) -> NxResult<()> {
+/// SHA-256 and integrity layers. `sha3` also accepts their SHA3
+/// variants, which share the layout.
+pub(crate) fn check_section_layout(
+    fs: &FsHeader,
+    index: usize,
+    name: &str,
+    sha3: bool,
+) -> NxResult<()> {
     if fs.sparse_generation != 0 {
         return Err(NxError::SparseSectionUnsupported {
             nca: name.to_string(),
             section: index,
         });
     }
-    if !matches!(
-        fs.hash_type,
-        HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_INTEGRITY
-    ) {
+    let supported = match fs.hash_type {
+        HASH_TYPE_HIERARCHICAL_SHA256 | HASH_TYPE_HIERARCHICAL_INTEGRITY => true,
+        HASH_TYPE_HIERARCHICAL_SHA3_256 | HASH_TYPE_HIERARCHICAL_INTEGRITY_SHA3 => sha3,
+        _ => false,
+    };
+    if !supported {
         return Err(NxError::UnsupportedHashType {
             nca: name.to_string(),
             section: index,
@@ -265,8 +285,8 @@ fn check_section_layout(fs: &FsHeader, index: usize, name: &str) -> NxResult<()>
     Ok(())
 }
 
-/// Appends the CTR runs of one section to `runs`.
-fn section_runs(
+/// Appends the CTR runs of one section to `runs`, in ascending order.
+pub(crate) fn section_runs(
     walker: &NcaWalker,
     section: &NcaSection,
     name: &str,
@@ -304,7 +324,7 @@ fn section_runs(
                 section: section.index,
                 reason,
             };
-            let table_len = bucket_tree::table_size(patch.aes_ctr_ex_entry_count)
+            let table_len = bucket_tree::table_size::<AesCtrExEntry>(patch.aes_ctr_ex_entry_count)
                 .ok_or_else(|| invalid("AesCtrEx entry count is out of range"))?;
             let table_end = patch
                 .aes_ctr_ex_size
@@ -335,8 +355,9 @@ fn section_runs(
             };
             let mut table = vec![0u8; table_len as usize];
             walker.read_section_plain(section, patch.aes_ctr_ex_offset, &mut table)?;
-            let entries = bucket_tree::parse_entries(&table, patch.aes_ctr_ex_entry_count)
-                .map_err(invalid)?;
+            let (entries, _) =
+                bucket_tree::parse_entries::<AesCtrExEntry>(&table, patch.aes_ctr_ex_entry_count)
+                    .map_err(invalid)?;
             for (i, entry) in entries.iter().enumerate() {
                 let run_end = entries
                     .get(i + 1)
@@ -363,7 +384,7 @@ fn section_runs(
 
 /// Counter prefix `secure_value BE || generation BE`, the upper half
 /// of the 16-byte AES-CTR counter (see `initial_ctr_for_offset`).
-fn ctr_iv(secure_value: u32, generation: u32) -> [u8; 8] {
+pub(crate) fn ctr_iv(secure_value: u32, generation: u32) -> [u8; 8] {
     let mut iv = [0u8; 8];
     iv[..4].copy_from_slice(&secure_value.to_be_bytes());
     iv[4..].copy_from_slice(&generation.to_be_bytes());
@@ -391,7 +412,7 @@ mod tests {
     use super::*;
     use crate::nintendo::nx::constants::{NCA_FS_ENTRY_OFFSET, NCA3_MAGIC};
     use crate::nintendo::nx::crypto::aes_xts::encrypt_nca_header;
-    use crate::nintendo::nx::decrypt::bucket_tree::{AesCtrExEntry, build_table};
+    use crate::nintendo::nx::decrypt::bucket_tree::build_table;
     use crate::nintendo::nx::keys::KeyAreaKind;
     use crate::nintendo::nx::models::nca::NcaHeader;
     use crate::nintendo::nx::test_fixtures::{
@@ -615,7 +636,7 @@ mod tests {
                 generation: 9,
             },
         ];
-        let table = build_table(&entries);
+        let table = build_table(&entries, 0);
         let mut plain = body(data_len, 1);
         plain.extend_from_slice(&table);
         plain.resize(plain.len().next_multiple_of(0x200), 0);
@@ -660,7 +681,7 @@ mod tests {
                 generation: 42,
             },
         ];
-        let table = build_table(&entries);
+        let table = build_table(&entries, 0);
         let indirect_off = data_len;
         let indirect_size = 0x400u64;
         let ex_off = indirect_off + indirect_size;
